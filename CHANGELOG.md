@@ -7,6 +7,13 @@ history remains available in Git.
 
 ### Added
 
+- Added the optional Rust XChat module backed by pinned official `chat-xdk` and Juicebox SDK sources. It loads lazily, belongs to the Appkit session, performs one explicit PIN recovery call without Chirp-level retries, preserves remaining guesses and distinct failure states, cancels in-flight Tokio work, destroys opaque SDK state on `chirp-stop`, and returns only signature-verified plaintext rather than PIN or key material.
+- `M-x chirp-login` captures an X browser session through browser-session, using Chirp's fixed persistent isolated profile root, validates only `auth_token` and `ct0`, and atomically writes Chirp's private provider auth file. `M-x chirp-forget-browser-session` deletes that file without signing out of the browser.
+- Home, Following, search, bookmarks, notifications, user typeahead, accessible lists and their timelines, threads with full article expansion, core profile views, follower/following lists, translation, Likes, compose, image upload, and all current mutations now use authenticated direct X web API requests without `twitter-cli` or Python.
+- Home and Following now share one Appkit-owned primary view identity while retaining independent session-owned canonical feed state, pagination, and semantic positions. Their keyed EWOC projection preserves multi-window positions, owns X reads, and invalidates media resources by dependent row; Appkit also owns Chirp's other session caches and bounded media, thumbnail, and link-card queues.
+- `M-x chirp-direct-messages` explicitly unlocks XChat before opening an Appkit-owned read-only inbox with fresh conversation views and older-history pagination. Conversations automatically load required key history, project only signature-verified plaintext, and expose an Appkit trailing plain-text composer; reads never send acknowledgments.
+- XChat plain-text sends now use the official XDK for native encryption and signing, submit one fixed GraphQL mutation without automatic retry or optimistic insertion, retain drafts until a validated acknowledgement, and report ambiguous transport outcomes as remotely unknown.
+- Read-only GraphQL operations can refresh stale query IDs from the current bounded `TwitterInternalAPIDocument` API registry without replaying the failed request or affecting write IDs.
 - Inline tweet translation from the actions menu with `T`.
 - Native desktop notifications for account activity.
 - User-handle completion while composing posts.
@@ -17,10 +24,27 @@ history remains available in Git.
 - Persistent user spam phrases and keywords in a plain-text rule file, with `S`/`C-u S` capture from reply content or author names, one shared match scope, and a structured upstream submission form.
 - Mouse-1 controls on visible tweet reply, repost/retweet, like, and bookmark metrics, routed through the existing tweet action commands.
 
+### Breaking Changes
+
+- Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
+- X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
+
 ### Fixed
 
+- Reopening Home or Following, switching back with `TAB`, or recreating a killed primary buffer now restores the corresponding loaded feed without creating another primary view or issuing a redundant initial request.
+- Acknowledged tweet deletion now removes the tweet from both retained primary feeds and updates the active projection without a merge refresh that could preserve the deleted row.
+- Acknowledged XChat sends now bridge disjoint focused fragments through bounded older-history pages before merging one continuous conversation window; focused payloads may omit inbox-only deletion metadata, and inbox continuation may omit a false snapshot-restart flag.
+- Verified XChat image attachments now use Appkit media resources and inline rendering when X provides a trusted URL, while verified reply previews and unsupported attachments no longer remain encrypted placeholders.
+- Videos carried only in X unified cards now expose their native thumbnail and bitrate variants for display and external playback.
+- Photo media now prefers X's `media_url_https` over the tweet short link, and invalid HTML responses no longer become persistent image-cache entries.
+- Structured X view metrics and detail-only bookmark counts now render their numeric values, while unavailable metric counts show only their icon rather than `-`.
+- X GraphQL identities now prefer numeric `rest_id` values over opaque global IDs when routing profile and tweet requests.
+- Direct GraphQL retweets now render the original author and content while preserving the retweeter context.
 - Mention completion no longer moves point back to the `@` character.
 - Tweet and media permalinks no longer appear as trailing links, while genuine external links highlight on hover.
-- Publishing failures no longer trigger automatic post, reply, or quote retries; structured non-retryable errors such as X code `344` now reach the user directly.
+- Publishing and media upload failures no longer trigger automatic mutation retries; structured X errors remain visible, while a response that could contain a partial mutation result is labeled as an unknown remote outcome.
+- Binary multipart uploads and Unicode GraphQL bodies are encoded as unibyte HTTP data, transport setup errors redact session credentials, and unsafe control characters are rejected from authenticated headers.
+- Ambiguous write failures remain visibly warned as an unknown remote outcome so drafts are not silently retried; authenticated POST retrievals disable `url.el` replay, write responses are bounded before copying or parsing, and errors or quits after dispatch cannot leave an unowned request.
+- Recovered XChat keys are now bound to the registered X user for the native session, and outgoing Lisp input can no longer override the signing sender.
 - Likes views now show every returned tweet with its like state active.
 - Reply filtering now recognizes collected affiliate, dating, and drug-spam nickname templates, including the shared `返佣` marker and the combined `FoxLink` + `银狐` signature.

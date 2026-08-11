@@ -1,47 +1,24 @@
 # chirp.el
 
-`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp delegates authentication and data fetching to [`twitter-cli`](https://github.com/public-clis/twitter-cli).
+`chirp.el` is an Emacs browser for X/Twitter for people who want to read, search, inspect, and act on posts without leaving Emacs. Browsing views use dedicated Emacs buffers; read-only text views use Chirp's `special-mode` UI, image views use `image-mode`, and compose buffers remain editable. Chirp sends X web API requests directly through Emacs's `url.el`; Plz/curl is limited to the public, credential-free query-ID registry, while the separate `browser-session` helper is used only for explicit browser login capture.
 
 ## What you can do
 
-Use Chirp to follow timelines, search and inspect posts, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
+Use Chirp to follow timelines, search and inspect posts, read direct messages, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
 
-Chirp is a client around `twitter-cli`, not a replacement for it: authentication, X API compatibility, and network behavior belong to the CLI. Direct messages are not implemented, and publishing outcomes and account limits remain dependent on the external CLI and X.
+Home, Following, search, bookmarks, notifications, user-handle completion, accessible lists and their timelines, threads with full article expansion, profile lookup, profile posts/replies/highlights/media, follower/following account lists, translation, the authenticated account's Likes view, compose, image upload, all current write actions, and XChat direct messages use direct X web APIs. `M-x chirp-direct-messages` requires one user-confirmed XChat unlock before opening the inbox; conversations then load the key history they need, project only signature-verified plaintext, and provide a plain-text composer backed by the official XDK. Direct-message reads never send read acknowledgments, and sends are never retried or inserted optimistically. Verified image attachments use Appkit's media cache and inline renderer when X provides a trusted media URL; unsupported attachments retain explicit summaries.
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer and `twitter-cli` installed and available as `twitter` or `twitter-cli`.
+Chirp requires GNU Emacs 29.1 or newer, Appkit 0.2.1 or newer, Plz 0.8 or newer with `curl`, Transient 0.4.3 or newer, and browser-session 0.1.0 or newer with its external helper. Direct X views and actions require an authenticated X web session.
 
-### Install `twitter-cli`
+### Sign in to X
 
-If you want the `twitter-cli` fork/version currently used by Chirp before upstream merges land, install the `stable` branch from this fork:
+Run `M-x chirp-login`. browser-session opens or attaches to a supported browser at `https://x.com`; sign in there if necessary. Chirp uses the fixed isolated root in `chirp-x-browser-session-profile-root`, which defaults to `(locate-user-emacs-file "chirp/browser-session/")`. It imports only the `auth_token` and `ct0` cookies into `chirp-x-auth-file`, which defaults to `(locate-user-emacs-file "chirp/auth.json")` and has Unix mode `0600`.
 
-```bash
-uv tool install --force "git+https://github.com/LuciusChen/twitter-cli.git@stable"
-```
+After a successful import, ordinary Chirp commands use the private auth file and do not need `chirp-login`. Run `M-x chirp-login` again only to refresh an expired session or switch accounts. Chirp never reads a browser cookie database, copied headers, `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, or `auth-source`. The generic capture file is private and deleted immediately after import; Chirp's provider auth file is the sole account-credential source. Run `M-x chirp-forget-browser-session` to delete it without signing out of the browser.
 
-If you keep a local checkout and want Chirp to follow that checkout directly:
-
-```bash
-cd ~/repos/twitter-cli
-git switch stable
-uv tool install --force -e .
-```
-
-The editable install is convenient for local development, but remember that the active CLI will follow whatever branch that checkout is currently on.
-
-Chirp auto-detects either executable name by default. If your binary lives elsewhere, customize:
-
-```elisp
-(setq chirp-cli-command "/path/to/twitter")
-```
-
-If Emacs does not inherit your shell `PATH`, Chirp also checks a few common user bin directories such as `~/.local/bin`. You can extend that list with:
-
-```elisp
-(setq chirp-cli-search-paths
-      '("~/.local/bin" "~/bin" "/some/other/bin"))
-```
+Configure the browser, proxy, or Firefox/Zen behavior through browser-session's public customization variables before running `chirp-login`. Customize `chirp-x-browser-session-profile-root` only to relocate Chirp's isolated profile; do not point it at a daily-use browser profile. Set `CHIRP_X_BEARER_TOKEN` only if X rotates its public web token. Chirp refreshes read-operation query IDs from the current `TwitterInternalAPIDocument` API registry after a definitive stale-query error; retry the failed read after the refresh, or run `M-x chirp-refresh-query-ids` explicitly. `chirp-x-query-id-overrides` remains authoritative, and write-operation IDs are never selected from the dynamic cache or retried.
 
 ### Load Chirp
 
@@ -50,7 +27,9 @@ If Emacs does not inherit your shell `PATH`, Chirp also checks a few common user
 (require 'chirp)
 ```
 
-Run `M-x chirp-home` to open the For You timeline in a dedicated buffer.
+After a successful login, run `M-x chirp-home` to open the For You timeline in a dedicated buffer.
+
+Direct messages require the optional source-built Rust module. Follow [`native/README.md`](native/README.md) to fetch the pinned official XDK/Juicebox sources, build it, and explicitly configure its absolute path with `chirp-xchat-native-module-file`. Chirp never searches for the module; other Chirp features remain usable when it is absent.
 
 ## Notifications
 
@@ -81,8 +60,11 @@ Tweet translation defaults to Chinese. Customize the target language with:
 ## Entry Points
 
 ```elisp
+M-x chirp-login
+M-x chirp-forget-browser-session
 M-x chirp-home
 M-x chirp-following
+M-x chirp-direct-messages
 M-x chirp-bookmarks
 M-x chirp-likes
 M-x chirp-me
@@ -96,14 +78,19 @@ M-x chirp-profile-following-users
 
 ## Keys
 
+`M-x chirp-home` and `M-x chirp-following` share one primary timeline buffer while retaining independent session-owned posts, pagination, and semantic positions. Reopening either subview, switching back with `TAB`, or recreating a killed buffer restores its canonical state without fetching again; use `g` when you want fresh data.
+
 - `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
 - `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
-- `n` / `p`: next or previous entry; on Home and Following, `n` on the last entry loads more older posts
-- `N`: load more older posts on Home and Following
+- `n` / `p`: next or previous entry or direct-message event; on Home and Following, `n` on the last entry loads more older posts
+- `N`: load more older posts on Home and Following; in the direct-message inbox, load older conversations; in a conversation, load older message history
+- `M-x chirp-dm-cancel-unlock`: cancel an active recovery; because a realm may already have processed the attempt, Chirp reports cancellation as an uncertain outcome and never retries automatically
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
-- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, or open large media when point is on a thumbnail
+- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, open a direct-message conversation from its inbox row, or open large media when point is on a thumbnail
 - `Mouse-1` on a tweet's reply, repost/retweet, like, or bookmark metric opens or toggles that action for the clicked tweet
+- In an XChat conversation, `RET` on the timeline moves to the trailing composer; `RET` in the composer sends plain text, `C-u RET` inserts a newline, and `C-c C-c` explicitly sends
+- In an XChat composer, `M-p` and `M-n` navigate sent-input history; Evil users enter Insert state normally with `i`
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
@@ -124,13 +111,10 @@ Inside the compose buffer:
 - `C-c C-c`: close the draft immediately and send it in the background
 - `C-c C-k`: cancel the draft
 
-With the `twitter-cli` `stable` branch above, Premium accounts can send drafts
-over the standard 280 weighted-character limit. Chirp passes the complete text
-through unchanged, and `twitter-cli` automatically selects its long-form
-posting operation for posts, replies, and quotes.
+Premium accounts can send drafts over the standard 280 weighted-character limit. Chirp computes X's weighted length and selects the direct long-form operation for posts, replies, and quotes. JPEG, PNG, and WebP attachments may be up to 5 MiB; GIF attachments may be up to 15 MiB.
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, and bookmark metrics also provide mouse-1 action controls.
-Every tweet returned by the Likes view is shown with its like state active, even when twitter-cli omits the per-item `favorited` field.
+Every tweet returned by the Likes view is shown with its like state active, even when an upstream payload omits the per-item `favorited` field.
 Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when available.
 
 ## Thread Reply Filtering
@@ -177,7 +161,7 @@ Avatars and tweet media thumbnails can be hidden independently:
 ```
 
 When tweet media thumbnails are hidden, Chirp keeps compact text media entries
-so media commands still work, and shows alt text when twitter-cli provides it.
+so media commands still work, and shows alt text when X provides it.
 
 ## Media
 
@@ -226,12 +210,17 @@ customize the short in-memory backend cache:
 
 ## Notes
 
-- The package expects `twitter-cli --json` to return the documented envelope from `SCHEMA.md`.
-- The parser is deliberately defensive because upstream X payloads can drift.
-- Chirp retries explicit network and server failures only for safely repeatable requests; post, reply, and quote commands are never retried automatically because a lost response can leave the publishing outcome unknown.
-- X application error `344` is a posting-window limit rather than a transport failure; with the current `twitter-cli` stable branch, Chirp reports it without retrying so the account can wait for the window to reset.
-- Timeline "load more" uses `twitter-cli feed --cursor` and appends older posts without re-fetching the already loaded prefix.
-- Automated tests exercise the `twitter-cli` JSON and process boundary without sending live X writes; account limits and network behavior remain external to the test suite.
+- Timelines, search, bookmarks, notifications, threads, core profile views, Likes, XChat direct messages, compose, and tweet mutations use X persisted web GraphQL operations through Emacs's built-in `url.el`. XChat message events are decoded from bounded Base64 Thrift documents; the configured official-XDK module retains key material, binds the recovered registered user as the session's non-overridable signing identity, returns only signature-verified domain data for reads, and prepares opaque encrypted/signed envelopes for one-shot plain-text sends.
+- User typeahead, accessible-list discovery, relationship lists, translation, follow state changes, and multipart media upload use fixed, allowlisted X REST roots through the same transport.
+- Appkit owns Chirp's lazy session lifecycle, Home/Following and direct-message view identity and canonical state, keyed timeline/directory reconciliation, exact chat history windows, persistent composer state, editable chat-mode boundary, position-preserving invalidation, and bounded media, thumbnail, and link-card queues. Media completion invalidates only timeline rows that depend on the completed resource; X protocol state, request semantics, cache paths, tweet rendering, and media geometry remain Chirp-owned.
+- The parser is deliberately defensive because X's web payloads and persisted query IDs can drift. A bounded, unauthenticated registry refresh updates only GET operation IDs; the failed request is not automatically replayed.
+- Direct timeline pagination passes X's bottom cursor to the next GraphQL request without re-fetching the loaded prefix.
+- Post, reply, quote, media INIT/APPEND/FINALIZE, and other write mutations are never retried automatically because a lost response can leave the remote outcome unknown. Authenticated POST retrievals disable `url.el` transport replay, mutation responses are bounded before copying or JSON parsing, and GraphQL errors or failures after dispatch preserve the unknown-outcome warning. Read-only media STATUS checks use bounded polling.
+- Automated tests cover request shaping and response adaptation without sending live X writes. Write smoke tests require explicit opt-in, verify created artifacts, and delete created posts in reverse order.
+
+## Opt-in write smoke
+
+Live publishing checks are deliberately excluded from ERT. With disposable or otherwise approved account credentials configured, run `CHIRP_ALLOW_WRITE_SMOKE=1 emacs -Q --batch -L . -L lisp -l test/chirp-write-smoke.el --eval '(chirp-write-smoke-run)'`. The smoke creates a root post, reply, quote, long-form post, and image post, then deletes them in reverse order; ambiguous write failures are never retried.
 
 ## License
 
