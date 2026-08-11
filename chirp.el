@@ -66,7 +66,7 @@
    (lambda (user _envelope)
      (if-let* ((handle (plist-get user :handle)))
          (chirp-profile-open handle)
-       (message "twitter-cli returned a whoami payload Chirp could not parse.")))
+       (message "X returned an authenticated profile Chirp could not parse.")))
    (lambda (message)
      (message "%s" message))))
 

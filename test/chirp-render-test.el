@@ -142,6 +142,49 @@
      ("author" . (("screenName" . "alice")
                   ("name" . "Alice"))))))
 
+(ert-deftest chirp-normalize-tweet-handles-x-web-graphql-shape ()
+  "X web timeline results should retain authors and legacy media."
+  (let* ((media
+          '(("type" . "photo")
+            ("url" . "https://t.co/photo-link")
+            ("media_url_https" .
+             "https://pbs.twimg.com/media/photo.jpg?format=jpg")
+            ("ext_alt_text" . "Alt text")
+            ("original_info" . (("width" . 1200)
+                                 ("height" . 800)))))
+         (author
+          '(("id" . "VXNlcjo0Mg==")
+            ("rest_id" . "42")
+            ("core" . (("name" . "Alice")
+                        ("screen_name" . "alice")))
+            ("avatar" .
+             (("image_url" .
+               "https://pbs.twimg.com/profile_images/alice.jpg")))))
+         (tweet
+          (chirp-normalize-tweet
+           `(("id" . "VHdlZXQ6MTIz")
+             ("rest_id" . "123")
+             ("legacy" . (("full_text" . "Direct GraphQL payload")
+                          ("bookmark_count" . 16)
+                          ("extended_entities" . (("media" . (,media))))))
+             ("views" . (("count" . 10286969)
+                         ("state" . "EnabledWithCount")))
+             ("core" . (("user_results" . (("result" . ,author)))))))))
+    (should (equal (plist-get tweet :id) "123"))
+    (should (equal (plist-get tweet :text) "Direct GraphQL payload"))
+    (should (equal (plist-get tweet :author-name) "Alice"))
+    (should (equal (plist-get tweet :author-handle) "alice"))
+    (should (equal (plist-get tweet :author-avatar-url)
+                   "https://pbs.twimg.com/profile_images/alice.jpg"))
+    (let ((normalized-media (car (plist-get tweet :media))))
+      (should (equal (plist-get normalized-media :url)
+                     "https://pbs.twimg.com/media/photo.jpg?format=jpg"))
+      (should (equal (plist-get normalized-media :alt) "Alt text"))
+      (should (= (plist-get normalized-media :width) 1200))
+      (should (= (plist-get normalized-media :height) 800)))
+    (should (= (plist-get tweet :bookmark-count) 16))
+    (should (= (plist-get tweet :view-count) 10286969))))
+
 (ert-deftest chirp-normalize-tweet-strips-short-urls-and-keeps-article-fields ()
   "Short links should be removed from display text while article data survives."
   (let ((tweet (chirp-test--sample-article-tweet)))
@@ -151,6 +194,58 @@
     (should (equal (plist-get tweet :article-title) "Longform title"))
     (should (equal (chirp-tweet-article-preview tweet 80)
                    "First paragraph with details."))))
+
+(ert-deftest chirp-normalize-tweet-renders-x-article-rich-content ()
+  "Direct X article content should preserve structure, links, and images."
+  (let* ((raw
+          '(("rest_id" . "123")
+            ("legacy" . (("full_text" . "Article preview")))
+            ("article" .
+             (("article_results" .
+               (("result" .
+                 (("title" . "Longform title")
+                  ("content_state" .
+                   (("blocks" .
+                     ((("type" . "header-one") ("text" . "Introduction"))
+                      (("type" . "unstyled")
+                       ("text" . "Read docs")
+                       ("entityRanges" .
+                        ((("key" . 0) ("offset" . 5) ("length" . 4)))))
+                      (("type" . "unordered-list-item")
+                       ("text" . "First item"))
+                      (("type" . "atomic")
+                       ("text" . "")
+                       ("entityRanges" .
+                        ((("key" . 1) ("offset" . 0) ("length" . 0)))))))
+                    ("entityMap" .
+                     (("0" . (("type" . "LINK")
+                               ("data" .
+                                (("url" . "https://example.com/docs")))))
+                      ("1" . (("type" . "IMAGE")
+                               ("data" .
+                                (("caption" . "Cover")
+                                 ("mediaItems" .
+                                  ((("mediaId" . "media-1"))
+                                   (("mediaId" . "media-2")
+                                    ("caption" . "Detail"))))))))))))
+                  ("media_entities" .
+                   ((("media_id" . "media-1")
+                     ("media_info" .
+                      (("original_img_url" .
+                        "https://pbs.twimg.com/media/cover.jpg"))))
+                    (("media_id" . "media-2")
+                     ("media_info" .
+                      (("original_img_url" .
+                        "https://pbs.twimg.com/media/detail.jpg"))))))))))))))
+         (tweet (chirp-normalize-tweet raw)))
+    (should (equal (plist-get tweet :article-title) "Longform title"))
+    (should
+     (equal (plist-get tweet :article-text)
+            (concat "# Introduction\n\n"
+                    "Read [docs](https://example.com/docs)\n\n"
+                    "- First item\n\n"
+                    "![Cover](https://pbs.twimg.com/media/cover.jpg)\n\n"
+                    "![Detail](https://pbs.twimg.com/media/detail.jpg)")))))
 
 (ert-deftest chirp-render-insert-tweet-shows-cached-translation ()
   "A cached translation should render directly below the original text."
@@ -287,6 +382,34 @@
   (let ((tweet (chirp-test--sample-retweeted-tweet)))
     (should (equal (plist-get tweet :retweeted-by) "dotey"))))
 
+(ert-deftest chirp-normalize-tweet-unwraps-x-retweet-results ()
+  "X retweet wrappers should render the original tweet with social context."
+  (let* ((retweeter
+          '(("rest_id" . "10")
+            ("legacy" . (("screen_name" . "alice")
+                         ("name" . "Alice")))))
+         (author
+          '(("rest_id" . "20")
+            ("legacy" . (("screen_name" . "bob")
+                         ("name" . "Bob")))))
+         (original
+          `(("rest_id" . "200")
+            ("core" . (("user_results" . (("result" . ,author)))))
+            ("legacy" . (("full_text" . "Original post")))))
+         (tweet
+          (chirp-normalize-tweet
+           `(("rest_id" . "100")
+             ("isPromoted" . t)
+             ("core" . (("user_results" . (("result" . ,retweeter)))))
+             ("legacy" .
+              (("full_text" . "RT @bob: Original post")
+               ("retweeted_status_result" . (("result" . ,original)))))))))
+    (should (equal (plist-get tweet :id) "200"))
+    (should (equal (plist-get tweet :text) "Original post"))
+    (should (equal (plist-get tweet :author-handle) "bob"))
+    (should (equal (plist-get tweet :retweeted-by) "alice"))
+    (should (plist-get tweet :promoted-p))))
+
 (ert-deftest chirp-normalize-user-parses-structured-profile-payload-with-blank-name ()
   "Structured profile payloads should survive blank display-name fields."
   (let ((user (chirp-normalize-user
@@ -308,6 +431,29 @@
     (should (= (plist-get user :posts) 59745))
     (should (plist-get user :viewer-following-p))
     (should-not (plist-get user :viewer-followed-by-p))))
+
+(ert-deftest chirp-normalize-user-handles-current-x-profile-shape ()
+  "Current X profile fields should retain biography and account counts."
+  (let ((user
+         (chirp-normalize-user
+          '(("id" . "VXNlcjo0Mg==")
+            ("rest_id" . "42")
+            ("core" . (("name" . "Alice")
+                       ("screen_name" . "alice")
+                       ("created_at" . "Mon Jan 01 00:00:00 +0000 2024")))
+            ("profile_bio" . (("description" . "Emacs user")))
+            ("relationship_counts" . (("followers" . 120)
+                                       ("following" . 30)))
+            ("tweet_counts" . (("tweets" . 450)))
+            ("avatar" . (("image_url" . "https://example.com/avatar.jpg")))
+            ("relationship_perspectives" . (("following" . t)))))))
+    (should (equal (plist-get user :id) "42"))
+    (should (equal (plist-get user :handle) "alice"))
+    (should (equal (plist-get user :bio) "Emacs user"))
+    (should (= (plist-get user :followers) 120))
+    (should (= (plist-get user :following) 30))
+    (should (= (plist-get user :posts) 450))
+    (should (plist-get user :viewer-following-p))))
 
 (ert-deftest chirp-render-insert-tweet-renders-expanded-links-and-article-preview ()
   "Tweet rendering should show expanded links and article metadata."
