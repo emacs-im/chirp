@@ -167,8 +167,10 @@ cancelled, the attachment is removed, or the send completes."
 
 (defun chirp-actions--show-error (message)
   "Show MESSAGE as a condensed action failure."
-  (message "Chirp action failed: %s"
-           (replace-regexp-in-string "[\r\n]+" "  " message)))
+  (let ((condensed (replace-regexp-in-string "[\r\n]+" "  " message)))
+    (if (string-prefix-p "X write outcome is unknown" condensed)
+        (display-warning 'chirp condensed :warning)
+      (message "Chirp action failed: %s" condensed))))
 
 (defun chirp-actions--refresh-current-view ()
   "Refresh the current Chirp view."
@@ -182,14 +184,15 @@ cancelled, the attachment is removed, or the send completes."
       (chirp-actions--refresh-current-view))))
 
 (defun chirp-actions--refresh-user-buffer-if-needed (buffer)
-  "Refresh BUFFER after a user action when it currently shows a user entry."
+  "Refresh BUFFER after a user action when it is a profile or user list."
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
-               (eq (plist-get (chirp-entry-at-point) :kind) 'user)))
+               (or chirp--profile-handle
+                   (eq (plist-get (chirp-entry-at-point) :kind) 'user))))
     (chirp-actions--refresh-buffer buffer)))
 
 (defun chirp-actions--perform (args on-success &optional on-error)
-  "Run twitter-cli ARGS and call ON-SUCCESS with the decoded payload.
+  "Run backend action ARGS and call ON-SUCCESS with the decoded payload.
 
 When ON-ERROR is non-nil, call it with the human-readable error message."
   (chirp-backend-request
@@ -658,24 +661,12 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
         (user-error "Text cannot be empty")
       text)))
 
-(defun chirp-compose--image-args ()
-  "Return command arguments for current draft attachments."
-  (let (args)
-    (dolist (path chirp-compose-attachments)
-      (setq args (append args (list "-i" path))))
-    args))
-
-(defun chirp-compose--command-args ()
-  "Return twitter-cli arguments for the current draft."
-  (let ((text (chirp-compose--body-text))
-        (image-args (chirp-compose--image-args)))
-    (pcase chirp-compose-kind
-      ('reply
-       (append (list "reply" chirp-compose-target-id text) image-args))
-      ('quote
-       (append (list "quote" chirp-compose-target-id text) image-args))
-      (_
-       (append (list "post" text) image-args)))))
+(defun chirp-compose--draft ()
+  "Return the current compose buffer as a structured backend draft."
+  (list :kind chirp-compose-kind
+        :text (chirp-compose--body-text)
+        :target-id chirp-compose-target-id
+        :attachments (copy-sequence chirp-compose-attachments)))
 
 (defun chirp-compose-send ()
   "Send the current draft."
@@ -684,7 +675,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     (user-error "Draft is already sending"))
   (let* ((compose-buffer (current-buffer))
          (source-buffer chirp-compose-source-buffer)
-         (args (chirp-compose--command-args))
+         (draft (chirp-compose--draft))
          (temp-attachments (chirp-compose--take-temp-attachments))
          (success-message
           (pcase chirp-compose-kind
@@ -699,13 +690,19 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     (setq-local chirp-compose-sending t)
     (condition-case err
         (progn
-          (chirp-actions--perform
-           args
+          (chirp-backend-compose
+           :kind (plist-get draft :kind)
+           :text (plist-get draft :text)
+           :target-id (plist-get draft :target-id)
+           :attachments (plist-get draft :attachments)
+           :callback
            (lambda (_data _envelope)
+             (chirp-backend-clear-cache)
              (chirp-compose--cleanup-files temp-attachments)
              (when (buffer-live-p source-buffer)
                (chirp-actions--refresh-buffer source-buffer))
              (message "%s" success-message))
+           :errback
            (lambda (message)
              (chirp-compose--cleanup-files temp-attachments)
              (chirp-actions--show-error message)))
@@ -877,7 +874,7 @@ When TWEET is non-nil, use it as the reply or quote target."
               t)
              (message "Translated to %s." destination))
          (chirp-actions--show-error
-          "No translated text returned by twitter-cli")))
+          "No translated text returned by X")))
      #'chirp-actions--show-error)))
 
 (transient-define-prefix chirp-dispatch ()

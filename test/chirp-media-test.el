@@ -270,6 +270,31 @@ rerender and creates a CPU loop."
                            (plist-get media :variants))
                    '("https://high.mp4" "https://low.mp4")))))
 
+(ert-deftest chirp-normalize-tweet-reads-unified-card-video-media ()
+  "Tweet normalization should expose playable unified-card video variants."
+  (let* ((card
+          (concat
+           "{\"media_entities\":{\"13_1\":{"
+           "\"type\":\"video\","
+           "\"media_url_https\":\"https://example.com/poster.jpg\","
+           "\"original_info\":{\"width\":720,\"height\":1280},"
+           "\"video_info\":{\"variants\":[{"
+           "\"bitrate\":2176000,"
+           "\"url\":\"https://example.com/video.mp4\"}]}}}}"))
+         (tweet
+          (chirp-normalize-tweet
+           `(("rest_id" . "1")
+             ("legacy" . (("full_text" . "video")))
+             ("card" .
+              (("legacy" .
+                (("binding_values" .
+                  ((("key" . "unified_card")
+                    ("value" . (("string_value" . ,card)))))))))))))
+         (media (car (plist-get tweet :media))))
+    (should (equal (plist-get media :type) "video"))
+    (should (equal (chirp-media-playback-url media)
+                   "https://example.com/video.mp4"))))
+
 (ert-deftest chirp-media-quit-restores-source-buffer-point ()
   "Closing media should restore point and scroll state in the source buffer."
   (let ((source (generate-new-buffer " *chirp-media-source*"))

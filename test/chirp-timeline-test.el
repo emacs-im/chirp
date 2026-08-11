@@ -419,13 +419,16 @@
         seen-prompt
         seen-collection)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-backend-lists-sync)
-                   (lambda ()
-                     '((("id" . "1956792682412345678")
-                        ("name" . "Emacs")
-                        ("mode" . "private")
-                        ("sources" . ("owned"))
-                        ("owner" . (("screenName" . "lucius")))))))
+        (cl-letf (((symbol-function 'chirp-backend-lists)
+                   (lambda (callback &optional _errback)
+                     (funcall
+                      callback
+                      '((("id" . "1956792682412345678")
+                         ("name" . "Emacs")
+                         ("mode" . "private")
+                         ("sources" . ("owned"))
+                         ("owner" . (("screenName" . "lucius")))))
+                      nil)))
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _args)
                      (setq seen-prompt prompt
@@ -453,6 +456,24 @@
           (should (equal (nth 3 render-args) '((:id "1")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest chirp-timeline-list-picker-ignores-a-dead-target-buffer ()
+  "Delayed list discovery should not prompt after its target buffer dies."
+  (let ((buffer (generate-new-buffer " *chirp-list-dead-test*"))
+        callback
+        prompted)
+    (cl-letf (((symbol-function 'chirp-backend-lists)
+               (lambda (success &optional _errback)
+                 (setq callback success)))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _args)
+                 (setq prompted t))))
+      (chirp-timeline-open-list nil buffer)
+      (kill-buffer buffer)
+      (funcall callback
+               '((("id" . "1") ("name" . "One")))
+               nil))
+    (should-not prompted)))
 
 (ert-deftest chirp-timeline-open-list-uses-list-title-and-renderer ()
   "List view should fetch tweets and render under a list-specific title."

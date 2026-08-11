@@ -72,13 +72,12 @@
         (format "%s (%s)" name (string-join parts " · "))
       name)))
 
-(defun chirp-timeline--read-list-target ()
-  "Prompt for one accessible list and return its id."
-  (let* ((lists (chirp-backend-lists-sync))
-         (choices (mapcar (lambda (list-info)
+(defun chirp-timeline--read-list-target (lists)
+  "Prompt for one accessible list from LISTS and return its id."
+  (let ((choices (mapcar (lambda (list-info)
                             (cons (chirp-timeline--list-candidate list-info)
                                   (chirp-get list-info "id")))
-                          lists)))
+                         lists)))
     (unless choices
       (user-error "No accessible lists found"))
     (cdr (assoc (completing-read
@@ -492,7 +491,7 @@ When HANDLE is nil, resolve the currently authenticated account first."
                 buffer
                 title
                 (lambda () (chirp-timeline-open-likes nil buffer))
-                "twitter-cli returned a whoami payload Chirp could not parse."))))
+                "X returned a whoami payload Chirp could not parse."))))
          (lambda (message)
            (when (chirp-request-current-p buffer token)
              (chirp-timeline--set-kind buffer nil)
@@ -507,26 +506,39 @@ When HANDLE is nil, resolve the currently authenticated account first."
 
 LIST-TARGET may be a numeric list id or a full list URL."
   (interactive)
-  (let* ((buffer (or buffer (chirp-buffer)))
-         (target (or list-target
-                     (chirp-timeline--read-list-target)))
-         (clean-target (string-trim (format "%s" target)))
-         (title (chirp-timeline--list-title clean-target))
-         (refresh (lambda () (chirp-timeline-open-list clean-target buffer))))
-    (when (string-empty-p clean-target)
-      (user-error "List ID or URL cannot be empty"))
-    (let ((token (chirp-begin-background-request buffer title)))
-      (chirp-timeline--set-kind buffer nil)
-      (chirp-backend-list
-       clean-target
-       (lambda (tweets _envelope)
-         (when (chirp-request-current-p buffer token)
-           (chirp-timeline--render
-            buffer title refresh tweets :display-p t)))
-       (lambda (message)
-         (when (chirp-request-current-p buffer token)
-           (chirp-timeline--set-kind buffer nil)
-           (chirp-show-error buffer title refresh message)))))))
+  (let ((buffer (or buffer (chirp-buffer))))
+    (if (null list-target)
+        (let ((token (chirp-begin-request buffer)))
+          (message "Loading X lists...")
+          (chirp-backend-lists
+           (lambda (lists _envelope)
+             (when (chirp-request-current-p buffer token)
+               (condition-case err
+                   (chirp-timeline-open-list
+                    (chirp-timeline--read-list-target lists) buffer)
+                 (quit nil)
+                 (user-error (message "%s" (error-message-string err))))))
+           (lambda (message)
+             (when (chirp-request-current-p buffer token)
+               (message "Chirp list lookup failed: %s" message)))))
+      (let* ((clean-target (string-trim (format "%s" list-target)))
+             (title (chirp-timeline--list-title clean-target))
+             (refresh
+              (lambda () (chirp-timeline-open-list clean-target buffer))))
+        (when (string-empty-p clean-target)
+          (user-error "List ID or URL cannot be empty"))
+        (let ((token (chirp-begin-background-request buffer title)))
+          (chirp-timeline--set-kind buffer nil)
+          (chirp-backend-list
+           clean-target
+           (lambda (tweets _envelope)
+             (when (chirp-request-current-p buffer token)
+               (chirp-timeline--render
+                buffer title refresh tweets :display-p t)))
+           (lambda (message)
+             (when (chirp-request-current-p buffer token)
+               (chirp-timeline--set-kind buffer nil)
+               (chirp-show-error buffer title refresh message)))))))))
 
 (defun chirp-timeline-open-search (query &optional buffer)
   "Open search results for QUERY in BUFFER."

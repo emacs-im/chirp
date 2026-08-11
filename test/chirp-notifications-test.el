@@ -8,14 +8,62 @@
 (require 'cl-lib)
 (require 'chirp-notifications)
 
-(ert-deftest chirp-backend-notifications-builds-minimal-command ()
-  "Notification requests should only pass the command and result limit."
-  (let (captured-args)
-    (cl-letf (((symbol-function 'chirp-backend-request)
-               (lambda (args _callback &optional _errback)
-                 (setq captured-args args))))
-      (chirp-backend-notifications #'ignore nil 12))
-    (should (equal captured-args '("notifications" "--max" "12")))))
+(defun chirp-notifications-test--timeline-payload (entries)
+  "Return a notification timeline payload containing ENTRIES."
+  (let ((value `(("instructions" . ((("entries" . ,entries)))))))
+    (dolist (key (reverse '("data" "viewer_v2" "user_results" "result"
+                            "notification_timeline" "timeline"))
+                  value)
+      (setq value (list (cons key value))))))
+
+(ert-deftest chirp-backend-notifications-use-direct-timeline ()
+  "Notification requests should adapt X GraphQL activities and pagination."
+  (let* ((notification
+          '(("entryId" . "notification-entry")
+            ("content" .
+             (("itemContent" .
+               (("id" . "notification-1")
+                ("notification_icon" . "heart_icon")
+                ("rich_message" . (("text" . "Alice liked your post")))
+                ("timestamp_ms" . "1700000000000")
+                ("template" .
+                 (("target_objects" .
+                   ((("tweet_results" .
+                      (("result" .
+                        (("rest_id" . "123")
+                         ("legacy" . (("full_text" . "Post"))))))))))))))))))
+         (cursor
+          '(("entryId" . "cursor-bottom")
+            ("content" . (("cursorType" . "Bottom")
+                           ("value" . "next")))))
+         (payload (chirp-notifications-test--timeline-payload
+                   (list notification cursor)))
+         operation variables result envelope failure)
+    (cl-letf
+        (((symbol-function 'chirp-x-graphql-request)
+          (lambda (request-operation request-variables callback &rest _options)
+            (setq operation request-operation
+                  variables request-variables)
+            (funcall callback payload))))
+      (chirp-backend-notifications
+       (lambda (notifications response-envelope)
+         (setq result notifications
+               envelope response-envelope))
+       (lambda (message)
+         (setq failure message))
+       12))
+    (should-not failure)
+    (should (equal (plist-get operation :name) "NotificationsTimeline"))
+    (should (equal variables
+                   '(("timeline_type" . "All") ("count" . 12))))
+    (should
+     (equal result
+            '((("id" . "notification-1")
+               ("type" . "like")
+               ("message" . "Alice liked your post")
+               ("timestampMs" . "1700000000000")
+               ("tweetId" . "123")))))
+    (should (equal (chirp-backend-envelope-next-cursor envelope) "next"))))
 
 (ert-deftest chirp-notifications-first-check-is-baseline-and-new-items-notify-once ()
   "The first response seeds ids; later unseen activities notify once."

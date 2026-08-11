@@ -234,7 +234,7 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
     (list tweet-or-url)))
 
 (defun chirp-thread--article-fetch-needed-p (tweet)
-  "Return non-nil when TWEET should be enriched via `twitter article'."
+  "Return non-nil when TWEET needs direct article enrichment."
   (and (plist-get tweet :id)
        (not (chirp-first-nonblank (plist-get tweet :article-text)))
        (or (chirp-first-nonblank (plist-get tweet :article-title))

@@ -90,30 +90,34 @@ Return a list of (compose source foreign)."
   "Sending should close the compose buffer before the backend replies."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "hello world")))
-    (let (captured-args)
+    (let (captured-draft)
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (args _on-success &optional _on-error)
-                         (setq captured-args args))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest draft)
+                         (setq captured-draft draft))))
               (with-current-buffer compose
                 (chirp-compose-send)))
-            (should (equal captured-args '("post" "hello world")))
+            (should (eq (plist-get captured-draft :kind) 'post))
+            (should (equal (plist-get captured-draft :text) "hello world"))
+            (should-not (plist-get captured-draft :attachments))
             (should-not (buffer-live-p compose)))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
           (kill-buffer source))))))
 
-(ert-deftest chirp-compose-command-args-preserves-long-form-text ()
-  "Long-form drafts should reach twitter-cli without truncation."
+(ert-deftest chirp-compose-draft-preserves-long-form-text ()
+  "Structured long-form drafts should reach the backend without truncation."
   (let ((body (make-string 281 ?x)))
     (pcase-let ((`(,compose . ,source)
                  (chirp-test--make-compose-buffer body)))
       (unwind-protect
           (with-current-buffer compose
-            (should (equal (chirp-compose--command-args)
-                           (list "post" body))))
+            (let ((draft (chirp-compose--draft)))
+              (should (eq (plist-get draft :kind) 'post))
+              (should (equal (plist-get draft :text) body))
+              (should-not (plist-get draft :attachments))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -132,9 +136,10 @@ Return a list of (compose source foreign)."
             (with-current-buffer compose
               (setq-local chirp-compose-attachments (list temp-file))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (_args on-success &optional _on-error)
-                         (setq success-callback on-success))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest draft)
+                         (setq success-callback
+                               (plist-get draft :callback)))))
               (with-current-buffer compose
                 (chirp-compose-send)))
             (should (functionp success-callback))
@@ -148,20 +153,105 @@ Return a list of (compose source foreign)."
         (when (file-exists-p temp-file)
           (delete-file temp-file))))))
 
+(ert-deftest chirp-compose-send-cleans-temp-files-after-failure ()
+  "Temporary attachments should be removed when an async send fails."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "failed photo post")))
+    (let* ((temp-file (make-temp-file "chirp-compose-test-" nil ".png"))
+           error-callback
+           reported)
+      (unwind-protect
+          (progn
+            (with-current-buffer compose
+              (setq-local chirp-compose-attachments (list temp-file))
+              (setq-local chirp-compose-temp-attachments (list temp-file)))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest draft)
+                         (setq error-callback (plist-get draft :errback))))
+                      ((symbol-function 'chirp-actions--show-error)
+                       (lambda (message)
+                         (setq reported message))))
+              (with-current-buffer compose
+                (chirp-compose-send))
+              (should (file-exists-p temp-file))
+              (funcall error-callback "upload failed"))
+            (should-not (file-exists-p temp-file))
+            (should (equal reported "upload failed")))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))
+        (when (file-exists-p temp-file)
+          (delete-file temp-file))))))
+
+(ert-deftest chirp-compose-stop-during-upload-cleans-temp-files ()
+  "Stopping during media processing should settle and clean detached files."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "stopped photo post")))
+    (let ((chirp--app nil)
+          (temp-file (make-temp-file "chirp-compose-test-" nil ".png"))
+          (request-count 0)
+          reported)
+      (unwind-protect
+          (progn
+            (write-region "png" nil temp-file nil 'silent)
+            (with-current-buffer compose
+              (setq-local chirp-compose-attachments (list temp-file))
+              (setq-local chirp-compose-temp-attachments (list temp-file)))
+            (cl-letf (((symbol-function 'chirp-x--request)
+                       (lambda (_url _method callback &rest _options)
+                         (funcall
+                          callback
+                          (pcase (cl-incf request-count)
+                            (1 '(("media_id_string" . "7")))
+                            (2 (make-hash-table :test #'equal))
+                            (_ '(("processing_info" .
+                                  (("state" . "pending")
+                                   ("check_after_secs" . 30)))))))))
+                      ((symbol-function 'chirp-actions--show-error)
+                       (lambda (message)
+                         (setq reported message))))
+              (with-current-buffer compose
+                (chirp-compose-send))
+              (should (file-exists-p temp-file))
+              (chirp-stop))
+            (should-not (file-exists-p temp-file))
+            (should (string-prefix-p "X write outcome is unknown" reported)))
+        (chirp-stop)
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))
+        (when (file-exists-p temp-file)
+          (delete-file temp-file))))))
+
+(ert-deftest chirp-actions-warns-when-a-write-outcome-is-unknown ()
+  "Ambiguous write failures should remain visible and discourage retrying."
+  (let (warning)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (type message level &rest _args)
+                 (setq warning (list type message level)))))
+      (chirp-actions--show-error
+       (concat "X write outcome is unknown; the request may have succeeded. "
+               "Check X before trying again.")))
+    (should (eq (car warning) 'chirp))
+    (should (eq (nth 2 warning) :warning))
+    (should (string-match-p "may have succeeded" (cadr warning)))))
+
 (ert-deftest chirp-compose-send-rejects-duplicate-submit ()
   "Sending should reject a second submit while a draft is marked in flight."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "duplicate")))
-    (let ((perform-count 0))
+    (let ((request-count 0))
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
+            (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest _args)
-                         (setq perform-count (1+ perform-count)))))
+                         (setq request-count (1+ request-count)))))
               (with-current-buffer compose
                 (setq-local chirp-compose-sending t)
                 (should-error (chirp-compose-send) :type 'user-error)))
-            (should (= perform-count 0)))
+            (should (= request-count 0)))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -304,17 +394,19 @@ Return a list of (compose source foreign)."
                        :id "123"
                        :author-handle "alice"
                        :url "https://x.com/alice/status/123"))))
-    (let (captured-args)
+    (let (captured-draft)
       (unwind-protect
           (progn
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (args _on-success &optional _on-error)
-                         (setq captured-args args))))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest draft)
+                         (setq captured-draft draft))))
               (with-current-buffer compose
                 (goto-char (marker-position chirp-compose-body-start-marker))
                 (insert "hello quote")
                 (chirp-compose-send)))
-            (should (equal captured-args '("quote" "123" "hello quote")))
+            (should (eq (plist-get captured-draft :kind) 'quote))
+            (should (equal (plist-get captured-draft :target-id) "123"))
+            (should (equal (plist-get captured-draft :text) "hello quote"))
             (should-not (buffer-live-p compose))
             (should (eq (window-buffer (selected-window)) source)))
         (dolist (buffer (list compose source foreign))
@@ -347,8 +439,8 @@ Return a list of (compose source foreign)."
               (setq-local chirp-compose-body-start-marker (copy-marker (point-min)))
               (insert "hello world")
               (setq-local chirp-compose-body-end-marker (copy-marker (point-max) t)))
-            (cl-letf (((symbol-function 'chirp-actions--perform)
-                       (lambda (_args _on-success &optional _on-error)
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest _draft)
                          nil)))
               (with-current-buffer compose
                 (chirp-compose-send)))
@@ -545,6 +637,21 @@ Return a list of (compose source foreign)."
          (chirp-unfollow-user-at-point)
          (should (equal captured-args '("unfollow" "alice")))
          (should refreshed))))))
+
+(ert-deftest chirp-follow-success-refreshes-profile-after-point-moves ()
+  "Profile refresh should not depend on point remaining on the user summary."
+  (let (refreshed)
+    (chirp-test--with-tweet-buffer
+     '(:kind tweet :id "123")
+     (lambda (buffer)
+       (with-current-buffer buffer
+         (setq-local chirp--profile-handle "alice"))
+       (cl-letf (((symbol-function 'chirp-actions--refresh-buffer)
+                  (lambda (target)
+                    (should (eq target buffer))
+                    (setq refreshed t))))
+         (chirp-actions--refresh-user-buffer-if-needed buffer))))
+    (should refreshed)))
 
 (ert-deftest chirp-translate-at-point-caches-and-renders-result ()
   "Translation should be stored on the current tweet and trigger a rerender."
