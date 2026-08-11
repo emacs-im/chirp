@@ -82,40 +82,143 @@ rerender and creates a CPU loop."
                           thumbnail-file
                           '("ffmpeg")
                           (lambda (&rest _args)
-                            (setq callback-called t)))
+                            (setq callback-called t))
+                          nil)
                          thumbnail-file))
           (should-not callback-called))
       (when (file-exists-p thumbnail-file)
         (delete-file thumbnail-file)))))
 
-(ert-deftest chirp-media-prefetch-callback-errors-are-reported-and-queue-advances ()
-  "A failed media callback should warn and not block later callbacks or jobs."
-  (let ((chirp-media--prefetch-pending (make-hash-table :test #'equal))
-        (chirp-media--prefetch-active 1)
+(ert-deftest chirp-media-prefetch-replaces-html-masquerading-as-an-image ()
+  "An HTML response must not become a persistent image-cache hit."
+  (let* ((chirp--app nil)
+         (chirp-cache-directory (make-temp-file "chirp-media-cache-" t))
+         (url "https://x.com/alice/status/1/photo/1")
+         (path (chirp-media--cache-file url "media" "jpg"))
+         queued-key)
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "<!DOCTYPE html><title>X post</title>"))
+          (should-not (chirp-media-cached-file url "media" "jpg"))
+          (cl-letf (((symbol-function 'chirp-media--prefetch-enabled-p)
+                     (lambda () t))
+                    ((symbol-function 'chirp-media--task-queue)
+                     (lambda (&rest _args) 'queue))
+                    ((symbol-function 'appkit-task-queue-submit)
+                     (lambda (_queue key _starter &rest _options)
+                       (setq queued-key key))))
+            (should (equal (chirp-media-prefetch-file url "media" "jpg")
+                           path)))
+          (should (equal queued-key path))
+          (should-not (file-exists-p path)))
+      (chirp-stop)
+      (delete-directory chirp-cache-directory t))))
+
+(ert-deftest chirp-media-image-resource-retries-and-binds-cache-to-source ()
+  "Image retries should be explicit, source-bound, and lifecycle-safe."
+  (let ((chirp--app nil)
+        (buffer (generate-new-buffer " *chirp-media-resource*"))
+        callbacks cache-bases curl-defaults view store entry)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (chirp-view-mode)
+            (setq view
+                  (appkit-attach-view
+                   :app (chirp-app)
+                   :id '(test media-resource)
+                   :state '(:type test)
+                   :mode 'chirp-view-mode
+                   :sync-function #'ignore
+                   :parts nil)))
+          (setq store (appkit-app-resource-store (chirp-app)))
+          (cl-letf (((symbol-function 'chirp-media--prefetch-enabled-p)
+                     (lambda () t))
+                    ((symbol-function 'appkit-media-image-cache-existing-file)
+                     (lambda (_cache-base) nil))
+                    ((symbol-function 'appkit-media-cache-image-resource-async)
+                     (lambda (_resource cache-base success error &rest _options)
+                       (push (cons success error) callbacks)
+                       (push cache-base cache-bases)
+                       (push (copy-sequence plz-curl-default-args)
+                             curl-defaults)
+                       nil)))
+            (chirp-media-request-image-resource
+             view 'photo "https://pbs.twimg.com/media/one.jpg")
+            (chirp-media-request-image-resource
+             view 'photo "https://pbs.twimg.com/media/two.jpg")
+            (should (= (length callbacks) 2))
+            (should-not (equal (car cache-bases) (cadr cache-bases)))
+            (funcall (car (cadr callbacks)) "/tmp/stale-source.jpg")
+            (should (eq (plist-get (gethash 'photo store) :status) 'pending))
+            (funcall (cdar callbacks) "transient failure")
+            (should (eq (plist-get (gethash 'photo store) :status) 'failed))
+            (chirp-media-request-image-resource
+             view 'photo "https://pbs.twimg.com/media/two.jpg")
+            (should (= (length callbacks) 3))
+            (let ((invalid (make-temp-file "chirp-image-" nil ".img")))
+              (with-temp-file invalid
+                (insert "<!DOCTYPE html><title>not an image</title>"))
+              (funcall (caar callbacks) invalid)
+              (should-not (file-exists-p invalid))
+              (should (eq (plist-get (gethash 'photo store) :status)
+                          'failed)))
+            (chirp-media-request-image-resource
+             view 'photo "https://pbs.twimg.com/media/two.jpg")
+            (should (= (length callbacks) 4))
+            (should (equal (caar curl-defaults) "--disable"))
+            (should-not (member "--location" (car curl-defaults)))
+            (should-not (member "--cookie" (car curl-defaults)))
+            (setq entry (gethash 'photo store))
+            (chirp-stop)
+            (funcall (caar callbacks) "/tmp/stale-image.jpg")
+            (should (eq (plist-get entry :status) 'pending))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-media-prefetch-callback-errors-are-reported-and-isolated ()
+  "A failed media callback should warn without blocking later callbacks."
+  (let ((chirp--app nil)
         (path "/tmp/chirp-prefetch-test.jpg")
         warning
-        later-called
-        queue-advanced)
+        later-called)
     (puthash path
              (list (lambda (&rest _args)
                      (error "prefetch callback failed"))
                    (lambda (_success _path)
                      (setq later-called t)))
-             chirp-media--prefetch-pending)
+             (chirp-media--pending-table 'prefetch))
     (cl-letf (((symbol-function 'display-warning)
                (lambda (type message &rest _args)
-                 (setq warning (list type message))))
-              ((symbol-function 'chirp-media--start-next-prefetch)
-               (lambda ()
-                 (setq queue-advanced t))))
-      (chirp-media--prefetch-finish path t))
+                 (setq warning (list type message)))))
+      (chirp-media--prefetch-finish path t nil))
     (should later-called)
-    (should queue-advanced)
-    (should (= chirp-media--prefetch-active 0))
     (should (eq (car warning) 'chirp-media))
     (should (string-match-p
              "prefetch callback failed for /tmp/chirp-prefetch-test.jpg"
-             (cadr warning)))))
+             (cadr warning)))
+    (chirp-stop)))
+
+(ert-deftest chirp-media-task-queues-belong-to-the-lazy-appkit-runtime ()
+  "Media queues should share Appkit lifecycle ownership and adjustable limits."
+  (let ((chirp--app nil))
+    (unwind-protect
+        (let* ((queue (chirp-media--task-queue 'prefetch 1))
+               (runtime (chirp--session-media-runtime (chirp--session))))
+          (should (appkit-task-queue-live-p queue))
+          (should (eq (appkit-task-queue-owner queue) (chirp-app)))
+          (should (eq queue (chirp-media--task-queue 'prefetch 2)))
+          (should (= (appkit-task-queue-limit queue) 2))
+          (should (eq queue
+                      (chirp-media--runtime-prefetch-tasks runtime)))
+          (chirp-stop)
+          (should-not (appkit-task-queue-live-p queue))
+          (should-not
+           (eq runtime
+               (chirp-media--runtime))))
+      (chirp-stop))))
 
 (ert-deftest chirp-media-prefetch-tweet-recurses-into-quoted-tweet ()
   "Quoted tweet media should also be prefetched."
