@@ -1,0 +1,35 @@
+[package]
+name = "chirp-xchat-native"
+version = "0.2.2"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["juicebox"]
+juicebox = ["chat-xdk-core/juicebox", "dep:tokio"]
+test-vector = ["chat-xdk-core/internals"]
+
+[dependencies]
+base64 = "0.22"
+chat-xdk-core = { path = "../.deps/chat-xdk/crates/core", default-features = false }
+emacs = "=0.21.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["macros", "rt", "time"], optional = true }
+url = "2.5"
+zeroize = "1.7"
+
+[dev-dependencies]
+async-trait = "0.1"
+
+[patch.crates-io]
+thrift = { path = "../.deps/thrift/lib/rs" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
