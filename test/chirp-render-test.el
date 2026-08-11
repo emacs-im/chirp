@@ -896,6 +896,14 @@
             (should-not (get-text-property position 'mouse-face))))
         (should buffer-read-only)))))
 
+(ert-deftest chirp-render-metric-string-omits-missing-count-placeholder ()
+  "Metrics with unavailable counts should retain only their action icon."
+  (cl-letf (((symbol-function 'nerd-icons-mdicon)
+             (lambda (&rest _args) "bookmark-icon")))
+    (should (equal (substring-no-properties
+                    (chirp-render--metric-string 'bookmark nil t))
+                   "bookmark-icon"))))
+
 (ert-deftest chirp-render-insert-tweet-renders-quoted-tweet-preview ()
   "Tweet rendering should show quoted tweet text instead of just its link."
   (let ((tweet (chirp-test--sample-quoted-tweet)))

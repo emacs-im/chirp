@@ -24,6 +24,560 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-primary-timeline-retains-both-feeds-in-one-view ()
+  "Primary commands should reuse one view and both canonical feed states."
+  (let ((chirp--app nil)
+        buffer
+        requests)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (callback &optional following _errback
+                                       _max-results _cursor owner)
+                       (push (list :callback callback
+                                   :following following
+                                   :owner owner)
+                             requests)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (let* ((first-buffer (chirp-timeline-open-home))
+                   (view
+                    (with-current-buffer first-buffer
+                      (appkit-current-view))))
+              (setq buffer first-buffer)
+              (funcall
+               (plist-get (car requests) :callback)
+               (list '(:kind tweet :id "home" :text "Retained\ndetail"))
+               '(("pagination" . (("nextCursor" . "home-cursor")))))
+              (appkit-sync-invalidations view)
+              (let ((home-state (appkit-view-state view))
+                    home-point)
+                (with-current-buffer first-buffer
+                  (goto-char (point-min))
+                  (search-forward "detail")
+                  (setq home-point (point)))
+                (let ((second-buffer (chirp-timeline-open-home)))
+                  (should (eq first-buffer second-buffer))
+                  (should (eq view
+                              (with-current-buffer second-buffer
+                                (appkit-current-view))))
+                  (should (= (length requests) 1))
+                  (should (equal (appkit-view-id view)
+                                 chirp-timeline--primary-view-id)))
+                (with-current-buffer first-buffer
+                  (should-not chirp--timeline-kind)
+                  (chirp-toggle-home-following)
+                  (should (eq view (appkit-current-view))))
+                (let ((following-state (appkit-view-state view)))
+                  (should-not (eq home-state following-state))
+                  (should (= (length requests) 2))
+                  (should (plist-get (car requests) :following))
+                  (should (eq (plist-get (car requests) :owner) view))
+                  (funcall
+                   (plist-get (car requests) :callback)
+                   (list '(:kind tweet :id "following" :text "Following"))
+                   '(("pagination" .
+                      (("nextCursor" . "following-cursor")))))
+                  (appkit-sync-invalidations view)
+                  (with-current-buffer first-buffer
+                    (chirp-toggle-home-following))
+                  (should (eq (appkit-view-state view) home-state))
+                  (should (= (length requests) 2))
+                  (appkit-sync-invalidations view)
+                  (with-current-buffer first-buffer
+                    (should (equal (plist-get (chirp-entry-at-point) :id)
+                                   "home"))
+                    (should (= (point) home-point)))
+                  (should
+                   (equal
+                    (plist-get (plist-get home-state :page) :next-cursor)
+                    "home-cursor"))
+                  (should
+                   (eq (gethash
+                        'home
+                        (chirp--session-primary-feed-states
+                         (chirp--session)))
+                       home-state))
+                  (should (eq (chirp-timeline-open-following) first-buffer))
+                  (should (eq (appkit-view-state view) following-state))
+                  (should (= (length requests) 2))
+                  (should
+                   (equal
+                    (plist-get (plist-get following-state :page) :next-cursor)
+                    "following-cursor")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-feed-state-survives-buffer-recreation ()
+  "Killing the primary buffer should not discard session-owned feed state."
+  (let ((chirp--app nil)
+        buffer
+        requests)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (callback &rest _args)
+                       (push callback requests)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((first-view
+                    (with-current-buffer buffer (appkit-current-view)))
+                   (state (appkit-view-state first-view)))
+              (funcall
+               (car requests)
+               (list '(:kind tweet :id "1" :text "First\nentry")
+                     '(:kind tweet :id "2" :text "Retained\nposition")
+                     '(:kind tweet :id "3" :text "Third\nentry"))
+               nil)
+              (appkit-sync-invalidations first-view)
+              (with-current-buffer buffer
+                (goto-char (point-min))
+                (search-forward "position")
+                (set-window-start
+                 (selected-window)
+                 (appkit-position-find-property-value
+                  (point-min) (point-max) 'chirp-entry-id '(tweet "2"))
+                 t))
+              (kill-buffer buffer)
+              (should-not (appkit-view-live-p first-view))
+              (setq buffer (chirp-timeline-open-home))
+              (let ((second-view
+                     (with-current-buffer buffer (appkit-current-view))))
+                (should-not (eq first-view second-view))
+                (should (eq state (appkit-view-state second-view)))
+                (should (= (length requests) 1))
+                (with-current-buffer buffer
+                  (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
+                  (should (search-backward "position" nil t))
+                  (should
+                   (equal
+                    (get-text-property
+                     (window-start (selected-window)) 'chirp-entry-id)
+                    '(tweet "2"))))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-recreated-view-rejects-old-callback ()
+  "A callback from a killed view must not overwrite its restarted feed."
+  (let ((chirp--app nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (callback &rest _args)
+                       (setq callbacks (append callbacks (list callback)))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((first-view
+                    (with-current-buffer buffer (appkit-current-view)))
+                   (state (appkit-view-state first-view)))
+              (kill-buffer buffer)
+              (setq buffer (chirp-timeline-open-home))
+              (let ((second-generation (plist-get state :generation)))
+                (should (= (length callbacks) 2))
+                (funcall (nth 0 callbacks)
+                         (list '(:kind tweet :id "old" :text "Old")) nil)
+                (should-not (plist-get state :items))
+                (should (eq (plist-get state :generation)
+                            second-generation))
+                (funcall (nth 1 callbacks)
+                         (list '(:kind tweet :id "new" :text "New")) nil)
+                (should
+                 (equal (plist-get (car (plist-get state :items)) :id)
+                        "new"))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-callback-updates-state-before-projecting ()
+  "Backend completion should update canonical state before scheduled sync."
+  (let ((chirp--app nil)
+        buffer
+        callback
+        owner)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &optional _following _errback
+                                      _max-results _cursor request-owner)
+                       (setq callback success
+                             owner request-owner)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (should (eq owner view))
+              (funcall callback
+                       (list '(:kind tweet :id "1" :text "Projected later"))
+                       nil)
+              (should (equal (mapcar
+                              (lambda (tweet) (plist-get tweet :id))
+                              (plist-get (appkit-view-state view) :items))
+                             '("1")))
+              (with-current-buffer buffer
+                (should-not (string-match-p "Projected later"
+                                            (buffer-string))))
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (should (string-match-p "Projected later"
+                                        (buffer-string)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-superseding-request-cancels-old-transport ()
+  "Starting a replacement generation should cancel its prior transport."
+  (let ((chirp--app nil)
+        buffer
+        (request-count 0)
+        canceled)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (&rest _args)
+                       (list 'request (cl-incf request-count))))
+                    ((symbol-function 'chirp-backend-cancel-request)
+                     (lambda (request)
+                       (setq canceled request)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (should
+               (equal
+                (gethash chirp-timeline--request-key
+                         (appkit-view-request-table view))
+                '(request 1)))
+              (with-current-buffer buffer
+                (chirp-refresh))
+              (should (equal canceled '(request 1)))
+              (should
+               (equal
+                (gethash chirp-timeline--request-key
+                         (appkit-view-request-table view))
+                '(request 2))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-first-position-intent-survives-request-coalescing ()
+  "A new request should not erase an unprojected move-to-first intent."
+  (let ((chirp--app nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callbacks (append callbacks (list success)))
+                       (list 'request (length callbacks))))
+                    ((symbol-function 'chirp-backend-cancel-request) #'ignore)
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall (nth 0 callbacks)
+                       (list '(:kind tweet :id "1" :text "First")) nil)
+              (with-current-buffer buffer
+                (goto-char (point-max))
+                (chirp-refresh))
+              (should
+               (memq 'first
+                     (mapcar
+                      (lambda (event) (plist-get event :position))
+                      (appkit-view-pending-events-snapshot view))))
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (should (equal (plist-get (chirp-entry-at-point) :id) "1")))
+              (should-not (appkit-view-pending-events-snapshot view)))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-stale-generation-cannot-overwrite-newer-state ()
+  "A superseded callback should settle without projecting its result."
+  (let ((chirp--app nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callbacks (append callbacks (list success)))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (state (appkit-view-state view))
+                   (first-generation (plist-get state :generation)))
+              (with-current-buffer buffer
+                (chirp-refresh))
+              (let ((second-generation (plist-get state :generation)))
+                (should-not (eq first-generation second-generation))
+                (funcall (nth 0 callbacks)
+                         (list '(:kind tweet :id "old" :text "old")) nil)
+                (should
+                 (chirp-timeline--generation-settled-p first-generation))
+                (should (eq (plist-get state :generation)
+                            second-generation))
+                (should-not (plist-get state :items))
+                (funcall (nth 1 callbacks)
+                         (list '(:kind tweet :id "new" :text "new")) nil)
+                (should (equal (plist-get (car (plist-get state :items)) :id)
+                               "new"))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-pagination-preserves-existing-ewoc-nodes ()
+  "Appending an older page should retain unchanged EWOC node identities."
+  (let ((chirp--app nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callbacks (append callbacks (list success)))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (first '(:kind tweet :id "1" :text "First"
+                            :author-handle "alice"))
+                   (reply '(:kind tweet :id "2" :text "Reply"
+                            :reply-to-id "1" :reply-to-handle "alice")))
+              (funcall
+               (nth 0 callbacks) (list first reply)
+               '(("pagination" . (("nextCursor" . "older")))))
+              (appkit-sync-invalidations view)
+              (let* ((projection (appkit-view-engine view))
+                     (nodes
+                      (chirp-timeline--projection-node-table projection))
+                     (first-node (gethash '(tweet "1") nodes))
+                     (reply-node (gethash '(tweet "2") nodes)))
+                (with-current-buffer buffer
+                  (chirp-load-more))
+                (funcall (nth 1 callbacks)
+                         (list '(:kind tweet :id "3" :text "Older")) nil)
+                (appkit-sync-invalidations view)
+                (setq nodes
+                      (chirp-timeline--projection-node-table projection))
+                (should (eq first-node (gethash '(tweet "1") nodes)))
+                (should (eq reply-node (gethash '(tweet "2") nodes)))
+                (should (gethash '(tweet "3") nodes))
+                (with-current-buffer buffer
+                  (should (string-match-p "replying to @alice above"
+                                          (buffer-string))))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-tweet-actions-update-canonical-state-by-key ()
+  "Tweet actions should not recover primary state from rendered text."
+  (let ((chirp--app nil)
+        buffer
+        callback)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall callback
+                       (list '(:kind tweet :id "1" :text "First"
+                               :liked-p nil))
+                       nil)
+              (appkit-sync-invalidations view)
+              (cl-letf (((symbol-function 'chirp--map-buffer-tweets)
+                         (lambda (&rest _args)
+                           (ert-fail "primary state was scanned from text"))))
+                (should
+                 (chirp-update-tweet-by-id
+                  buffer "1"
+                  (lambda (tweet)
+                    (setf (plist-get tweet :liked-p) t))
+                  t)))
+              (should (plist-get
+                       (car (plist-get (appkit-view-state view) :items))
+                       :liked-p))
+              (should
+               (equal
+                (appkit-invalidations-entry-keys
+                 (appkit-view-invalidations view))
+                '((tweet "1")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-tweet-mutations-keep-inactive-feed-coherent ()
+  "Tweet updates and deletion should reach both cached primary feeds."
+  (let ((chirp--app nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (callback &rest _args)
+                       (setq callbacks (append callbacks (list callback)))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall (nth 0 callbacks)
+                       (list '(:kind tweet :id "1" :text "Home"
+                               :liked-p nil))
+                       nil)
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (chirp-toggle-home-following))
+              (funcall (nth 1 callbacks)
+                       (list '(:kind tweet :id "1" :text "Following"
+                               :liked-p nil))
+                       nil)
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (chirp-toggle-home-following))
+              (appkit-sync-invalidations view)
+              (should
+               (chirp-update-tweet-by-id
+                buffer "1"
+                (lambda (tweet)
+                  (setf (plist-get tweet :liked-p) t))
+                t))
+              (let ((states
+                     (chirp--session-primary-feed-states
+                      (chirp--session))))
+                (should
+                 (plist-get
+                  (car (plist-get (gethash 'home states) :items))
+                  :liked-p))
+                (should
+                 (plist-get
+                  (car (plist-get (gethash 'following states) :items))
+                  :liked-p))
+                (should (chirp--remove-tweet-from-primary-feeds buffer "1"))
+                (should-not (plist-get (gethash 'home states) :items))
+                (should-not (plist-get (gethash 'following states) :items))
+                (should
+                 (appkit-invalidations-structure-p
+                  (appkit-view-invalidations view)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-quoted-action-invalidates-owning-row ()
+  "Updating a quoted tweet should target its canonical top-level owner row."
+  (let ((chirp--app nil)
+        buffer
+        callback)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (quoted '(:kind tweet :id "quoted" :text "Quoted"
+                             :liked-p nil))
+                   (outer (list :kind 'tweet :id "outer" :text "Outer"
+                                :quoted-tweet quoted)))
+              (funcall callback (list outer) nil)
+              (appkit-sync-invalidations view)
+              (should
+               (chirp-update-tweet-by-id
+                buffer "quoted"
+                (lambda (tweet)
+                  (setf (plist-get tweet :liked-p) t))
+                t))
+              (should (plist-get quoted :liked-p))
+              (should
+               (equal
+                (appkit-invalidations-entry-keys
+                 (appkit-view-invalidations view))
+                '((tweet "outer")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-media-completion-invalidates-only-dependent-row ()
+  "A media resource completion should reprint only its dependent tweet row."
+  (let ((chirp--app nil)
+        buffer
+        callback
+        printed)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall
+               callback
+               (list '(:kind tweet :id "1" :text "First"
+                       :author-avatar-url "https://example.com/one.jpg")
+                     '(:kind tweet :id "2" :text "Second"
+                       :author-avatar-url "https://example.com/two.jpg"))
+               nil)
+              (appkit-sync-invalidations view)
+              (let ((printer (symbol-function 'chirp-timeline--print-row)))
+                (cl-letf (((symbol-function 'chirp-timeline--print-row)
+                           (lambda (row)
+                             (push (chirp-timeline--row-key row) printed)
+                             (funcall printer row))))
+                  (chirp-media--invalidate-resource
+                   "https://example.com/one.jpg")
+                  (should
+                   (equal
+                    (appkit-invalidations-entry-keys
+                     (appkit-view-invalidations view))
+                    '((tweet "1"))))
+                  (appkit-sync-invalidations view)))
+              (should (equal printed '((tweet "1")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-stop-makes-late-primary-callback-inert ()
+  "A callback arriving after stop should not mutate or recreate the session."
+  (let ((chirp--app nil)
+        buffer
+        callback
+        view
+        state)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home)
+                  view (with-current-buffer buffer (appkit-current-view))
+                  state (appkit-view-state view))
+            (chirp-stop)
+            (should-not (appkit-view-live-p view))
+            (funcall callback
+                     (list '(:kind tweet :id "late" :text "late")) nil)
+            (should-not chirp--app)
+            (should-not (plist-get state :items))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-quit-current-buffer-keeps-main-timeline-buffers ()
   "Quitting For You/Following should keep the timeline buffer alive."
   (let ((previous (generate-new-buffer " *chirp-prev*"))
@@ -548,23 +1102,66 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest chirp-timeline-rerender-preserves-point-within-entry ()
-  "Background rerenders should keep point inside the same tweet body."
-  (let ((buffer (generate-new-buffer " *chirp-offset-test*"))
-        (tweet-a '(:id "1" :text "Alpha line one\nAlpha line two"))
-        (tweet-b '(:id "2" :text "Beta line one\nBeta line two")))
+(ert-deftest chirp-request-rerender-coalesces-primary-view-invalidations ()
+  "Repeated background updates should produce one Appkit view sync."
+  (let (buffer callback view)
     (unwind-protect
-        (with-current-buffer buffer
-          (chirp-timeline--render
-           buffer "For You" #'ignore (list tweet-a tweet-b)
-           :kind 'home
-           :limit 20)
-          (search-forward "Beta line two")
-          (let ((before (point)))
-            (funcall chirp--rerender-function)
-            (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
-            (should (> (point) (chirp--current-entry-start)))
-            (should (equal before (point)))))
+        (cl-letf (((symbol-function 'chirp-backend-feed)
+                   (lambda (success &rest _args)
+                     (setq callback success)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (setq buffer (chirp-timeline-open-home))
+          (with-current-buffer buffer
+            (setq view (appkit-current-view)))
+          (funcall callback
+                   (list '(:kind tweet :id "1" :text "tweet")) nil)
+          (appkit-sync-invalidations view)
+          (let ((sync (appkit-view-sync-function view))
+                (sync-count 0))
+            (setf (appkit-view-sync-function view)
+                  (lambda (live-view invalidations)
+                    (setq sync-count (1+ sync-count))
+                    (funcall sync live-view invalidations)))
+            (chirp-request-rerender buffer 60)
+            (chirp-request-rerender buffer 60)
+            (should (= (length (appkit-view-handles view)) 1))
+            (appkit-sync-invalidations view)
+            (should (= sync-count 1))
+            (should-not (appkit-view-handles view))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-timeline-sync-preserves-point-within-entry ()
+  "Background primary timeline syncs should preserve semantic point offsets."
+  (let ((tweet-a '(:kind tweet :id "1"
+                   :text "Alpha line one\nAlpha line two"))
+        (tweet-b '(:kind tweet :id "2"
+                   :text "Beta line one\nBeta line two"))
+        buffer callback view)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-backend-feed)
+                   (lambda (success &rest _args)
+                     (setq callback success)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (setq buffer (chirp-timeline-open-home))
+          (with-current-buffer buffer
+            (setq view (appkit-current-view)))
+          (funcall callback (list tweet-a tweet-b) nil)
+          (appkit-sync-invalidations view)
+          (with-current-buffer buffer
+            (search-forward "Beta line two")
+            (let ((before (point)))
+              (should (equal (chirp--text-property-at-point 'chirp-entry-id)
+                             '(tweet "2")))
+              (chirp-request-rerender buffer 60)
+              (appkit-sync-invalidations view)
+              (should (equal (plist-get (chirp-entry-at-point) :id) "2"))
+              (should (> (point) (chirp--current-entry-start)))
+              (should (= before (point))))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

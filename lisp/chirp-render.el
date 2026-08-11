@@ -191,18 +191,32 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
         (_ 'chirp-active-metric-face))
     'chirp-meta-face))
 
+(defun chirp-render--entry-key (entry)
+  "Return a stable domain key for ENTRY, or nil."
+  (pcase (plist-get entry :kind)
+    ('tweet
+     (when-let* ((id (plist-get entry :id)))
+       (list 'tweet id)))
+    ('user
+     (when-let* ((handle (plist-get entry :handle)))
+       (list 'user handle)))))
+
 (defun chirp-render--mark-entry (start end entry)
   "Mark the region from START to END as ENTRY."
   (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-entry-item ,entry
-                        chirp-entry-url
-                        ,(or (plist-get entry :url)
-                             (plist-get entry :profile-url))
-                        pointer hand
-                        help-echo "RET: open  m: media  A: author  o: browser"
-                        rear-nonsticky t))
+    (let ((key (chirp-render--entry-key entry)))
+      (add-text-properties
+       start end
+       (append
+        `(chirp-entry-item ,entry
+                           chirp-entry-url
+                           ,(or (plist-get entry :url)
+                                (plist-get entry :profile-url))
+                           pointer hand
+                           help-echo
+                           "RET: open  m: media  A: author  o: browser"
+                           rear-nonsticky t)
+        (when key `(chirp-entry-id ,key)))))
     (put-text-property start (1+ start) 'chirp-entry-start t)))
 
 (defun chirp-render--mark-subentry (start end entry)
@@ -384,7 +398,9 @@ When ACTIVE is non-nil, emphasize the metric."
                "Views"))
             (_
              (format "%s" label)))))
-    (propertize (format "%s %s" prefix (chirp-format-count value))
+    (propertize (if (null value)
+                    prefix
+                  (format "%s %s" prefix (chirp-format-count value)))
                 'face face)))
 
 (defun chirp-render--insert-metric (label value &optional active)
@@ -1020,21 +1036,28 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (insert (propertize line 'face 'chirp-tweet-separator-face))
     (insert "\n\n")))
 
+(defun chirp-render-insert-tweet-row (tweet previous)
+  "Insert TWEET as a list row following PREVIOUS.
+
+The row owns its preceding separator and direct-reply context, so keyed
+projections can replace it as one unit."
+  (when previous
+    (chirp-render-insert-tweet-separator))
+  (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
+      (chirp-render--insert-tweet
+       tweet
+       chirp-render-list-reply-prefix
+       nil
+       nil
+       nil
+       reply-parent)
+    (chirp-render-insert-tweet tweet)))
+
 (defun chirp-render-insert-tweet-list (tweets)
   "Insert TWEETS, highlighting direct replies to the previous visible tweet."
   (let (previous)
     (dolist (tweet tweets)
-      (when previous
-        (chirp-render-insert-tweet-separator))
-      (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
-          (chirp-render--insert-tweet
-           tweet
-           chirp-render-list-reply-prefix
-           nil
-           nil
-           nil
-           reply-parent)
-        (chirp-render-insert-tweet tweet))
+      (chirp-render-insert-tweet-row tweet previous)
       (setq previous tweet))))
 
 (defun chirp-render-insert-thread-focus-tweet (tweet)

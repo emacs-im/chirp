@@ -384,13 +384,23 @@ commands still work, and displays alt text when the backend provides it."
   buffer)
 
 (defun chirp-buffer ()
-  "Create and return a fresh Chirp buffer."
+  "Create and return a fresh legacy Chirp buffer."
   (generate-new-buffer chirp-buffer-name))
 
 (defun chirp-display-buffer (buffer)
   "Display BUFFER in the selected window."
   (unless (eq (window-buffer (selected-window)) buffer)
     (switch-to-buffer buffer)))
+
+(defun chirp--appkit-timeline-state (&optional buffer)
+  "Return canonical Appkit timeline state for BUFFER, or nil."
+  (let ((target (or buffer (current-buffer))))
+    (when (buffer-live-p target)
+      (with-current-buffer target
+        (when-let* ((view (appkit-current-view))
+                    (state (appkit-view-state view))
+                    ((eq (plist-get state :type) 'timeline)))
+          state)))))
 
 (defun chirp--persistent-timeline-buffer-p (&optional buffer)
   "Return non-nil when BUFFER is a main timeline Chirp buffer.
@@ -399,7 +409,10 @@ For You and Following stay alive when the user quits the window so they can be
 revisited later."
   (when (buffer-live-p (or buffer (current-buffer)))
     (with-current-buffer (or buffer (current-buffer))
-      (memq chirp--timeline-kind '(home following)))))
+      (or (memq chirp--timeline-kind '(home following))
+          (when-let* ((state (chirp--appkit-timeline-state)))
+            (memq (plist-get (plist-get state :query) :kind)
+                  '(home following)))))))
 
 (defun chirp-quit-current-buffer ()
   "Close the current Chirp buffer."
@@ -425,7 +438,7 @@ revisited later."
          (eq chirp--request-token token))))
 
 (defun chirp-render-into-buffer (buffer title refresh render-fn)
-  "Render BUFFER with TITLE using REFRESH and RENDER-FN."
+  "Render legacy BUFFER with TITLE using REFRESH and RENDER-FN."
   (with-current-buffer buffer
     (chirp-view-mode)
     (setq-local chirp--view-title title)
@@ -454,26 +467,43 @@ revisited later."
       (goto-char (point-min)))))
 
 (defun chirp-request-rerender (&optional buffer delay)
-  "Schedule a lightweight rerender of BUFFER after DELAY seconds."
+  "Schedule one coalesced projection update for BUFFER after DELAY."
   (let ((target (or buffer (current-buffer)))
         (wait (or delay chirp-rerender-idle-delay)))
     (when (buffer-live-p target)
       (with-current-buffer target
-        (when (timerp chirp--rerender-timer)
-          (cancel-timer chirp--rerender-timer))
-        (setq-local
-         chirp--rerender-timer
-         (run-with-idle-timer
-          wait nil
-          (lambda (buf)
-            (when (buffer-live-p buf)
-              (with-current-buffer buf
-                (setq-local chirp--rerender-timer nil)
-                (when chirp--rerender-function
-                  (let ((window-state (chirp-capture-window-state buf)))
-                    (funcall chirp--rerender-function)
-                    (chirp-restore-window-state window-state))))))
-          target))))))
+        (if-let* ((view (appkit-current-view))
+                  (state (chirp--appkit-timeline-state)))
+            (appkit-request-sync
+             view :resources '(all) :position t :delay wait)
+          (when (timerp chirp--rerender-timer)
+            (cancel-timer chirp--rerender-timer))
+          (setq-local
+           chirp--rerender-timer
+           (run-with-idle-timer
+            wait nil
+            (lambda (buf)
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (setq-local chirp--rerender-timer nil)
+                  (when chirp--rerender-function
+                    (let ((window-state (chirp-capture-window-state buf)))
+                      (funcall chirp--rerender-function)
+                      (chirp-restore-window-state window-state))))))
+            target)))))))
+
+(defun chirp-request-tweet-rerender (tweet-id &optional buffer delay)
+  "Schedule a projection update for TWEET-ID in BUFFER after DELAY."
+  (let ((target (or buffer (current-buffer))))
+    (if (and tweet-id (buffer-live-p target))
+        (with-current-buffer target
+          (if-let* ((view (appkit-current-view))
+                    ((chirp--appkit-timeline-state)))
+              (appkit-request-sync
+               view :entry (list 'tweet tweet-id) :position t
+               :delay (or delay chirp-rerender-idle-delay))
+            (chirp-request-rerender target delay)))
+      (chirp-request-rerender target delay))))
 
 (defun chirp--text-property-at-point (property)
   "Return PROPERTY at point or immediately before point."
@@ -635,6 +665,9 @@ revisited later."
     (cond
      (pos
      (goto-char pos))
+     ((and (chirp--appkit-timeline-state)
+           (chirp-entry-at-point))
+      (chirp-load-more (chirp-entry-id-at-point)))
      ((and chirp--timeline-load-more-function
            (chirp-entry-at-point))
       (funcall chirp--timeline-load-more-function (chirp-entry-id-at-point)))
@@ -702,17 +735,28 @@ revisited later."
 
 (defun chirp--tweet-expanded-p (tweet)
   "Return non-nil when TWEET is expanded in the current buffer."
-  (and (hash-table-p chirp--expanded-tweet-ids)
-       (gethash (plist-get tweet :id) chirp--expanded-tweet-ids)))
+  (let ((table
+         (if-let* ((state (chirp--appkit-timeline-state)))
+             (plist-get state :expanded-tweet-ids)
+           chirp--expanded-tweet-ids)))
+    (and (hash-table-p table)
+         (gethash (plist-get tweet :id) table))))
 
 (defun chirp--expand-tweet (tweet-id)
-  "Expand TWEET-ID inline and rerender the current view."
-  (unless (functionp chirp--rerender-function)
-    (user-error "This Chirp view cannot expand tweet content"))
-  (unless (hash-table-p chirp--expanded-tweet-ids)
-    (setq-local chirp--expanded-tweet-ids (make-hash-table :test #'equal)))
-  (puthash tweet-id t chirp--expanded-tweet-ids)
-  (funcall chirp--rerender-function))
+  "Expand TWEET-ID inline and update the current view."
+  (if-let* ((view (appkit-current-view))
+            (state (chirp--appkit-timeline-state))
+            (table (plist-get state :expanded-tweet-ids)))
+      (progn
+        (puthash tweet-id t table)
+        (appkit-request-sync
+         view :entry (list 'tweet tweet-id) :position t))
+    (unless (functionp chirp--rerender-function)
+      (user-error "This Chirp view cannot expand tweet content"))
+    (unless (hash-table-p chirp--expanded-tweet-ids)
+      (setq-local chirp--expanded-tweet-ids (make-hash-table :test #'equal)))
+    (puthash tweet-id t chirp--expanded-tweet-ids)
+    (funcall chirp--rerender-function)))
 
 (defun chirp-open-at-point ()
   "Open the entry at point."
@@ -1179,7 +1223,19 @@ When MAX-COUNT is non-nil, return at most that many images."
            (plist-put full-quoted :chirp-enriched-p t)
            (plist-put tweet :quoted-tweet full-quoted)
            (chirp-media-prefetch-tweet full-quoted buffer)
-           (chirp-request-rerender buffer)))))))
+           (chirp-request-tweet-rerender
+            (plist-get tweet :id) buffer)))))))
+
+(defun chirp--count-value (&rest values)
+  "Return the first scalar count in VALUES or their `count' members."
+  (cl-loop for value in values
+           for count = (if (chirp-object-p value)
+                           (chirp-get value "count")
+                         value)
+           when (or (numberp count)
+                    (and (stringp count)
+                         (not (string-blank-p count))))
+           return count))
 
 (defun chirp-format-count (value)
   "Return a display string for VALUE."
@@ -1255,20 +1311,78 @@ When MAX-COUNT is non-nil, return at most that many images."
           (setq pos (chirp--entry-position-forward
                      (min (point-max) (1+ pos)))))))))
 
-(defun chirp-update-tweet-by-id (buffer tweet-id fn &optional rerender)
-  "Apply FN to every tweet matching TWEET-ID in BUFFER.
+(defun chirp--update-tweet-tree (tweet tweet-id fn)
+  "Apply FN to TWEET-ID within TWEET or its quoted descendants."
+  (if (equal (plist-get tweet :id) tweet-id)
+      (progn
+        (funcall fn tweet)
+        t)
+    (when-let* ((quoted (plist-get tweet :quoted-tweet)))
+      (chirp--update-tweet-tree quoted tweet-id fn))))
 
-When RERENDER is non-nil, request a lightweight rerender afterwards."
-  (let (updated)
-    (chirp--map-buffer-tweets
-     buffer
-     (lambda (tweet)
-       (when (equal (plist-get tweet :id) tweet-id)
-         (setq updated t)
-         (funcall fn tweet))))
-    (when (and updated rerender)
-      (chirp-request-rerender buffer))
-    updated))
+(defun chirp--primary-feed-state-values (&optional extra-state)
+  "Return retained primary feed states, including EXTRA-STATE once."
+  (let* ((session
+          (and (appkit-app-live-p chirp--app)
+               (appkit-app-state chirp--app)))
+         (table
+          (and (chirp--session-p session)
+               (chirp--session-primary-feed-states session)))
+         states)
+    (when table
+      (maphash (lambda (_kind state)
+                 (push state states))
+               table))
+    (when extra-state
+      (cl-pushnew extra-state states :test #'eq))
+    states))
+
+(defun chirp-update-tweet-by-id (buffer tweet-id fn &optional rerender)
+  "Apply FN to every cached tweet matching TWEET-ID for BUFFER.
+
+Quoted descendants are included.  When RERENDER is non-nil, request targeted
+updates for the owning top-level rows visible in BUFFER."
+  (let ((active-state (chirp--appkit-timeline-state buffer))
+        dirty-ids)
+    (dolist (state (chirp--primary-feed-state-values active-state))
+      (dolist (tweet (plist-get state :items))
+        (when (chirp--update-tweet-tree tweet tweet-id fn)
+          (when (eq state active-state)
+            (cl-pushnew (plist-get tweet :id) dirty-ids :test #'equal)))))
+    (unless active-state
+      (chirp--map-buffer-tweets
+       buffer
+       (lambda (tweet)
+         (when (chirp--update-tweet-tree tweet tweet-id fn)
+           (cl-pushnew (plist-get tweet :id) dirty-ids :test #'equal)))))
+    (when rerender
+      (dolist (dirty-id dirty-ids)
+        (chirp-request-tweet-rerender dirty-id buffer)))
+    (and dirty-ids t)))
+
+(defun chirp--remove-tweet-from-primary-feeds (buffer tweet-id)
+  "Remove TWEET-ID from retained primary feeds represented by BUFFER.
+
+Return non-nil when BUFFER currently projects a primary feed."
+  (let ((active-state (chirp--appkit-timeline-state buffer))
+        active-changed-p)
+    (dolist (state (chirp--primary-feed-state-values active-state))
+      (let* ((items (plist-get state :items))
+             (remaining
+              (cl-remove-if
+               (lambda (tweet)
+                 (equal (plist-get tweet :id) tweet-id))
+               items)))
+        (unless (= (length items) (length remaining))
+          (setf (plist-get state :items) remaining)
+          (when (eq state active-state)
+            (setq active-changed-p t)))))
+    (when (and active-changed-p (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (when-let* ((view (appkit-current-view)))
+          (appkit-request-sync
+           view :structure t :part 'frame :position t))))
+    (and active-state t)))
 
 (defun chirp-user-like-p (object)
   "Return non-nil when OBJECT resembles a user payload."
@@ -1852,30 +1966,30 @@ When RERENDER is non-nil, request a lightweight rerender afterwards."
             :translation (chirp-plist-override state-overrides :translation nil)
             :translation-language
             (chirp-plist-override state-overrides :translation-language nil)
-            :reply-count (chirp-coalesce
+            :reply-count (chirp--count-value
                           (chirp-get object "reply_count")
                           (chirp-get metrics "replies")
                           (chirp-get legacy "reply_count"))
-            :retweet-count (chirp-coalesce
+            :retweet-count (chirp--count-value
                             (chirp-get object "retweet_count")
                             (chirp-get metrics "retweets")
                             (chirp-get legacy "retweet_count"))
-            :like-count (chirp-coalesce
+            :like-count (chirp--count-value
                          (chirp-get object "favorite_count" "like_count")
                          (chirp-get metrics "likes")
                          (chirp-get legacy "favorite_count"))
-            :quote-count (chirp-coalesce
+            :quote-count (chirp--count-value
                           (chirp-get object "quote_count")
                           (chirp-get metrics "quotes")
                           (chirp-get legacy "quote_count"))
-            :bookmark-count (chirp-coalesce
+            :bookmark-count (chirp--count-value
                              (chirp-get object "bookmark_count")
-                             (chirp-get metrics "bookmarks"))
-            :view-count (chirp-coalesce
+                             (chirp-get metrics "bookmarks")
+                             (chirp-get legacy "bookmark_count"))
+            :view-count (chirp--count-value
                          (chirp-get object "view_count" "views")
-                         (chirp-get metrics "views")
-                         (chirp-get-in object '("views" "count")))
-            :raw object))))
+                         (chirp-get metrics "views"))
+            :raw wrapper))))
 
 (defun chirp-tweet-visible-p (tweet)
   "Return non-nil when TWEET should be shown in Chirp."
