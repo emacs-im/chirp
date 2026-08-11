@@ -614,7 +614,32 @@ Return a list of (compose source foreign)."
                (should rerendered)
                (should-not (plist-get (chirp-entry-at-point) :liked-p))
                (should (= (plist-get (chirp-entry-at-point) :like-count) 9))))))
-      (clrhash chirp-tweet-state-overrides))))
+      (clrhash (chirp--tweet-state-table)))))
+
+(ert-deftest chirp-delete-at-point-removes-primary-canonical-state ()
+  "Successful deletion should remove primary state without a feed refresh."
+  (let (captured-args removed refreshed)
+    (chirp-test--with-tweet-buffer
+     '(:kind tweet :id "123")
+     (lambda (buffer)
+       (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                 ((symbol-function 'chirp-actions--perform)
+                  (lambda (args on-success &optional _on-error)
+                    (setq captured-args args)
+                    (funcall on-success nil nil)))
+                 ((symbol-function 'chirp-clear-tweet-state-overrides) #'ignore)
+                 ((symbol-function 'chirp--remove-tweet-from-primary-feeds)
+                  (lambda (target tweet-id)
+                    (should (eq target buffer))
+                    (should (equal tweet-id "123"))
+                    (setq removed t)))
+                 ((symbol-function 'chirp-actions--refresh-buffer)
+                  (lambda (_target)
+                    (setq refreshed t))))
+         (chirp-delete-at-point)
+         (should (equal captured-args '("delete" "--yes" "123")))
+         (should removed)
+         (should-not refreshed))))))
 
 (ert-deftest chirp-follow-and-unfollow-user-at-point-use-explicit-commands ()
   "User follow actions should dispatch follow and unfollow commands."

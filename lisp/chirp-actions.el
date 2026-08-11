@@ -363,7 +363,8 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
        (list "delete" "--yes" id)
        (lambda (_data _envelope)
          (chirp-clear-tweet-state-overrides id)
-         (chirp-actions--refresh-buffer buffer)
+         (unless (chirp--remove-tweet-from-primary-feeds buffer id)
+           (chirp-actions--refresh-buffer buffer))
          (message "Tweet deleted."))))))
 
 (defun chirp-compose--buffer-name ()

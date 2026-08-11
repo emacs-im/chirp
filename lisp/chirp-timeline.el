@@ -10,6 +10,10 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-ewoc)
+(require 'appkit-invalidation)
+(require 'appkit-position)
+(require 'appkit-transaction)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -26,6 +30,465 @@
     ('home "For You")
     ('following "Following")
     (_ "Timeline")))
+
+(defconst chirp-timeline--primary-view-id 'primary-timeline
+  "Stable Appkit view identity shared by Home and Following.")
+
+(defconst chirp-timeline--request-key 'primary-timeline
+  "View request-table key for the active primary timeline transport.")
+
+(cl-defstruct (chirp-timeline--generation
+               (:constructor chirp-timeline--generation-create))
+  "One logical primary timeline request generation."
+  id
+  phase
+  settled-p)
+
+(cl-defstruct (chirp-timeline--projection
+               (:constructor chirp-timeline--projection-create))
+  "EWOC projection state owned by one primary timeline view."
+  ewoc
+  node-table)
+
+(define-derived-mode chirp-timeline--mode chirp-view-mode "Chirp-Timeline"
+  "Major mode for Appkit-owned primary timeline buffers."
+  (setq-local chirp--refresh-function #'chirp-timeline--refresh-primary)
+  (setq-local chirp--entry-wrap-navigation nil)
+  (setq-local header-line-format nil))
+
+(defun chirp-timeline--make-state (kind limit)
+  "Return canonical state for primary timeline KIND and LIMIT."
+  (list :type 'timeline
+        :query (list :kind kind :limit limit)
+        :items nil
+        :page (list :next-cursor nil :exhausted-p nil)
+        :status (list :phase 'initial :message nil)
+        :generation nil
+        :loaded-p nil
+        :position nil
+        :expanded-tweet-ids (make-hash-table :test #'equal)))
+
+(defun chirp-timeline--feed-state (kind)
+  "Return the session-owned canonical primary feed state for KIND."
+  (unless (memq kind '(home following))
+    (error "Invalid Chirp primary feed kind: %S" kind))
+  (let ((states
+         (chirp--session-primary-feed-states (chirp--session))))
+    (or (gethash kind states)
+        (puthash kind
+                 (chirp-timeline--make-state
+                  kind chirp-default-max-results)
+                 states))))
+
+(defun chirp-timeline--view-state (view)
+  "Return VIEW's validated primary timeline state."
+  (let ((state (appkit-view-state view)))
+    (unless (and (listp state)
+                 (eq (plist-get state :type) 'timeline)
+                 (memq (plist-get (plist-get state :query) :kind)
+                       '(home following)))
+      (error "Invalid Chirp timeline view state"))
+    state))
+
+(defun chirp-timeline--current-view ()
+  "Return the current live primary timeline view, or nil."
+  (when-let* ((view (appkit-current-view))
+              ((appkit-view-live-p view))
+              (state (appkit-view-state view))
+              ((eq (plist-get state :type) 'timeline)))
+    view))
+
+(defun chirp-timeline--row-key (row)
+  "Return the stable tweet key for projected ROW."
+  (plist-get row :key))
+
+(defun chirp-timeline--project-rows (tweets)
+  "Project normalized TWEETS into keyed EWOC rows."
+  (let (previous rows)
+    (dolist (tweet tweets (nreverse rows))
+      (let ((id (plist-get tweet :id)))
+        (unless id
+          (error "Timeline tweet has no stable id"))
+        (push (list :key (list 'tweet id)
+                    :tweet tweet
+                    :previous previous)
+              rows))
+      (setq previous tweet))))
+
+(defun chirp-timeline--print-row (row)
+  "Insert one projected timeline ROW at point."
+  (chirp-render-insert-tweet-row
+   (plist-get row :tweet)
+   (plist-get row :previous)))
+
+(defun chirp-timeline--frame-text (state)
+  "Return header text representing timeline STATE."
+  (let* ((status (plist-get state :status))
+         (phase (plist-get status :phase))
+         (message (plist-get status :message)))
+    (pcase phase
+      ('initial "Loading timeline...\n\n")
+      ('refresh "Refreshing timeline...\n\n")
+      ('older "Loading older posts...\n\n")
+      ('error (format "Unable to load data.\n\n%s\n\n" message))
+      (_ (and (null (plist-get state :items)) "No posts returned.\n")))))
+
+(defun chirp-timeline--remember-position ()
+  "Remember durable primary feed positions before their buffer is killed."
+  (when-let* ((view (appkit-current-view))
+              ((appkit-view-live-p view)))
+    (let ((state (chirp-timeline--view-state view)))
+      (when (plist-get state :items)
+        (setf (plist-get state :position)
+              (appkit-position-capture
+               :anchor-property 'chirp-entry-id
+               :preserve-window-start t)))
+      ;; Live window references cannot restore a later projection buffer.  The
+      ;; same snapshots retain semantic point and legacy viewport anchors.
+      (dolist (feed-state
+               (chirp--primary-feed-state-values state))
+        (when-let* ((position (plist-get feed-state :position)))
+          (setf (appkit-position-snapshot-window-snapshots position) nil))))))
+
+(defun chirp-timeline--setup-view (view)
+  "Initialize VIEW's EWOC and first projection."
+  (let* ((state (chirp-timeline--view-state view))
+         (kind (plist-get (plist-get state :query) :kind))
+         (buffer (appkit-view-buffer view)))
+    (setq-local chirp--view-title (chirp-timeline--title kind))
+    (setq-local chirp--refresh-function #'chirp-timeline--refresh-primary)
+    (setq-local chirp--rerender-function nil)
+    (add-hook 'kill-buffer-hook #'chirp-timeline--remember-position nil t)
+    (chirp--apply-buffer-name buffer chirp--view-title)
+    (appkit-with-content-update view
+      (erase-buffer)
+      (setf (appkit-view-engine view)
+            (chirp-timeline--projection-create
+             :ewoc (ewoc-create #'chirp-timeline--print-row)
+             :node-table (make-hash-table :test #'equal))))
+    (appkit-view-enqueue-event
+     view (list :position (or (plist-get state :position) 'first)))
+    (appkit-invalidate view :structure t :part 'frame :position t)
+    (appkit-sync-invalidations view)))
+
+(defun chirp-timeline--index-resources (view rows)
+  "Index resource dependencies from ROWS in VIEW."
+  (let ((index (appkit-view-resource-index view)))
+    (clrhash index)
+    (dolist (row rows)
+      (let ((key (chirp-timeline--row-key row)))
+        (dolist (resource
+                 (chirp-media-resource-keys-for-tweet
+                  (plist-get row :tweet)))
+          (puthash resource
+                   (cl-adjoin key (gethash resource index) :test #'equal)
+                   index))))))
+
+(defun chirp-timeline--force-keys (view invalidations rows)
+  "Return row keys forced in VIEW by INVALIDATIONS over ROWS."
+  (let ((resources (appkit-invalidations-resource-keys invalidations)))
+    (delete-dups
+     (append
+      (appkit-invalidations-entry-keys invalidations)
+      (if (memq 'all resources)
+          (mapcar #'chirp-timeline--row-key rows)
+        (cl-loop for resource in resources
+                 append (gethash resource
+                                 (appkit-view-resource-index view))))))))
+
+(defun chirp-timeline--position-intent (events)
+  "Return the effective semantic position intent from EVENTS."
+  (or (cl-loop for event in events
+               when (eq (plist-get event :position) 'first)
+               return 'first)
+      (cl-loop for event in (reverse events)
+               for position = (plist-get event :position)
+               when position return position)
+      'preserve))
+
+(defun chirp-timeline--restore-position (intent snapshot)
+  "Restore semantic position INTENT, using SNAPSHOT when needed."
+  (pcase intent
+    ('first
+     (goto-char (point-min))
+     (when-let* ((position
+                  (text-property-any
+                   (point-min) (point-max) 'chirp-entry-start t)))
+       (goto-char position)))
+    ((pred appkit-position-snapshot-p)
+     (appkit-position-restore intent))
+    ('preserve
+     (when snapshot
+       (appkit-position-restore snapshot)))
+    (key
+     (when-let* ((position
+                  (appkit-position-find-property-value
+                   (point-min) (point-max) 'chirp-entry-id key)))
+       (goto-char position)))))
+
+(defun chirp-timeline--sync (view invalidations)
+  "Synchronize VIEW from coalesced INVALIDATIONS."
+  (let* ((state (chirp-timeline--view-state view))
+         (events (appkit-view-pending-events-snapshot view))
+         (event-count (length events))
+         (position-intent (chirp-timeline--position-intent events))
+         (projection (appkit-view-engine view))
+         (ewoc (chirp-timeline--projection-ewoc projection))
+         (rows (chirp-timeline--project-rows (plist-get state :items)))
+         (reconcile-p
+          (or (appkit-invalidations-structure-p invalidations)
+              (appkit-invalidations-entry-keys invalidations)
+              (appkit-invalidations-resource-keys invalidations)))
+         (snapshot
+          (cond
+           ((appkit-position-snapshot-p position-intent)
+            position-intent)
+           ((not (eq position-intent 'first))
+            (appkit-position-capture
+             :anchor-property 'chirp-entry-id
+             :preserve-window-start t)))))
+    (appkit-with-content-update view
+      (ewoc-set-hf ewoc (or (chirp-timeline--frame-text state) "") "")
+      (when reconcile-p
+        (setf (chirp-timeline--projection-node-table projection)
+              (appkit-ewoc-reconcile
+               ewoc rows #'chirp-timeline--row-key
+               :force-keys
+               (chirp-timeline--force-keys view invalidations rows))))
+      (chirp-timeline--restore-position position-intent snapshot))
+    (chirp-timeline--index-resources view rows)
+    (appkit-view-acknowledge-events view event-count)))
+
+(defun chirp-timeline--generation-current-p (view state generation)
+  "Return non-nil when GENERATION may still update STATE in VIEW."
+  (and (appkit-view-live-p view)
+       (eq state (appkit-view-state view))
+       (eq generation (plist-get state :generation))))
+
+(defun chirp-timeline--fetch-count (state phase)
+  "Return request size for STATE and request PHASE."
+  (let ((limit (plist-get (plist-get state :query) :limit)))
+    (pcase phase
+      ('older (max 1 chirp-timeline-load-more-step))
+      ('refresh
+       (min limit
+            (or (and chirp-timeline-refresh-max-results
+                     (max 1 chirp-timeline-refresh-max-results))
+                limit)))
+      (_ limit))))
+
+(defun chirp-timeline--settle-success
+    (view state generation tweets envelope)
+  "Settle GENERATION in VIEW and merge TWEETS from ENVELOPE into STATE."
+  (setf (chirp-timeline--generation-settled-p generation) t)
+  (when (chirp-timeline--generation-current-p view state generation)
+    (let* ((phase (chirp-timeline--generation-phase generation))
+           (query (plist-get state :query))
+           (page (plist-get state :page))
+           (status (plist-get state :status))
+           (current (plist-get state :items))
+           (next-cursor (chirp-backend-envelope-next-cursor envelope))
+           (position-intent 'preserve)
+           new-count)
+      (pcase phase
+        ('older
+         (let ((merged (chirp-append-unique-tweets current tweets)))
+           (unless (> (length merged) (length current))
+             (message "No older posts."))
+           (setf (plist-get state :items) merged
+                 (plist-get page :next-cursor) next-cursor
+                 (plist-get page :exhausted-p) (not next-cursor))))
+        ('refresh
+         (let ((merged (chirp-timeline--merge-refreshed-tweets current tweets)))
+           (setq new-count (plist-get merged :new-count))
+           (setf (plist-get state :items) (plist-get merged :tweets)
+                 (plist-get page :next-cursor)
+                 (if (> (length current) (plist-get query :limit))
+                     (plist-get page :next-cursor)
+                   (or next-cursor (plist-get page :next-cursor))))
+           (when (or (null current) (> new-count 0))
+             (setq position-intent 'first))))
+        (_
+         (setf (plist-get state :items) tweets
+               (plist-get page :next-cursor) next-cursor
+               (plist-get page :exhausted-p) (not next-cursor))
+         (setq position-intent 'first)))
+      (setf (plist-get status :phase) 'idle
+            (plist-get status :message) nil
+            (plist-get state :generation) nil
+            (plist-get state :loaded-p) t)
+      (appkit-view-enqueue-event
+       view (list :position position-intent))
+      (appkit-request-sync
+       view :structure t :part 'frame :position t)
+      (chirp-media-prefetch-tweets tweets (appkit-view-buffer view))
+      (chirp-enrich-quoted-tweets tweets (appkit-view-buffer view))
+      (when new-count
+        (message "%s" (chirp-timeline--refresh-message new-count))))))
+
+(defun chirp-timeline--settle-error (view state generation message)
+  "Settle GENERATION in VIEW and STATE with error MESSAGE."
+  (setf (chirp-timeline--generation-settled-p generation) t)
+  (when (chirp-timeline--generation-current-p view state generation)
+    (let ((status (plist-get state :status)))
+      (setf (plist-get status :phase) 'error
+            (plist-get status :message) message
+            (plist-get state :generation) nil)
+      (appkit-request-sync view :part 'frame :position t)
+      (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))))
+
+(defun chirp-timeline--cancel-request (view)
+  "Cancel VIEW's superseded primary timeline transport, if any."
+  (let* ((table (appkit-view-request-table view))
+         (request (gethash chirp-timeline--request-key table)))
+    (remhash chirp-timeline--request-key table)
+    (when request
+      (chirp-backend-cancel-request request))))
+
+(defun chirp-timeline--interrupt-state-request (state)
+  "Retire STATE's interrupted request generation, if any."
+  (when-let* ((generation (plist-get state :generation)))
+    (setf (chirp-timeline--generation-settled-p generation) t
+          (plist-get state :generation) nil)
+    (let ((status (plist-get state :status)))
+      (setf (plist-get status :phase)
+            (if (plist-get state :loaded-p) 'idle 'initial)
+            (plist-get status :message) nil))))
+
+(defun chirp-timeline--retire-request (view state generation)
+  "Retire VIEW's transport when GENERATION still owns STATE."
+  (when (chirp-timeline--generation-current-p view state generation)
+    (remhash chirp-timeline--request-key
+             (appkit-view-request-table view))))
+
+(defun chirp-timeline--request (view phase)
+  "Start one logical PHASE request owned by VIEW."
+  (let* ((state (chirp-timeline--view-state view))
+         (query (plist-get state :query))
+         (page (plist-get state :page))
+         (status (plist-get state :status))
+         (generation
+          (chirp-timeline--generation-create
+           :id (gensym "chirp-timeline-generation-")
+           :phase phase))
+         callback-ran-p
+         request)
+    ;; Revoke the previous generation before cancellation can synchronously
+    ;; deliver its errback at the callback boundary.
+    (chirp-timeline--interrupt-state-request state)
+    (setf (plist-get state :generation) generation
+          (plist-get status :phase) phase
+          (plist-get status :message) nil)
+    (chirp-timeline--cancel-request view)
+    (appkit-request-sync view :part 'frame :position t)
+    (setq request
+          (chirp-backend-feed
+           (lambda (tweets envelope)
+             (setq callback-ran-p t)
+             (chirp-timeline--retire-request view state generation)
+             (chirp-timeline--settle-success
+              view state generation tweets envelope))
+           (eq (plist-get query :kind) 'following)
+           (lambda (message)
+             (setq callback-ran-p t)
+             (chirp-timeline--retire-request view state generation)
+             (chirp-timeline--settle-error
+              view state generation message))
+           (chirp-timeline--fetch-count state phase)
+           (and (eq phase 'older) (plist-get page :next-cursor))
+           view))
+    (cond
+     ((and (not callback-ran-p)
+           request
+           (chirp-timeline--generation-current-p view state generation))
+      (puthash chirp-timeline--request-key request
+               (appkit-view-request-table view)))
+     ((and (not callback-ran-p)
+           (null request)
+           (chirp-timeline--generation-current-p view state generation))
+      (chirp-timeline--settle-error
+       view state generation "X timeline request did not start")))
+    request))
+
+(defun chirp-timeline--ensure-initial-request (view)
+  "Start VIEW's initial request when its feed has never settled."
+  (let* ((state (chirp-timeline--view-state view))
+         (phase (plist-get (plist-get state :status) :phase)))
+    (when (and (eq phase 'initial)
+               (not (plist-get state :loaded-p))
+               (null (plist-get state :generation)))
+      (chirp-timeline--request view 'initial))))
+
+(defun chirp-timeline--open-primary (kind)
+  "Open or reuse the Appkit-owned primary timeline for KIND."
+  (let* ((app (chirp-app))
+         (view (appkit-view-for-id app chirp-timeline--primary-view-id)))
+    (if view
+        (let* ((state (chirp-timeline--view-state view))
+               (current-kind
+                (plist-get (plist-get state :query) :kind))
+               (buffer (appkit-view-buffer view)))
+          (unless (eq current-kind kind)
+            (chirp-timeline--switch-primary view kind))
+          (pop-to-buffer buffer)
+          buffer)
+      (let* ((state (chirp-timeline--feed-state kind)))
+        ;; A dead view may have been killed while this session-owned state had
+        ;; an in-flight transport.  Its callbacks no longer own a live view.
+        (chirp-timeline--interrupt-state-request state)
+        (let* ((view
+                (appkit-open-view
+                 :app app
+                 :id chirp-timeline--primary-view-id
+                 :mode 'chirp-timeline--mode
+                 :buffer-name (chirp--format-buffer-name
+                               (chirp-timeline--title kind))
+                 :state state
+                 :sync-function #'chirp-timeline--sync
+                 :parts '(frame entries)
+                 :position-policy 'chirp-entry-id
+                 :setup #'chirp-timeline--setup-view
+                 :select t))
+               (buffer (appkit-view-buffer view)))
+          ;; SETUP projects before SELECT; restore once more now that a
+          ;; recreated buffer has a live window for its durable viewport.
+          (when-let* ((position (plist-get state :position)))
+            (with-current-buffer buffer
+              (appkit-position-restore position)))
+          (chirp-timeline--ensure-initial-request view)
+          buffer)))))
+
+(defun chirp-timeline--switch-primary (view kind)
+  "Switch primary timeline VIEW in place to cached feed KIND."
+  (let* ((state (chirp-timeline--view-state view))
+         (current-kind (plist-get (plist-get state :query) :kind)))
+    (unless (eq current-kind kind)
+      (let* ((buffer (appkit-view-buffer view))
+             (target (chirp-timeline--feed-state kind)))
+        (when (plist-get state :items)
+          (with-current-buffer buffer
+            (setf (plist-get state :position)
+                  (appkit-position-capture
+                   :anchor-property 'chirp-entry-id
+                   :preserve-window-start t))))
+        (chirp-timeline--interrupt-state-request state)
+        (chirp-timeline--cancel-request view)
+        (chirp-timeline--interrupt-state-request target)
+        (setf (appkit-view-state view) target
+              (appkit-view-pending-events view) nil)
+        (with-current-buffer buffer
+          (setq-local chirp--view-title (chirp-timeline--title kind))
+          (chirp--apply-buffer-name buffer chirp--view-title))
+        (appkit-view-enqueue-event
+         view (list :position (or (plist-get target :position) 'first)))
+        (appkit-request-sync view :structure t :part 'frame :position t)
+        (chirp-timeline--ensure-initial-request view)))))
+
+(defun chirp-timeline--refresh-primary ()
+  "Refresh the current Appkit-owned primary timeline."
+  (if-let* ((view (chirp-timeline--current-view)))
+      (chirp-timeline--request view 'refresh)
+    (user-error "Current view is not a primary timeline")))
 
 (defun chirp-timeline--likes-title (handle)
   "Return the buffer title for liked tweets by HANDLE."
@@ -100,23 +563,28 @@
 (defun chirp-timeline--current-count (buffer)
   "Return the current timeline post count for BUFFER."
   (with-current-buffer buffer
-    (or chirp--timeline-count
-        (let ((count 0)
-              (pos (chirp--entry-position-forward (point-min))))
-          (while pos
-            (setq count (1+ count)
-                  pos (chirp--entry-position-forward
-                       (min (point-max) (1+ pos)))))
-          count))))
+    (if-let* ((view (chirp-timeline--current-view)))
+        (length (plist-get (chirp-timeline--view-state view) :items))
+      (or chirp--timeline-count
+          (let ((count 0)
+                (pos (chirp--entry-position-forward (point-min))))
+            (while pos
+              (setq count (1+ count)
+                    pos (chirp--entry-position-forward
+                         (min (point-max) (1+ pos)))))
+            count)))))
 
 (defun chirp-timeline--buffer-tweets (buffer)
-  "Return distinct tweets currently visible in BUFFER."
-  (let (tweets)
-    (chirp--map-buffer-tweets
-     buffer
-     (lambda (tweet)
-       (push tweet tweets)))
-    (nreverse tweets)))
+  "Return the canonical tweets represented by BUFFER."
+  (with-current-buffer buffer
+    (if-let* ((view (chirp-timeline--current-view)))
+        (plist-get (chirp-timeline--view-state view) :items)
+      (let (tweets)
+        (chirp--map-buffer-tweets
+         buffer
+         (lambda (tweet)
+           (push tweet tweets)))
+        (nreverse tweets)))))
 
 (defun chirp-timeline--prepended-new-count (current fetched)
   "Return how many unique FETCHED tweets are not already present in CURRENT.
@@ -399,35 +867,53 @@ requests a specific pagination page."
      cursor)))
 
 (defun chirp-timeline-open-home ()
-  "Open the home timeline."
+  "Open Chirp's unique Appkit-owned home timeline."
   (interactive)
-  (chirp-timeline--open 'home :limit chirp-default-max-results))
+  (chirp-timeline--open-primary 'home))
 
 (defun chirp-timeline-open-following ()
-  "Open the following timeline."
+  "Open Chirp's unique Appkit-owned following timeline."
   (interactive)
-  (chirp-timeline--open 'following :limit chirp-default-max-results))
+  (chirp-timeline--open-primary 'following))
+
+(defun chirp-timeline--load-more-primary (view)
+  "Load an older page for primary timeline VIEW."
+  (let* ((state (chirp-timeline--view-state view))
+         (page (plist-get state :page))
+         (phase (plist-get (plist-get state :status) :phase)))
+    (cond
+     ((memq phase '(initial refresh older))
+      (message "Timeline request already in progress..."))
+     ((or (plist-get page :exhausted-p)
+          (not (plist-get page :next-cursor)))
+      (message "No older posts."))
+     (t
+      (chirp-timeline--request view 'older)))))
 
 (defun chirp-load-more (&optional anchor-id)
-  "Load older posts and restore point to ANCHOR-ID when supplied."
+  "Load older posts, preserving the current semantic position.
+
+ANCHOR-ID remains supported by legacy timeline views."
   (interactive)
-  (unless (memq chirp--timeline-kind '(home following))
-    (user-error "Current view does not support loading more posts"))
-  (cond
-   (chirp--timeline-loading-more
-    (message "Already loading older posts..."))
-   (chirp--timeline-exhausted-p
-    (message "No older posts."))
-   ((not chirp--timeline-next-cursor)
-    (message "No older posts."))
-  (t
-    (chirp-timeline--open
-     chirp--timeline-kind
-     :limit (or chirp--timeline-limit chirp-default-max-results)
-     :anchor-id (or anchor-id (chirp-capture-point-anchor))
-     :buffer (current-buffer)
-     :loading-more t
-     :cursor chirp--timeline-next-cursor))))
+  (if-let* ((view (chirp-timeline--current-view)))
+      (chirp-timeline--load-more-primary view)
+    (unless (memq chirp--timeline-kind '(home following))
+      (user-error "Current view does not support loading more posts"))
+    (cond
+     (chirp--timeline-loading-more
+      (message "Already loading older posts..."))
+     (chirp--timeline-exhausted-p
+      (message "No older posts."))
+     ((not chirp--timeline-next-cursor)
+      (message "No older posts."))
+     (t
+      (chirp-timeline--open
+       chirp--timeline-kind
+       :limit (or chirp--timeline-limit chirp-default-max-results)
+       :anchor-id (or anchor-id (chirp-capture-point-anchor))
+       :buffer (current-buffer)
+       :loading-more t
+       :cursor chirp--timeline-next-cursor)))))
 
 (defun chirp-timeline-open-bookmarks (&optional buffer)
   "Open bookmarks in BUFFER."
@@ -568,6 +1054,12 @@ expose subviews, cycle the current profile mode."
   (cond
    ((functionp chirp--profile-switch-mode-function)
     (funcall chirp--profile-switch-mode-function :next))
+   ((chirp-timeline--current-view)
+    (let* ((view (chirp-timeline--current-view))
+           (state (chirp-timeline--view-state view))
+           (kind (plist-get (plist-get state :query) :kind)))
+      (chirp-timeline--switch-primary
+       view (if (eq kind 'home) 'following 'home))))
    (t
     (pcase chirp--timeline-kind
       ('home
