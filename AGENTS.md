@@ -4,12 +4,13 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 
 ## Product and Architecture Boundaries
 
-- Chirp is an Emacs UI for X/Twitter. `twitter-cli` owns authentication, network access, API compatibility, and wire-format details; do not add direct X API calls to Chirp.
+- Chirp is an Emacs UI for X/Twitter. `chirp-x.el` owns explicit session credentials, `url.el` account transport, persisted GraphQL construction, allowlisted REST roots, and X error decoding; do not add direct X calls outside that module. Authenticated POST retrievals disable `url.el` replay, become lifecycle-owned before quits can escape, and report every post-dispatch failure as an unknown remote outcome. Its bounded public query-ID registry refresh may use Plz/curl, but must never receive X credentials or issue X API requests.
 - `chirp.el` is the public entry point. External users load `(require 'chirp)`.
-- `chirp-backend.el` owns `twitter-cli` discovery, process invocation, retries, and JSON envelope handling.
-- `chirp-core.el` owns shared state, history, buffer lifecycle, and cross-view navigation.
-- `chirp-render.el` renders normalized data. `chirp-media.el` owns cache paths, thumbnail extraction, prefetching, and large-media display.
-- View modules orchestrate fetching and rendering; they must not duplicate backend, normalization, or media behavior. `chirp-actions.el` owns compose and write actions, which share one backend request path.
+- `chirp-backend.el` owns operation selection, compose/upload orchestration, response adaptation, and normalized callback contracts. `chirp-xchat.el` owns modern XChat variables, cursor validation, bounded Thrift decoding, and DM wire normalization. Chirp has no CLI transport; never add subprocess-backed X API behavior.
+- `chirp-core.el` owns shared state, history, cross-view navigation, and the lazy Appkit application session.
+- `native/chirp-xchat-module` is the optional boundary for official-XDK cryptography. It owns native private and conversation keys, verification, decryption, and outgoing encryption/signing; it must not call X GraphQL, return key material to Lisp, persist secrets, or load merely because Chirp loaded. Recovery binds the registered X user identity to the native session, and per-message Lisp input must never choose or override the signing sender. Lisp may receive only verified domain data and opaque outgoing envelopes. Users configure its absolute path explicitly through `chirp-xchat-native-module-file`; never infer it from source trees, build directories, or `load-path`. Only the pinned official SDK may contact strictly validated HTTPS Juicebox realms, and only after an explicit PIN submission. Native workers own only Rust values and never retain an `emacs_env`, Lisp value, reference, or callback. Explicit destruction is the authoritative lifecycle end; GC finalization may request cancellation and detach but must never block Emacs.
+- `chirp-render.el` renders normalized data. `chirp-media.el` owns cache paths, thumbnail extraction, prefetching, and large-media display while Appkit owns bounded task scheduling and lifecycle cancellation.
+- View modules orchestrate fetching and rendering; they must not duplicate backend, protocol, normalization, or media behavior. `chirp-dm.el` owns the Appkit inbox and conversation composer projection; it does not parse XChat wire data or maintain parallel timeline/input state. `chirp-actions.el` owns tweet compose and write actions, which share one backend request path.
 
 ## Change Discipline
 
@@ -90,17 +91,43 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 - Byte-compile every distributable `.el` file with zero warnings. Remove generated `.elc` files after the check.
 - Run `checkdoc` with zero warnings across all distributable `.el` files, not only the main entry file. Public definitions have complete docstrings whose first line is a complete sentence ending in a period; document arguments in uppercase and in use order without visually aligning continuation lines inside help text.
 - Run `package-lint` with zero warnings across all distributable `.el` files with `package-lint-main-file` configured to `chirp.el`; do not duplicate package metadata in implementation files.
+- When native module sources change, run its locked Rust tests, formatting, Clippy, and the ERT module smoke under `--module-assertions`. The release module supports explicit Juicebox recovery, but every automated gate must use synthetic adapters and make no realm requests:
+
+```bash
+native/bootstrap-deps.sh
+(
+  cd native/chirp-xchat-module
+  cargo test --locked --features test-vector
+  cargo fmt -- --check
+  cargo clippy --locked --features test-vector --all-targets -- -D warnings
+  cargo build --locked --features test-vector
+  cargo build --release --locked
+)
+native/check-release.sh
+MODULE_FILE="$(find native/chirp-xchat-module/target/debug -maxdepth 1 \
+  -type f \( -name 'libchirp_xchat_native.so' \
+  -o -name 'libchirp_xchat_native.dylib' \
+  -o -name 'chirp_xchat_native.dll' \) -print -quit)"
+CHIRP_XCHAT_MODULE_FILE="$MODULE_FILE" \
+  emacs -Q --batch --module-assertions -L . -L lisp -l ert \
+  -l test/chirp-xchat-native-test.el -f ert-run-tests-batch-and-exit
+```
+
 - Run the complete ERT suite, not a single test file:
 
 ```bash
-emacs -Q -batch --eval '(setq load-prefer-newer t)' -L . -L lisp -l ert \
+emacs -Q -batch --eval '(setq load-prefer-newer t)' -L ../appkit.el \
+  -L ../browser-session -L ../plz -L . -L lisp -l ert \
   -l test/chirp-actions-test.el -l test/chirp-backend-test.el \
-  -l test/chirp-media-test.el -l test/chirp-notifications-test.el \
+  -l test/chirp-dm-test.el -l test/chirp-xchat-native-test.el \
+  -l test/chirp-x-test.el -l test/chirp-media-test.el \
+  -l test/chirp-notifications-test.el \
   -l test/chirp-profile-test.el -l test/chirp-render-test.el \
   -l test/chirp-thread-test.el -l test/chirp-timeline-test.el \
   --eval '(ert-run-tests-batch-and-exit)'
 
-emacs -Q -batch --eval '(setq load-prefer-newer t)' -L . -L lisp \
+emacs -Q -batch --eval '(setq load-prefer-newer t)' -L ../appkit.el \
+  -L ../browser-session -L ../plz -L . -L lisp \
   -f batch-byte-compile chirp.el lisp/*.el test/*.el
 ```
 
