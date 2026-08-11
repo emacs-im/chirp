@@ -14,6 +14,11 @@
 (require 'json)
 (require 'subr-x)
 (require 'chirp-core)
+(require 'chirp-x)
+(require 'chirp-xchat)
+
+(declare-function chirp-xchat-native-prepare-text
+                  "chirp-xchat-native" (conversation-id text))
 
 (defconst chirp-backend--json-false (make-symbol "chirp-json-false")
   "Sentinel value used for JSON false.")
@@ -37,55 +42,22 @@ When zero or negative, the in-memory read cache is disabled."
   :type 'number
   :group 'chirp)
 
-(defvar chirp-backend--read-cache (make-hash-table :test #'equal)
-  "In-memory cache for successful Chirp read responses.")
+(defun chirp-backend--read-cache ()
+  "Return the current session's completed read cache."
+  (chirp--session-backend-read-cache (chirp--session)))
 
-(defvar chirp-backend--pending-read-requests (make-hash-table :test #'equal)
-  "Map cache keys to queued Chirp read callbacks while a request is in flight.")
-
-(defun chirp-backend--auto-detect-command-p ()
-  "Return non-nil when Chirp should auto-detect the CLI command."
-  (or (null chirp-cli-command)
-      (string-empty-p chirp-cli-command)))
-
-(defun chirp-backend--command-candidates ()
-  "Return candidate twitter-cli executable names."
-  (if (chirp-backend--auto-detect-command-p)
-      chirp-backend--default-cli-commands
-    (list chirp-cli-command)))
-
-(defun chirp-backend--resolve-from-exec-path (candidates)
-  "Return the first executable in CANDIDATES found via variable `exec-path'."
-  (catch 'found
-    (dolist (candidate candidates)
-      (let ((command (executable-find candidate)))
-        (when command
-          (throw 'found command))))
-    nil))
-
-(defun chirp-backend--resolve-from-search-paths (candidates)
-  "Return the first executable found in `chirp-cli-search-paths' for CANDIDATES."
-  (catch 'command
-    (dolist (dir chirp-cli-search-paths)
-      (let ((expanded-dir (expand-file-name dir)))
-        (when (file-directory-p expanded-dir)
-          (dolist (candidate candidates)
-            (let ((path (expand-file-name candidate expanded-dir)))
-              (when (file-executable-p path)
-                (throw 'command path)))))))
-    nil))
-
-(defun chirp-backend-command ()
-  "Return the resolved twitter-cli executable path, or nil."
-  (let ((candidates (chirp-backend--command-candidates)))
-    (or (chirp-backend--resolve-from-exec-path candidates)
-        (and (chirp-backend--auto-detect-command-p)
-             (chirp-backend--resolve-from-search-paths candidates)))))
+(defun chirp-backend--pending-reads ()
+  "Return the current session's in-flight read callback table."
+  (chirp--session-backend-pending-reads (chirp--session)))
 
 (defun chirp-backend-clear-cache ()
-  "Clear Chirp's in-memory read cache."
+  "Clear the current session's completed in-memory read cache."
   (interactive)
-  (clrhash chirp-backend--read-cache))
+  (clrhash (chirp-backend--read-cache)))
+
+(defun chirp-backend-cancel-request (request)
+  "Cancel active backend REQUEST exactly once."
+  (chirp-x-cancel-request request))
 
 (defun chirp-backend--clone-data (value)
   "Return VALUE copied deeply enough for safe cache reuse."
@@ -155,14 +127,14 @@ When zero or negative, the in-memory read cache is disabled."
   "Drop cached thread and article data for TWEET-OR-URL."
   (let ((thread-key (chirp-backend--thread-cache-key tweet-or-url))
         (tweet-id (chirp-backend--tweet-id-from-target tweet-or-url)))
-    (remhash thread-key chirp-backend--read-cache)
+    (remhash thread-key (chirp-backend--read-cache))
     (when tweet-id
       (chirp-backend-invalidate-article tweet-id))))
 
 (defun chirp-backend-invalidate-article (tweet-id)
   "Drop cached article data for TWEET-ID."
   (let ((key (chirp-backend--article-cache-key tweet-id)))
-    (remhash key chirp-backend--read-cache)))
+    (remhash key (chirp-backend--read-cache))))
 
 (defun chirp-backend-invalidate-user (handle)
   "Drop cached profile metadata and posts for HANDLE."
@@ -173,7 +145,7 @@ When zero or negative, the in-memory read cache is disabled."
                      (chirp-backend--profile-timeline-cache-key handle 'media)
                      (chirp-backend--followers-cache-key handle)
                      (chirp-backend--following-users-cache-key handle)))
-    (remhash key chirp-backend--read-cache)))
+    (remhash key (chirp-backend--read-cache))))
 
 (defun chirp-backend--cache-entry-live-p (entry now)
   "Return non-nil when cached ENTRY is still fresh at NOW."
@@ -182,15 +154,15 @@ When zero or negative, the in-memory read cache is disabled."
        (numberp (plist-get entry :expires-at))
        (> (plist-get entry :expires-at) now)))
 
-(defun chirp-backend--cached-result (key)
-  "Return KEY's cached result plist, or nil when absent or expired."
+(defun chirp-backend--cached-result (key cache)
+  "Return KEY's cached result from CACHE, or nil when absent or expired."
   (let* ((now (float-time))
-         (entry (gethash key chirp-backend--read-cache)))
+         (entry (gethash key cache)))
     (cond
      ((chirp-backend--cache-entry-live-p entry now)
       entry)
      (entry
-      (remhash key chirp-backend--read-cache)
+      (remhash key cache)
       nil)
      (t nil))))
 
@@ -213,41 +185,47 @@ When zero or negative, the in-memory read cache is disabled."
   "Fetch KEY via FETCHER and serve CALLBACK from the short-lived read cache.
 
 ERRBACK handles failures.  FETCHER is called with success and error callbacks."
-  (if-let* ((entry (chirp-backend--cached-result key)))
-      (funcall callback
-               (chirp-backend--clone-data (plist-get entry :value))
-               (chirp-backend--clone-data (plist-get entry :envelope)))
-    (let ((pending (gethash key chirp-backend--pending-read-requests)))
-      (if pending
-          (puthash key
-                   (append pending (list (cons callback errback)))
-                   chirp-backend--pending-read-requests)
-        (puthash key (list (cons callback errback))
-                 chirp-backend--pending-read-requests)
-        (condition-case err
-            (funcall
-             fetcher
-             (lambda (value envelope)
-               (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
-                                   (remhash key chirp-backend--pending-read-requests))))
-                 (when (> chirp-backend-read-cache-ttl 0)
-                   (puthash key
-                            (list :value (chirp-backend--clone-data value)
-                                  :envelope (chirp-backend--clone-data envelope)
-                                  :expires-at (+ (float-time)
-                                                 chirp-backend-read-cache-ttl))
-                            chirp-backend--read-cache))
-                 (chirp-backend--dispatch-read-success requesters value envelope)))
-             (lambda (message)
-               (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
-                                   (remhash key chirp-backend--pending-read-requests))))
-                 (chirp-backend--dispatch-read-error requesters message))))
-          (error
-           (let ((requesters (prog1 (gethash key chirp-backend--pending-read-requests)
-                               (remhash key chirp-backend--pending-read-requests))))
-             (chirp-backend--dispatch-read-error
-              requesters
-              (error-message-string err)))))))))
+  (let ((cache (chirp-backend--read-cache))
+        (pending-table (chirp-backend--pending-reads)))
+    (if-let* ((entry (chirp-backend--cached-result key cache)))
+        (funcall callback
+                 (chirp-backend--clone-data (plist-get entry :value))
+                 (chirp-backend--clone-data (plist-get entry :envelope)))
+      (let ((pending (gethash key pending-table)))
+        (if pending
+            (puthash key
+                     (append pending (list (cons callback errback)))
+                     pending-table)
+          (puthash key (list (cons callback errback)) pending-table)
+          (condition-case err
+              (funcall
+               fetcher
+               (lambda (value envelope)
+                 (let ((requesters
+                        (prog1 (gethash key pending-table)
+                          (remhash key pending-table))))
+                   (when (> chirp-backend-read-cache-ttl 0)
+                     (puthash
+                      key
+                      (list :value (chirp-backend--clone-data value)
+                            :envelope (chirp-backend--clone-data envelope)
+                            :expires-at (+ (float-time)
+                                           chirp-backend-read-cache-ttl))
+                      cache))
+                   (chirp-backend--dispatch-read-success
+                    requesters value envelope)))
+               (lambda (message)
+                 (let ((requesters
+                        (prog1 (gethash key pending-table)
+                          (remhash key pending-table))))
+                   (chirp-backend--dispatch-read-error requesters message))))
+            (error
+             (let ((requesters
+                    (prog1 (gethash key pending-table)
+                      (remhash key pending-table))))
+               (chirp-backend--dispatch-read-error
+                requesters
+                (error-message-string err))))))))))
 
 (defun chirp-backend--missing-command-message ()
   "Return an error message for a missing twitter-cli executable."

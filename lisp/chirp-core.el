@@ -14,6 +14,8 @@
 (require 'subr-x)
 (require 'browse-url)
 (require 'warnings)
+(require 'appkit-core)
+(require 'appkit-invalidation)
 
 (declare-function chirp-backend-tweet "chirp-backend" (tweet-id callback &optional errback))
 (declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
@@ -33,46 +35,79 @@
 (declare-function chirp-media-prefetch-tweet "chirp-media" (tweet buffer))
 (declare-function chirp-media-image-mode "chirp-media" ())
 (declare-function chirp-media-view-mode "chirp-media" ())
+(declare-function chirp-xchat-native-session-destroy
+                  "chirp-xchat-native-module" (session))
 
 (defgroup chirp nil
   "Browse X/Twitter from Emacs."
   :group 'applications)
 
-(defcustom chirp-cli-command nil
-  "Command used to invoke twitter-cli.
+(appkit-define-app-kind chirp :shutdown #'chirp--shutdown-app)
 
-When nil, Chirp searches for `twitter' and `twitter-cli' in the variable
-`exec-path'."
-  :type '(choice (const :tag "Auto-detect" nil)
-                 string)
-  :group 'chirp)
+(cl-defstruct (chirp--session (:constructor chirp--session-create))
+  "State owned by one Chirp application session."
+  tweet-state-overrides
+  quoted-tweet-cache
+  quoted-tweet-pending
+  backend-read-cache
+  backend-pending-reads
+  primary-feed-states
+  media-runtime
+  xchat-native-session
+  xchat-native-epoch
+  xchat-recovery
+  xchat-user-id)
 
-(defcustom chirp-cli-search-paths
-  '("~/.local/bin"
-    "~/bin"
-    "/usr/local/bin"
-    "/opt/homebrew/bin"
-    "/home/linuxbrew/.linuxbrew/bin")
-  "Extra directories Chirp checks for twitter-cli executables.
+(defun chirp--shutdown-app (app)
+  "Destroy native state owned by stopped Chirp APP."
+  (let* ((state (appkit-app-state app))
+         (native-session
+          (and (chirp--session-p state)
+               (chirp--session-xchat-native-session state))))
+    (when native-session
+      (setf (chirp--session-xchat-native-session state) nil
+            (chirp--session-xchat-native-epoch state) nil
+            (chirp--session-xchat-recovery state) nil)
+      (unless (fboundp 'chirp-xchat-native-session-destroy)
+        (error "Chirp lost the loaded XChat native module"))
+      (chirp-xchat-native-session-destroy native-session))))
 
-These paths are consulted after the variable `exec-path' when
-`chirp-cli-command' is nil."
-  :type '(repeat directory)
-  :group 'chirp)
+(defvar chirp--app nil
+  "Lazy Appkit application session owned by Chirp.")
+
+(defun chirp--make-session ()
+  "Return initialized state for a new Chirp application session."
+  (chirp--session-create
+   :tweet-state-overrides (make-hash-table :test #'equal)
+   :quoted-tweet-cache (make-hash-table :test #'equal)
+   :quoted-tweet-pending (make-hash-table :test #'equal)
+   :backend-read-cache (make-hash-table :test #'equal)
+   :backend-pending-reads (make-hash-table :test #'equal)
+   :primary-feed-states (make-hash-table :test #'eq)))
+
+(defun chirp-app ()
+  "Return Chirp's live Appkit application session, creating it when needed."
+  (unless (appkit-app-live-p chirp--app)
+    (setq chirp--app
+          (appkit-start-app
+           'chirp :id 'default :state (chirp--make-session))))
+  chirp--app)
+
+(defun chirp--session ()
+  "Return state for Chirp's current application session."
+  (appkit-app-state (chirp-app)))
+
+(defun chirp-stop ()
+  "Stop Chirp's runtime and cancel its owned asynchronous work."
+  (interactive)
+  (unwind-protect
+      (when (appkit-app-live-p chirp--app)
+        (appkit-stop-app chirp--app))
+    (setq chirp--app nil)))
 
 (defcustom chirp-buffer-name "*chirp*"
   "Base buffer name used for newly created Chirp views."
   :type 'string
-  :group 'chirp)
-
-(defcustom chirp-cli-max-retries 2
-  "Number of times Chirp retries transient twitter-cli failures."
-  :type 'integer
-  :group 'chirp)
-
-(defcustom chirp-cli-retry-delay 1.0
-  "Seconds to wait before retrying a transient twitter-cli failure."
-  :type 'number
   :group 'chirp)
 
 (defcustom chirp-default-max-results 20
@@ -91,11 +126,11 @@ Set it to nil to refresh using the current timeline size instead."
   :group 'chirp)
 
 (defcustom chirp-rerender-idle-delay 0.2
-  "Seconds Chirp waits for Emacs to go idle before background rerenders.
+  "Seconds Chirp coalesces background projection updates.
 
-This applies to lightweight redraws triggered by async media, link-card, and
-quoted-tweet enrichment.  Using an idle timer keeps cursor and mouse movement
-smoother while background data arrives."
+This applies to updates triggered by async media, link-card, and quoted-tweet
+enrichment.  Appkit views coalesce invalidations; legacy views retain one idle
+redraw timer while their projections are migrated."
   :type 'number
   :group 'chirp)
 
@@ -168,11 +203,11 @@ commands still work, and displays alt text when twitter-cli provides it."
 (defvar-local chirp--rerender-function nil
   "Function used to redraw the current Chirp view without refetching data.")
 
+(defvar-local chirp--rerender-timer nil
+  "Idle timer used to coalesce legacy Chirp redraws.")
+
 (defvar-local chirp--expanded-tweet-ids nil
   "Hash table of tweet ids expanded inline in the current Chirp buffer.")
-
-(defvar-local chirp--rerender-timer nil
-  "Pending timer used to coalesce lightweight Chirp rerenders.")
 
 (defvar-local chirp--entry-wrap-navigation t
   "When non-nil, entry navigation wraps around at buffer boundaries.")
@@ -199,7 +234,7 @@ commands still work, and displays alt text when twitter-cli provides it."
   "Timestamp when the current Chirp status started.")
 
 (defvar-local chirp--status-timer nil
-  "Timer used to refresh Chirp's persistent status display.")
+  "Timer used to refresh Chirp's persistent mode-line status.")
 
 (put 'chirp--request-token 'permanent-local t)
 (put 'chirp--timeline-kind 'permanent-local t)
@@ -209,6 +244,7 @@ commands still work, and displays alt text when twitter-cli provides it."
 (put 'chirp--timeline-load-more-function 'permanent-local t)
 (put 'chirp--timeline-exhausted-p 'permanent-local t)
 (put 'chirp--rerender-function 'permanent-local t)
+(put 'chirp--rerender-timer 'permanent-local t)
 (put 'chirp--expanded-tweet-ids 'permanent-local t)
 (put 'chirp--entry-wrap-navigation 'permanent-local t)
 (put 'chirp--profile-handle 'permanent-local t)
@@ -219,17 +255,22 @@ commands still work, and displays alt text when twitter-cli provides it."
 (put 'chirp--status-kind 'permanent-local t)
 (put 'chirp--status-start-time 'permanent-local t)
 (put 'chirp--status-timer 'permanent-local t)
-(defvar chirp-tweet-state-overrides (make-hash-table :test #'equal)
-  "Map tweet ids to local state overrides such as likes and bookmarks.")
 
-(defvar chirp-quoted-tweet-cache (make-hash-table :test #'equal)
-  "Map quoted tweet ids to enriched Chirp tweet plists.")
-
-(defvar chirp-quoted-tweet-pending (make-hash-table :test #'equal)
-  "Map quoted tweet ids to pending enrichment callbacks.")
-
-(defconst chirp--quoted-tweet-fetch-failed (make-symbol "chirp-quoted-tweet-fetch-failed")
+(defconst chirp--quoted-tweet-fetch-failed
+  (make-symbol "chirp-quoted-tweet-fetch-failed")
   "Sentinel value used when quoted tweet enrichment fails.")
+
+(defun chirp--tweet-state-table ()
+  "Return the current session's tweet-state override table."
+  (chirp--session-tweet-state-overrides (chirp--session)))
+
+(defun chirp--quoted-tweet-cache ()
+  "Return the current session's quoted-tweet cache."
+  (chirp--session-quoted-tweet-cache (chirp--session)))
+
+(defun chirp--quoted-tweet-pending ()
+  "Return the current session's pending quoted-tweet table."
+  (chirp--session-quoted-tweet-pending (chirp--session)))
 
 (defvar chirp-view-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1071,8 +1112,8 @@ When MAX-COUNT is non-nil, return at most that many images."
                      (chirp-get-in value '("quoted_status_result" "result"))))
                 (t nil))))
     (or (and-let* ((quoted-id (chirp-first-nonblank
-                               (chirp-get quoted "id" "id_str" "rest_id")))
-                   (cached (gethash quoted-id chirp-quoted-tweet-cache))
+                               (chirp-get quoted "rest_id" "id_str" "id")))
+                   (cached (gethash quoted-id (chirp--quoted-tweet-cache)))
                    ((not (eq cached chirp--quoted-tweet-fetch-failed))))
          cached)
         (chirp-normalize-tweet quoted))))
@@ -1083,8 +1124,9 @@ When MAX-COUNT is non-nil, return at most that many images."
 
 (defun chirp--dispatch-quoted-tweet-callbacks (tweet-id payload)
   "Run pending callbacks for TWEET-ID with PAYLOAD."
-  (let ((callbacks (prog1 (gethash tweet-id chirp-quoted-tweet-pending)
-                      (remhash tweet-id chirp-quoted-tweet-pending))))
+  (let* ((pending (chirp--quoted-tweet-pending))
+         (callbacks (prog1 (gethash tweet-id pending)
+                      (remhash tweet-id pending))))
     (dolist (callback callbacks)
       (when callback
         (condition-case err
@@ -1098,25 +1140,27 @@ When MAX-COUNT is non-nil, return at most that many images."
 
 (defun chirp--request-quoted-tweet (tweet-id callback)
   "Fetch quoted tweet TWEET-ID and run CALLBACK with the result."
-  (let ((cached (gethash tweet-id chirp-quoted-tweet-cache)))
+  (let* ((cache (chirp--quoted-tweet-cache))
+         (pending (chirp--quoted-tweet-pending))
+         (cached (gethash tweet-id cache)))
     (cond
      ((eq cached chirp--quoted-tweet-fetch-failed)
       nil)
      (cached
       (funcall callback cached))
-     ((gethash tweet-id chirp-quoted-tweet-pending)
+     ((gethash tweet-id pending)
       (puthash tweet-id
-               (cons callback (gethash tweet-id chirp-quoted-tweet-pending))
-               chirp-quoted-tweet-pending))
+               (cons callback (gethash tweet-id pending))
+               pending))
      (t
-      (puthash tweet-id (list callback) chirp-quoted-tweet-pending)
+      (puthash tweet-id (list callback) pending)
       (chirp-backend-tweet
        tweet-id
        (lambda (tweet _envelope)
-         (puthash tweet-id tweet chirp-quoted-tweet-cache)
+         (puthash tweet-id tweet cache)
          (chirp--dispatch-quoted-tweet-callbacks tweet-id tweet))
        (lambda (_message)
-         (puthash tweet-id chirp--quoted-tweet-fetch-failed chirp-quoted-tweet-cache)
+         (puthash tweet-id chirp--quoted-tweet-fetch-failed cache)
          (chirp--dispatch-quoted-tweet-callbacks tweet-id nil)))))))
 
 (defun chirp-enrich-quoted-tweets (tweets buffer)
@@ -1184,14 +1228,15 @@ When MAX-COUNT is non-nil, return at most that many images."
 (defun chirp-set-tweet-state-override (tweet-id prop value)
   "Store VALUE as local PROP override for TWEET-ID."
   (when tweet-id
-    (let ((state (copy-sequence (gethash tweet-id chirp-tweet-state-overrides))))
+    (let* ((table (chirp--tweet-state-table))
+           (state (copy-sequence (gethash tweet-id table))))
       (setq state (plist-put state prop value))
-      (puthash tweet-id state chirp-tweet-state-overrides))))
+      (puthash tweet-id state table))))
 
 (defun chirp-clear-tweet-state-overrides (tweet-id)
   "Clear local state overrides for TWEET-ID."
   (when tweet-id
-    (remhash tweet-id chirp-tweet-state-overrides)))
+    (remhash tweet-id (chirp--tweet-state-table))))
 
 (defun chirp--map-buffer-tweets (buffer fn)
   "Call FN for each distinct tweet entry visible in BUFFER."
