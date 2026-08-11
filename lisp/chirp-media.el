@@ -10,12 +10,19 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'image)
 (require 'image-mode)
 (require 'subr-x)
 (require 'svg)
 (require 'url)
 (require 'url-parse)
 (require 'warnings)
+(require 'plz)
+(require 'appkit-core)
+(require 'appkit-invalidation)
+(require 'appkit-media-image)
+(require 'appkit-media-resource)
+(require 'appkit-task-queue)
 (require 'chirp-core)
 
 (defcustom chirp-cache-directory
@@ -174,38 +181,76 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 (defvar-local chirp--media-source-window-state nil
   "Saved source window state used when closing the current media buffer.")
 
-(defvar chirp-media--prefetch-queue nil
-  "Queued background media download jobs.")
-
-(defvar chirp-media--prefetch-active 0
-  "Number of active background media download jobs.")
-
-(defvar chirp-media--prefetch-pending (make-hash-table :test #'equal)
-  "Map cache file paths to pending prefetch callbacks.")
-
-(defvar chirp-media--thumbnail-pending (make-hash-table :test #'equal)
-  "Map video thumbnail paths to pending extraction callbacks.")
-
-(defvar chirp-media--thumbnail-queue nil
-  "Queued background thumbnail extraction jobs.")
-
-(defvar chirp-media--thumbnail-active 0
-  "Number of active background thumbnail extraction jobs.")
+(cl-defstruct (chirp-media--runtime
+               (:constructor chirp-media--runtime-create))
+  "Media state owned by one Chirp application session."
+  prefetch-tasks
+  prefetch-pending
+  thumbnail-tasks
+  thumbnail-pending
+  link-card-tasks
+  link-card-pending
+  link-card-cache)
 
 (defconst chirp-media--link-card-fetch-failed :chirp-link-card-fetch-failed
-  "Sentinel stored in `chirp-media-link-card-cache' for failed fetches.")
+  "Sentinel stored for failed link-card fetches.")
 
-(defvar chirp-media-link-card-cache (make-hash-table :test #'equal)
-  "Map external URLs to cached link-card metadata.")
+(defconst chirp-media--image-source-limit (* 25 1024 1024)
+  "Maximum bytes accepted from one background image URL.")
 
-(defvar chirp-media--link-card-pending (make-hash-table :test #'equal)
-  "Map external URLs to pending link-card callbacks.")
+(defconst chirp-media--safe-curl-default-args
+  (list "--disable" "--silent" "--proto" "=https"
+        "--max-filesize" (number-to-string chirp-media--image-source-limit)
+        "--max-redirs" "0" "--connect-timeout" "10" "--max-time" "60")
+  "Fixed curl defaults for uncredentialed background image reads.")
 
-(defvar chirp-media--link-card-queue nil
-  "Queued background link-card metadata jobs.")
+(defun chirp-media--runtime ()
+  "Return media state for the current Chirp session."
+  (let ((session (chirp--session)))
+    (or (chirp--session-media-runtime session)
+        (setf (chirp--session-media-runtime session)
+              (chirp-media--runtime-create
+               :prefetch-pending (make-hash-table :test #'equal)
+               :thumbnail-pending (make-hash-table :test #'equal)
+               :link-card-pending (make-hash-table :test #'equal)
+               :link-card-cache (make-hash-table :test #'equal))))))
 
-(defvar chirp-media--link-card-active 0
-  "Number of active background link-card metadata fetches.")
+(defun chirp-media--pending-table (kind)
+  "Return the current media pending table for KIND."
+  (let ((runtime (chirp-media--runtime)))
+    (pcase kind
+      ('prefetch (chirp-media--runtime-prefetch-pending runtime))
+      ('thumbnail (chirp-media--runtime-thumbnail-pending runtime))
+      ('link-card (chirp-media--runtime-link-card-pending runtime))
+      (_ (error "Unknown Chirp media task kind: %S" kind)))))
+
+(defun chirp-media--link-card-cache ()
+  "Return the current session's link-card cache."
+  (chirp-media--runtime-link-card-cache (chirp-media--runtime)))
+
+(defun chirp-media--task-queue (kind limit)
+  "Return the current session's task queue for KIND and LIMIT."
+  (let* ((runtime (chirp-media--runtime))
+         (queue
+          (pcase kind
+            ('prefetch (chirp-media--runtime-prefetch-tasks runtime))
+            ('thumbnail (chirp-media--runtime-thumbnail-tasks runtime))
+            ('link-card (chirp-media--runtime-link-card-tasks runtime))
+            (_ (error "Unknown Chirp media task kind: %S" kind)))))
+    (if (appkit-task-queue-live-p queue)
+        (progn
+          (unless (= (appkit-task-queue-limit queue) limit)
+            (appkit-task-queue-set-limit queue limit))
+          queue)
+      (setq queue (appkit-task-queue-create (chirp-app) limit))
+      (pcase kind
+        ('prefetch
+         (setf (chirp-media--runtime-prefetch-tasks runtime) queue))
+        ('thumbnail
+         (setf (chirp-media--runtime-thumbnail-tasks runtime) queue))
+        ('link-card
+         (setf (chirp-media--runtime-link-card-tasks runtime) queue)))
+      queue)))
 
 (defun chirp-media-quit ()
   "Close the current media buffer."
@@ -303,32 +348,54 @@ When nil, Chirp falls back to a text placeholder for video-like media."
         (concat url (if (string-match-p "\\?" url) "&" "?") "name=orig"))
     url))
 
-(defun chirp-media--cache-file (url kind fallback-ext)
-  "Return a cache file path for URL of KIND using FALLBACK-EXT when needed."
+(defun chirp-media-cache-base (identity kind)
+  "Return an extensionless cache path for IDENTITY in media KIND."
+  (unless (and (stringp identity) (not (string-empty-p identity))
+               (stringp kind) (not (string-empty-p kind)))
+    (error "Chirp media cache identity and kind must be non-empty strings"))
   (expand-file-name
-   (format "%s.%s"
-           (secure-hash 'sha1 url)
-           (chirp-media--url-extension url fallback-ext))
+   (secure-hash 'sha1 identity)
    (chirp-media--cache-subdir kind)))
 
+(defun chirp-media--cache-file (url kind fallback-ext)
+  "Return a cache file path for URL of KIND using FALLBACK-EXT when needed."
+  (format "%s.%s"
+          (chirp-media-cache-base url kind)
+          (chirp-media--url-extension url fallback-ext)))
+
+(defconst chirp-media--image-cache-extensions
+  '("bmp" "gif" "heic" "heif" "img" "jpeg" "jpg" "png" "svg" "svgz"
+    "tif" "tiff" "webp")
+  "Extensions whose cache files must contain recognizable image data.")
+
+(defun chirp-media--valid-cache-file-p (path)
+  "Return non-nil when PATH contains valid data for its cache extension."
+  (and (file-regular-p path)
+       (> (file-attribute-size (file-attributes path)) 0)
+       (or (not (member (downcase (or (file-name-extension path) ""))
+                        chirp-media--image-cache-extensions))
+           (ignore-errors (image-type-from-file-header path)))))
+
 (defun chirp-media-cached-file (url kind &optional fallback-ext)
-  "Return the cached local file for URL of KIND, or nil when absent.
+  "Return the valid cached local file for URL of KIND, or nil when absent.
 
 Use FALLBACK-EXT when URL has no recognizable extension."
   (when (and (stringp url)
              (not (string-empty-p url)))
     (let ((path (chirp-media--cache-file url kind (or fallback-ext "bin"))))
-      (when (file-exists-p path)
+      (when (chirp-media--valid-cache-file-p path)
         path))))
 
 (defun chirp-media--download-file (url path)
-  "Download URL to PATH if needed."
-  (unless (file-exists-p path)
+  "Download URL to PATH unless PATH already contains valid cache data."
+  (unless (chirp-media--valid-cache-file-p path)
+    (when (file-exists-p path)
+      (ignore-errors (delete-file path)))
     (condition-case nil
         (let ((inhibit-message t))
           (url-copy-file url path t))
       (error nil)))
-  (when (file-exists-p path)
+  (when (chirp-media--valid-cache-file-p path)
     path))
 
 (defun chirp-media-local-file (url kind &optional fallback-ext)
@@ -354,6 +421,117 @@ Use FALLBACK-EXT when URL has no recognizable extension."
        chirp-media-prefetch-command
        (> chirp-link-card-prefetch-concurrency 0)))
 
+(defun chirp-media--finish-image-resource
+    (app resource-key entry status &optional file)
+  "Finish APP image ENTRY for RESOURCE-KEY with STATUS and optional FILE."
+  (when (appkit-app-live-p app)
+    (when-let* ((handle (plist-get entry :handle)))
+      (appkit-retire-handle handle)
+      (setf (plist-get entry :handle) nil))
+    (when (eq entry (gethash resource-key
+                             (appkit-app-resource-store app)))
+      (when (and (eq status 'ready)
+                 (not (chirp-media--valid-cache-file-p file)))
+        (when (and (stringp file) (file-exists-p file))
+          (ignore-errors (delete-file file)))
+        (setq status 'failed
+              file nil))
+      (setf (plist-get entry :status) status
+            (plist-get entry :file) file)
+      (dolist (view (plist-get entry :views))
+        (when (appkit-view-live-p view)
+          (appkit-request-sync view :resource resource-key :position t))))))
+
+(cl-defun chirp-media-request-image-resource
+    (view resource-key source &key name)
+  "Acquire image SOURCE for RESOURCE-KEY on behalf of Appkit VIEW.
+
+The view's app owns and shares the transfer.  Completion invalidates only
+requesting live views.  A later request retries a failed acquisition.  NAME
+optionally supplies the source filename used for media type hints."
+  (when (and (appkit-view-live-p view)
+             resource-key
+             (stringp source)
+             (not (string-empty-p source))
+             (chirp-media--prefetch-enabled-p))
+    (let* ((app (appkit-view-app view))
+           (store (appkit-app-resource-store app))
+           (current (gethash resource-key store)))
+      (cond
+       ((and (eq (plist-get current :status) 'ready)
+             (equal (plist-get current :source) source)
+             (chirp-media--valid-cache-file-p
+              (plist-get current :file)))
+        current)
+       ((and (eq (plist-get current :status) 'pending)
+             (equal (plist-get current :source) source))
+        (cl-pushnew view (plist-get current :views) :test #'eq)
+        current)
+       (t
+        (when (eq (plist-get current :status) 'pending)
+          (remhash resource-key store)
+          (when-let* ((handle (plist-get current :handle)))
+            (setf (plist-get current :handle) nil)
+            (appkit-cancel-handle handle)))
+        (let* ((cache-base (chirp-media-cache-base source "media"))
+               (cached (appkit-media-image-cache-existing-file cache-base))
+               (entry (list :source source :status 'pending :file nil
+                            :handle nil
+                            :views (cl-adjoin view (plist-get current :views)
+                                              :test #'eq)))
+               transfer)
+          (puthash resource-key entry store)
+          (if (and cached (chirp-media--valid-cache-file-p cached))
+              (setf (plist-get entry :status) 'ready
+                    (plist-get entry :file) cached)
+            (when (and cached (file-exists-p cached))
+              (ignore-errors (delete-file cached)))
+            (let ((plz-curl-program chirp-media-prefetch-command)
+                  (plz-curl-default-args chirp-media--safe-curl-default-args))
+              (setq transfer
+                    (appkit-media-cache-image-resource-async
+                     (appkit-media-resource-create :url source :name name)
+                     cache-base
+                     (lambda (file)
+                       (chirp-media--finish-image-resource
+                        app resource-key entry 'ready file))
+                     (lambda (_message)
+                       (chirp-media--finish-image-resource
+                        app resource-key entry 'failed))))))
+          (when (and (eq (plist-get entry :status) 'pending)
+                     (appkit-media-transfer-p transfer))
+            (setf (plist-get entry :handle)
+                  (appkit-register-handle
+                   app 'function transfer #'appkit-media-cancel-transfer)))
+          entry))))))
+
+(cl-defun chirp-media-insert-image-resource
+    (view resource-key &key alternate-text help-echo)
+  "Insert VIEW's cached image RESOURCE-KEY and return its display status.
+
+Return `rendered', `pending', `failed', or `missing'.  ALTERNATE-TEXT and
+HELP-ECHO customize the accessible image action."
+  (let* ((entry (and (appkit-view-live-p view)
+                     (gethash resource-key
+                              (appkit-app-resource-store
+                               (appkit-view-app view)))))
+         (status (plist-get entry :status))
+         (file (plist-get entry :file))
+         (image (and (eq status 'ready)
+                     (chirp-media--valid-cache-file-p file)
+                     (appkit-media-preview-image-from-file file))))
+    (cond
+     (image
+      (appkit-media-insert-image-slices
+       image (lambda () (appkit-media-open-file file))
+       nil (or alternate-text "[image]")
+       (or help-echo "Open image in Emacs"))
+      'rendered)
+     ((eq status 'pending) 'pending)
+     ((eq status 'ready) 'failed)
+     (status status)
+     (t 'missing))))
+
 (defun chirp-media--add-pending-callback (key callback table)
   "Add CALLBACK for KEY to pending callback TABLE."
   (puthash key (cons callback (gethash key table)) table))
@@ -369,163 +547,221 @@ Use FALLBACK-EXT when URL has no recognizable extension."
               kind key (error-message-string err))
       :warning))))
 
-(defun chirp-media--prefetch-finish (path success)
-  "Finish a background prefetch for PATH with SUCCESS."
-  (let ((callbacks (prog1 (gethash path chirp-media--prefetch-pending)
-                      (remhash path chirp-media--prefetch-pending))))
-    (setq chirp-media--prefetch-active (max 0 (1- chirp-media--prefetch-active)))
-    (dolist (callback callbacks)
-      (when callback
-        (chirp-media--dispatch-callback 'prefetch path callback success path)))
-    (chirp-media--start-next-prefetch)))
+(defun chirp-media--invalidate-resource (resource)
+  "Invalidate live Appkit rows that depend on RESOURCE."
+  (when (appkit-app-live-p chirp--app)
+    (maphash
+     (lambda (_id view)
+       (when (appkit-view-live-p view)
+         (when-let* ((keys (gethash resource
+                                    (appkit-view-resource-index view))))
+           (appkit-request-sync
+            view :entries keys :resource resource :position t))))
+     (appkit-app-view-registry chirp--app))))
 
-(defun chirp-media--thumbnail-finish (path success)
-  "Finish a background thumbnail extraction for PATH with SUCCESS."
-  (let ((callbacks (prog1 (gethash path chirp-media--thumbnail-pending)
-                     (remhash path chirp-media--thumbnail-pending))))
-    (setq chirp-media--thumbnail-active (max 0 (1- chirp-media--thumbnail-active)))
+(defun chirp-media--prefetch-finish (path success resource)
+  "Finish a background prefetch for PATH with SUCCESS and RESOURCE."
+  (let* ((pending (chirp-media--pending-table 'prefetch))
+         (callbacks (prog1 (gethash path pending)
+                      (remhash path pending))))
+    (when (and success resource)
+      (chirp-media--invalidate-resource resource))
     (dolist (callback callbacks)
       (when callback
-        (chirp-media--dispatch-callback 'thumbnail path callback success path)))
-    (chirp-media--start-next-thumbnail)))
+        (chirp-media--dispatch-callback 'prefetch path callback success path)))))
+
+(defun chirp-media--thumbnail-finish (path success resource)
+  "Finish thumbnail PATH with SUCCESS for RESOURCE."
+  (let* ((pending (chirp-media--pending-table 'thumbnail))
+         (callbacks (prog1 (gethash path pending)
+                      (remhash path pending))))
+    (when (and success resource)
+      (chirp-media--invalidate-resource resource))
+    (dolist (callback callbacks)
+      (when callback
+        (chirp-media--dispatch-callback 'thumbnail path callback success path)))))
 
 (defun chirp-media--link-card-finish (url card)
   "Finish a background link-card fetch for URL with CARD."
-  (let ((callbacks (prog1 (gethash url chirp-media--link-card-pending)
-                     (remhash url chirp-media--link-card-pending))))
-    (setq chirp-media--link-card-active (max 0 (1- chirp-media--link-card-active)))
+  (let* ((pending (chirp-media--pending-table 'link-card))
+         (callbacks (prog1 (gethash url pending)
+                      (remhash url pending))))
     (puthash url (or card chirp-media--link-card-fetch-failed)
-             chirp-media-link-card-cache)
+             (chirp-media--link-card-cache))
+    (chirp-media--invalidate-resource url)
     (dolist (callback callbacks)
       (when callback
-        (chirp-media--dispatch-callback 'link-card url callback card)))
-    (chirp-media--start-next-link-card-fetch)))
+        (chirp-media--dispatch-callback 'link-card url callback card)))))
 
-(defun chirp-media--start-next-thumbnail ()
-  "Start queued thumbnail jobs while capacity is available."
-  (while (and chirp-media--thumbnail-queue
-              (< chirp-media--thumbnail-active chirp-media-thumbnail-concurrency))
-    (let* ((job (pop chirp-media--thumbnail-queue))
-           (thumbnail-file (plist-get job :path))
-           (process-buffer (generate-new-buffer " *chirp-thumb*")))
-      (setq chirp-media--thumbnail-active (1+ chirp-media--thumbnail-active))
-      (make-process
-       :name "chirp-thumb"
-       :buffer process-buffer
-      :command (plist-get job :command)
-       :noquery t
-       :sentinel (chirp-media--thumbnail-sentinel thumbnail-file)))))
+(defun chirp-media--cancel-task-process (process buffer &optional output-file)
+  "Cancel PROCESS, kill BUFFER, and remove partial OUTPUT-FILE."
+  (when (processp process)
+    (set-process-sentinel process nil)
+    (when (process-live-p process)
+      (delete-process process)))
+  (when (buffer-live-p buffer)
+    (kill-buffer buffer))
+  (when (and output-file (file-exists-p output-file))
+    (ignore-errors (delete-file output-file))))
 
-(defun chirp-media--start-next-link-card-fetch ()
-  "Start queued link-card metadata fetches while capacity is available."
-  (while (and chirp-media--link-card-queue
-              (< chirp-media--link-card-active chirp-link-card-prefetch-concurrency))
-    (let* ((job (pop chirp-media--link-card-queue))
-           (url (plist-get job :url))
-           (process-buffer (generate-new-buffer " *chirp-link-card*")))
-      (setq chirp-media--link-card-active (1+ chirp-media--link-card-active))
-      (make-process
-       :name "chirp-link-card"
-       :buffer process-buffer
-       :command (list chirp-media-prefetch-command
-                      "-L" "-f" "-sS"
-                      "--max-time" (number-to-string chirp-link-card-fetch-timeout)
-                      url)
-       :noquery t
-       :sentinel
-       (lambda (process _event)
-         (when (memq (process-status process) '(exit signal))
-           (let* ((html (when (zerop (process-exit-status process))
-                          (with-current-buffer (process-buffer process)
-                            (buffer-substring-no-properties
-                             (point-min)
-                             (min (point-max) (+ (point-min) 262144))))))
-                  (card (and html
-                             (chirp-media--parse-link-card-html html url))))
-             (when (buffer-live-p (process-buffer process))
-               (kill-buffer (process-buffer process)))
-             (when-let* ((image-url (plist-get card :image-url)))
-               (chirp-media-prefetch-file image-url
-                                          "media"
-                                          "jpg"))
-             (chirp-media--link-card-finish url card))))))))
+(defun chirp-media--start-thumbnail-task (path command complete)
+  "Start thumbnail COMMAND for PATH and call COMPLETE with its success state."
+  (let ((buffer (generate-new-buffer " *chirp-thumb*"))
+        process)
+    (setq process
+          (make-process
+           :name "chirp-thumb"
+           :buffer buffer
+           :command command
+           :noquery t
+           :sentinel
+           (lambda (finished _event)
+             (when (memq (process-status finished) '(exit signal))
+               (let ((success (and (zerop (process-exit-status finished))
+                                   (file-exists-p path))))
+                 (unless success
+                   (ignore-errors
+                     (when (file-exists-p path)
+                       (delete-file path))))
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))
+                 (funcall complete success))))))
+    (lambda ()
+      (chirp-media--cancel-task-process process buffer path))))
 
-(defun chirp-media--queue-thumbnail-extraction (thumbnail-file command callback)
-  "Queue COMMAND to build THUMBNAIL-FILE and run CALLBACK on completion."
-  (cond
-   ((file-exists-p thumbnail-file)
-    thumbnail-file)
-   ((or (not (listp command))
-        (<= chirp-media-thumbnail-concurrency 0))
-    nil)
-   ((gethash thumbnail-file chirp-media--thumbnail-pending)
-    (chirp-media--add-pending-callback
-     thumbnail-file callback chirp-media--thumbnail-pending)
-    thumbnail-file)
-   (t
-    (chirp-media--add-pending-callback
-     thumbnail-file callback chirp-media--thumbnail-pending)
-    (setq chirp-media--thumbnail-queue
-          (nconc chirp-media--thumbnail-queue
-                 (list (list :path thumbnail-file :command command))))
-    (chirp-media--start-next-thumbnail)
-    thumbnail-file)))
+(defun chirp-media--start-link-card-task (url complete)
+  "Fetch URL metadata and call COMPLETE with its parsed link card."
+  (let ((buffer (generate-new-buffer " *chirp-link-card*"))
+        process)
+    (setq process
+          (make-process
+           :name "chirp-link-card"
+           :buffer buffer
+           :command (list chirp-media-prefetch-command
+                          "-L" "-f" "-sS"
+                          "--max-time"
+                          (number-to-string chirp-link-card-fetch-timeout)
+                          url)
+           :noquery t
+           :sentinel
+           (lambda (finished _event)
+             (when (memq (process-status finished) '(exit signal))
+               (let* ((html
+                       (when (zerop (process-exit-status finished))
+                         (with-current-buffer buffer
+                           (buffer-substring-no-properties
+                            (point-min)
+                            (min (point-max) (+ (point-min) 262144))))))
+                      (card (and html
+                                 (chirp-media--parse-link-card-html html url))))
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))
+                 (when-let* ((image-url (plist-get card :image-url)))
+                   (chirp-media-prefetch-file image-url "media" "jpg"))
+                 (funcall complete card))))))
+    (lambda ()
+      (chirp-media--cancel-task-process process buffer))))
 
-(defun chirp-media--start-next-prefetch ()
-  "Start queued prefetch jobs while capacity is available."
-  (while (and chirp-media--prefetch-queue
-              (< chirp-media--prefetch-active chirp-media-prefetch-concurrency))
-    (let* ((job (pop chirp-media--prefetch-queue))
-           (url (plist-get job :url))
-           (path (plist-get job :path))
-           (buffer (generate-new-buffer " *chirp-prefetch*")))
-      (setq chirp-media--prefetch-active (1+ chirp-media--prefetch-active))
-      (make-process
-       :name "chirp-prefetch"
-       :buffer buffer
-       :command (list chirp-media-prefetch-command
-                      "-L" "-f" "-sS"
-                      "-o" path
-                      url)
-       :noquery t
-       :sentinel
-       (lambda (process _event)
-         (when (memq (process-status process) '(exit signal))
-           (let ((ok (and (zerop (process-exit-status process))
-                          (file-exists-p path))))
-             (unless ok
-               (ignore-errors
-                 (when (file-exists-p path)
-                   (delete-file path))))
-             (when (buffer-live-p (process-buffer process))
-               (kill-buffer (process-buffer process)))
-             (chirp-media--prefetch-finish path ok))))))))
+(defun chirp-media--start-prefetch-task (url path complete)
+  "Download URL to PATH and call COMPLETE with its success state."
+  (let ((buffer (generate-new-buffer " *chirp-prefetch*"))
+        process)
+    (setq process
+          (make-process
+           :name "chirp-prefetch"
+           :buffer buffer
+           :command (list chirp-media-prefetch-command
+                          "-L" "-f" "-sS" "-o" path url)
+           :noquery t
+           :sentinel
+           (lambda (finished _event)
+             (when (memq (process-status finished) '(exit signal))
+               (let ((success (and (zerop (process-exit-status finished))
+                                   (chirp-media--valid-cache-file-p path))))
+                 (unless success
+                   (ignore-errors
+                     (when (file-exists-p path)
+                       (delete-file path))))
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))
+                 (funcall complete success))))))
+    (lambda ()
+      (chirp-media--cancel-task-process process buffer path))))
+
+(defun chirp-media--queue-thumbnail-extraction
+    (thumbnail-file command callback resource)
+  "Queue COMMAND for THUMBNAIL-FILE and notify CALLBACK and RESOURCE."
+  (let ((pending (chirp-media--pending-table 'thumbnail)))
+    (cond
+     ((file-exists-p thumbnail-file)
+      thumbnail-file)
+     ((or (not (listp command))
+          (<= chirp-media-thumbnail-concurrency 0))
+      nil)
+     ((gethash thumbnail-file pending)
+      (chirp-media--add-pending-callback thumbnail-file callback pending)
+      thumbnail-file)
+     (t
+      (chirp-media--add-pending-callback thumbnail-file callback pending)
+      (condition-case err
+          (appkit-task-queue-submit
+           (chirp-media--task-queue
+            'thumbnail chirp-media-thumbnail-concurrency)
+           thumbnail-file
+           (lambda (complete)
+             (chirp-media--start-thumbnail-task
+              thumbnail-file command complete))
+           :finish
+           (lambda (success)
+             (chirp-media--thumbnail-finish
+              thumbnail-file success resource)))
+        (error
+         (remhash thumbnail-file pending)
+         (signal (car err) (cdr err))))
+      thumbnail-file))))
 
 (defun chirp-media-prefetch-file (url kind &optional fallback-ext callback)
   "Prefetch URL of KIND and run CALLBACK when newly available.
 
 Use FALLBACK-EXT when URL has no recognizable extension."
   (when (chirp-media--prefetch-enabled-p)
-    (let ((path (chirp-media--cache-file url kind (or fallback-ext "bin"))))
+    (let* ((path (chirp-media--cache-file url kind (or fallback-ext "bin")))
+           (pending (chirp-media--pending-table 'prefetch)))
       (cond
-       ((file-exists-p path)
+       ((gethash path pending)
+        (chirp-media--add-pending-callback path callback pending)
         path)
-       ((gethash path chirp-media--prefetch-pending)
-        (chirp-media--add-pending-callback
-         path callback chirp-media--prefetch-pending)
+       ((chirp-media--valid-cache-file-p path)
         path)
        (t
-        (chirp-media--add-pending-callback
-         path callback chirp-media--prefetch-pending)
-        (setq chirp-media--prefetch-queue
-              (nconc chirp-media--prefetch-queue
-                     (list (list :url url :path path))))
-        (chirp-media--start-next-prefetch)
+        (when (file-exists-p path)
+          (ignore-errors (delete-file path)))
+        (chirp-media--add-pending-callback path callback pending)
+        (condition-case err
+            (appkit-task-queue-submit
+             (chirp-media--task-queue
+              'prefetch chirp-media-prefetch-concurrency)
+             path
+             (lambda (complete)
+               (chirp-media--start-prefetch-task url path complete))
+             :finish
+             (lambda (success)
+               (chirp-media--prefetch-finish path success url)))
+          (error
+           (remhash path pending)
+           (signal (car err) (cdr err))))
         path)))))
 
+(defun chirp-media--legacy-buffer-p (buffer)
+  "Return non-nil when BUFFER needs callback-driven media redraws."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (not (and (appkit-current-view)
+                   (chirp--appkit-timeline-state))))))
+
 (defun chirp-media--link-card-rerender-callback (buffer)
-  "Return a callback that rerenders BUFFER when link-card metadata arrives."
-  (when (buffer-live-p buffer)
+  "Return a callback that rerenders legacy BUFFER after link-card fetch."
+  (when (chirp-media--legacy-buffer-p buffer)
     (lambda (_card)
       (when (buffer-live-p buffer)
         (chirp-request-rerender buffer)))))
@@ -588,8 +824,8 @@ Use FALLBACK-EXT when URL has no recognizable extension."
             :image-url image-url))))
 
 (defun chirp-media-link-card (url)
-  "Return the cached link-card for URL, or nil."
-  (let ((card (gethash url chirp-media-link-card-cache)))
+  "Return the current session's cached link-card for URL, or nil."
+  (let ((card (gethash url (chirp-media--link-card-cache))))
     (unless (eq card chirp-media--link-card-fetch-failed)
       card)))
 
@@ -619,38 +855,71 @@ Use FALLBACK-EXT when URL has no recognizable extension."
         (mapcar #'chirp-media-link-card
                 (chirp-media-link-card-urls tweet))))
 
+(defun chirp-media--item-resource-keys (media)
+  "Return cache resource keys represented by MEDIA."
+  (delq nil (list (plist-get media :url)
+                  (plist-get media :preview-url))))
+
+(defun chirp-media-resource-keys-for-tweet (tweet)
+  "Return media resource keys whose completion can change TWEET rendering."
+  (let ((keys
+         (append
+          (when chirp-show-avatars
+            (list (plist-get tweet :author-avatar-url)))
+          (when chirp-show-tweet-media
+            (mapcan #'chirp-media--item-resource-keys
+                    (append (plist-get tweet :media)
+                            (chirp-tweet-article-images tweet)))))))
+    (dolist (url (chirp-media-link-card-urls tweet))
+      (push url keys)
+      (when-let* ((card (chirp-media-link-card url))
+                  (image-url (plist-get card :image-url)))
+        (push image-url keys)))
+    (when-let* ((quoted (plist-get tweet :quoted-tweet)))
+      (setq keys
+            (append keys
+                    (chirp-media-resource-keys-for-tweet quoted))))
+    (delete-dups (delq nil keys))))
+
 (defun chirp-media-prefetch-link-card (url buffer)
-  "Prefetch external link-card metadata for URL and rerender BUFFER when ready."
+  "Prefetch external link-card metadata for URL and update BUFFER when ready."
   (when (and (chirp-media--link-card-enabled-p)
              (chirp-media--link-card-candidate-p url))
-    (let ((cached (gethash url chirp-media-link-card-cache)))
+    (let* ((cache (chirp-media--link-card-cache))
+           (pending (chirp-media--pending-table 'link-card))
+           (cached (gethash url cache)))
       (cond
        ((eq cached chirp-media--link-card-fetch-failed)
         nil)
        ((listp cached)
         (when-let* ((image-url (plist-get cached :image-url)))
           (when chirp-show-tweet-media
-            (chirp-media-prefetch-file image-url "media" "jpg"
-                                       (chirp-media--prefetch-callback buffer))))
+            (chirp-media-prefetch-file
+             image-url "media" "jpg"
+             (chirp-media--prefetch-callback buffer))))
         cached)
-       ((gethash url chirp-media--link-card-pending)
+       ((gethash url pending)
         (chirp-media--add-pending-callback
-         url
-         (chirp-media--link-card-rerender-callback buffer)
-         chirp-media--link-card-pending))
+         url (chirp-media--link-card-rerender-callback buffer) pending))
        (t
         (chirp-media--add-pending-callback
-         url
-         (chirp-media--link-card-rerender-callback buffer)
-         chirp-media--link-card-pending)
-        (setq chirp-media--link-card-queue
-              (nconc chirp-media--link-card-queue
-                     (list (list :url url))))
-        (chirp-media--start-next-link-card-fetch))))))
+         url (chirp-media--link-card-rerender-callback buffer) pending)
+        (condition-case err
+            (appkit-task-queue-submit
+             (chirp-media--task-queue
+              'link-card chirp-link-card-prefetch-concurrency)
+             url
+             (lambda (complete)
+               (chirp-media--start-link-card-task url complete))
+             :finish (lambda (card)
+                       (chirp-media--link-card-finish url card)))
+          (error
+           (remhash url pending)
+           (signal (car err) (cdr err)))))))))
 
 (defun chirp-media--prefetch-callback (buffer)
-  "Return a callback that requests a rerender of BUFFER after media arrives."
-  (when (buffer-live-p buffer)
+  "Return a callback that requests a redraw of legacy BUFFER."
+  (when (chirp-media--legacy-buffer-p buffer)
     (lambda (success _path)
       (when (and success
                  (buffer-live-p buffer))
@@ -662,20 +931,6 @@ Use FALLBACK-EXT when URL has no recognizable extension."
              (not (string-empty-p url)))
     (chirp-media-prefetch-file url "avatars" "jpg"
                                (chirp-media--prefetch-callback buffer))))
-
-(defun chirp-media--thumbnail-sentinel (thumbnail-file)
-  "Return a sentinel that finalizes THUMBNAIL-FILE extraction."
-  (lambda (process _event)
-    (when (memq (process-status process) '(exit signal))
-      (let ((ok (and (zerop (process-exit-status process))
-                     (file-exists-p thumbnail-file))))
-        (unless ok
-          (ignore-errors
-            (when (file-exists-p thumbnail-file)
-              (delete-file thumbnail-file))))
-        (when (buffer-live-p (process-buffer process))
-          (kill-buffer (process-buffer process)))
-        (chirp-media--thumbnail-finish thumbnail-file ok)))))
 
 (defun chirp-media--prefetch-video-thumbnail-from-file (media video-file buffer)
   "Extract a thumbnail for MEDIA from VIDEO-FILE and rerender BUFFER on success."
@@ -692,7 +947,8 @@ Use FALLBACK-EXT when URL has no recognizable extension."
              "-i" video-file
              "-frames:v" "1"
              thumbnail-file)
-       callback))))
+       callback
+       (plist-get media :url)))))
 
 (defun chirp-media--prefetch-video-thumbnail-from-url (media buffer &optional fallback)
   "Extract a thumbnail for MEDIA directly from its remote URL for BUFFER.
@@ -718,7 +974,8 @@ When FALLBACK is non-nil, call it if remote extraction fails."
          (when callback
            (funcall callback success path))
          (when (and (not success) fallback)
-           (funcall fallback)))))))
+           (funcall fallback)))
+       url))))
 
 (defun chirp-media--prefetch-video-thumbnail-via-download (media buffer)
   "Download MEDIA in the background and extract a thumbnail for BUFFER."
@@ -822,33 +1079,6 @@ When FALLBACK is non-nil, call it if remote extraction fails."
     ("gif" "image/gif")
     ("webp" "image/webp")
     (_ "image/png")))
-
-(defun chirp-media--circular-avatar-image (file size)
-  "Return FILE rendered as a circular avatar of SIZE pixels."
-  (when (and file
-             (display-images-p))
-    (condition-case nil
-        (let* ((svg (svg-create size size))
-               (radius (/ size 2.0))
-               (clip (svg-clip-path svg :id "avatar-clip")))
-          (dom-append-child
-           clip
-           (dom-node 'circle
-                     `((cx . ,radius)
-                       (cy . ,radius)
-                       (r . ,radius))))
-          (svg-embed svg
-                     file
-                     (chirp-media--mime-type file)
-                     nil
-                     :x 0
-                     :y 0
-                     :width size
-                     :height size
-                     :preserveAspectRatio "xMidYMid slice"
-                     :clip-path "url(#avatar-clip)")
-          (svg-image svg :ascent 'center))
-      (error nil))))
 
 (defun chirp-media--photo-thumbnail-image (file max-width max-height)
   "Render FILE within MAX-WIDTH and MAX-HEIGHT without runtime scaling."
@@ -998,7 +1228,7 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
   (when-let* ((file (if chirp-media-render-from-cache-only
                         (chirp-media-cached-file url "avatars" "jpg")
                       (chirp-media-local-file url "avatars" "jpg"))))
-    (or (chirp-media--circular-avatar-image file chirp-avatar-size)
+    (or (appkit-media-circular-image-from-file file chirp-avatar-size)
         (chirp-media--scaled-image file chirp-avatar-size chirp-avatar-size))))
 
 (defun chirp-media-thumbnail-image (media)
