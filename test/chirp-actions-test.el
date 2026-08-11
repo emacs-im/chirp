@@ -43,30 +43,37 @@ Return a list of (compose source foreign)."
       (setq compose (current-buffer)))
     (list compose source foreign)))
 
-(ert-deftest chirp-compose-completes-mention-handles-and-caches-query ()
-  "Mention completion should replace only the handle and reuse its lookup."
+(ert-deftest chirp-compose-prefetches-mention-handles-without-blocking-capf ()
+  "The installed compose hook should prefetch and cache mention candidates."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "hello @em")))
     (let ((request-count 0))
       (unwind-protect
-          (cl-letf (((symbol-function 'chirp-backend-search-users-sync)
-                     (lambda (query &optional max-results)
+          (cl-letf (((symbol-function 'run-with-idle-timer)
+                     (lambda (_seconds _repeat function &rest args)
+                       (apply function args)
+                       nil))
+                    ((symbol-function 'chirp-backend-search-users)
+                     (lambda (query callback &optional _errback _max-results)
                        (setq request-count (1+ request-count))
                        (should (equal query "em"))
-                       (should-not max-results)
-                       '((("screenName" . "emacs"))
-                         (("screenName" . "emacslife"))))))
+                       (funcall callback
+                                '((:handle "emacs")
+                                  (:handle "emacslife"))
+                                nil))))
             (with-current-buffer compose
               (goto-char (marker-position chirp-compose-body-end-marker))
-              (let ((point-before (point))
-                    (completion (chirp-compose-mention-completion-at-point)))
-                (should (equal (buffer-substring-no-properties
-                                (nth 0 completion) (nth 1 completion))
-                               "em"))
-                (should (equal (nth 2 completion)
-                               '("emacs" "emacslife")))
-                (should (= (point) point-before)))
-              (chirp-compose-mention-completion-at-point)
+              (let ((point-before (point)))
+                (run-hooks 'post-command-hook)
+                (let ((completion
+                       (chirp-compose-mention-completion-at-point)))
+                  (should (equal (buffer-substring-no-properties
+                                  (nth 0 completion) (nth 1 completion))
+                                 "em"))
+                  (should (equal (nth 2 completion)
+                                 '("emacs" "emacslife")))
+                  (should (= (point) point-before))))
+              (run-hooks 'post-command-hook)
               (should (= request-count 1))))
         (when (buffer-live-p compose)
           (kill-buffer compose))

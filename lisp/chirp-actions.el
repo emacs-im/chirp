@@ -70,6 +70,12 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose--mention-cache nil
   "User completion results keyed by query in the current draft.")
 
+(defvar-local chirp-compose--mention-pending nil
+  "Mention queries currently being fetched for the current draft.")
+
+(defvar-local chirp-compose--mention-timer nil
+  "Idle timer that starts mention completion prefetching.")
+
 (defvar chirp-compose-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map text-mode-map)
@@ -88,8 +94,12 @@ cancelled, the attachment is removed, or the send completes."
   (setq-local require-final-newline nil)
   (setq-local completion-ignore-case t)
   (setq-local chirp-compose--mention-cache nil)
+  (setq-local chirp-compose--mention-pending nil)
+  (setq-local chirp-compose--mention-timer nil)
   (add-hook 'completion-at-point-functions
             #'chirp-compose-mention-completion-at-point nil t)
+  (add-hook 'post-command-hook #'chirp-compose--schedule-mention-prefetch nil t)
+  (add-hook 'kill-buffer-hook #'chirp-compose--cancel-mention-prefetch nil t)
   (visual-line-mode 1))
 
 (defun chirp-compose--mention-bounds ()
@@ -108,30 +118,84 @@ cancelled, the attachment is removed, or the send completes."
                  (point-min))
             (cons (match-beginning 1) (point))))))))
 
-(defun chirp-compose--mention-candidates (query)
-  "Return cached user handles matching QUERY."
-  (let ((cached (assoc-string query chirp-compose--mention-cache t)))
-    (if cached
-        (cdr cached)
-      (let ((candidates
-             (delq nil
-                   (mapcar
-                    (lambda (user)
-                      (when-let* ((handle (chirp-get user "screenName")))
-                        (string-remove-prefix "@" handle)))
-                    (chirp-backend-search-users-sync query)))))
-        (push (cons query candidates) chirp-compose--mention-cache)
-        candidates))))
+(defun chirp-compose--mention-query ()
+  "Return the mention query at point, or nil."
+  (when-let* ((bounds (chirp-compose--mention-bounds))
+              (query (buffer-substring-no-properties
+                      (car bounds) (cdr bounds)))
+              ((not (string-empty-p query))))
+    query))
+
+(defun chirp-compose--cancel-mention-prefetch ()
+  "Cancel the current draft's pending mention prefetch timer."
+  (when (timerp chirp-compose--mention-timer)
+    (cancel-timer chirp-compose--mention-timer))
+  (setq chirp-compose--mention-timer nil))
+
+(defun chirp-compose--store-mention-candidates
+    (buffer query users _envelope)
+  "Store QUERY results from USERS in compose BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (derived-mode-p 'chirp-compose-mode)
+        (setq chirp-compose--mention-pending
+              (delete query chirp-compose--mention-pending))
+        (let ((candidates
+             (delete-dups
+              (delq nil
+                    (mapcar (lambda (user)
+                              (plist-get user :handle))
+                            users)))))
+          (setq chirp-compose--mention-cache
+                (cons (cons query candidates)
+                      (assoc-delete-all
+                       query chirp-compose--mention-cache))))))))
+
+(defun chirp-compose--mention-prefetch-failed (buffer query message)
+  "Finish failed mention QUERY in BUFFER with MESSAGE."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (derived-mode-p 'chirp-compose-mode)
+        (setq chirp-compose--mention-pending
+              (delete query chirp-compose--mention-pending))
+        (message "Chirp mention completion failed: %s" message)))))
+
+(defun chirp-compose--prefetch-mention (buffer query)
+  "Fetch mention QUERY for compose BUFFER when it remains relevant."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq chirp-compose--mention-timer nil)
+      (when (and (derived-mode-p 'chirp-compose-mode)
+                 (equal query (chirp-compose--mention-query))
+                 (not (assoc-string query chirp-compose--mention-cache t))
+                 (not (member query chirp-compose--mention-pending)))
+        (push query chirp-compose--mention-pending)
+        (chirp-backend-search-users
+         query
+         (apply-partially
+          #'chirp-compose--store-mention-candidates buffer query)
+         (apply-partially
+          #'chirp-compose--mention-prefetch-failed buffer query))))))
+
+(defun chirp-compose--schedule-mention-prefetch ()
+  "Schedule nonblocking completion prefetch for the mention at point."
+  (chirp-compose--cancel-mention-prefetch)
+  (when-let* ((query (chirp-compose--mention-query))
+              ((not (assoc-string query chirp-compose--mention-cache t)))
+              ((not (member query chirp-compose--mention-pending))))
+    (setq chirp-compose--mention-timer
+          (run-with-idle-timer
+           0.15 nil #'chirp-compose--prefetch-mention
+           (current-buffer) query))))
 
 (defun chirp-compose-mention-completion-at-point ()
-  "Complete the user handle following @ at point."
+  "Complete the user handle following @ at point from prefetched results."
   (when-let* ((bounds (chirp-compose--mention-bounds))
               (start (car bounds))
               (end (cdr bounds))
               (query (buffer-substring-no-properties start end))
-              ((not (string-empty-p query))))
-    (list start end (chirp-compose--mention-candidates query)
-          :exclusive 'no)))
+              (cached (assoc-string query chirp-compose--mention-cache t)))
+    (list start end (cdr cached) :exclusive 'no)))
 
 (defun chirp-compose--temp-directory ()
   "Return the directory used for temporary compose attachments."
