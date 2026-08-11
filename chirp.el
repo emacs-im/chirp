@@ -33,12 +33,31 @@
 (require 'chirp-thread)
 (require 'chirp-profile)
 (require 'chirp-timeline)
+(require 'chirp-dm)
+
+;;;###autoload
+(defun chirp-login ()
+  "Capture an X browser session for Chirp."
+  (interactive)
+  (chirp-x-capture-browser-session))
+
+;;;###autoload
+(defun chirp-forget-browser-session ()
+  "Delete Chirp's private browser-imported X session."
+  (interactive)
+  (chirp-x-clear-auth-file))
 
 ;;;###autoload
 (defun chirp-home ()
   "Open the home timeline."
   (interactive)
   (chirp-timeline-open-home))
+
+;;;###autoload
+(defun chirp-direct-messages ()
+  "Unlock XChat and open a fresh read-only direct-message inbox."
+  (interactive)
+  (chirp-dm-open-inbox))
 
 ;;;###autoload
 (defun chirp-following ()
