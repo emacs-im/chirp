@@ -154,7 +154,7 @@
 
 (ert-deftest chirp-render-insert-tweet-shows-cached-translation ()
   "A cached translation should render directly below the original text."
-  (clrhash chirp-tweet-state-overrides)
+  (clrhash (chirp--tweet-state-table))
   (unwind-protect
       (progn
         (chirp-set-tweet-state-override "123" :translation "你好")
@@ -168,7 +168,7 @@
             (chirp-render-insert-tweet tweet)
             (should (string-match-p "Hello\nTranslation · zh\n你好"
                                     (buffer-string))))))
-    (clrhash chirp-tweet-state-overrides)))
+    (clrhash (chirp--tweet-state-table))))
 
 (ert-deftest chirp-article-segments-split-inline-images-out-of-body-text ()
   "Article helpers should split Markdown image paragraphs into media items."
@@ -1211,8 +1211,7 @@
 
 (ert-deftest chirp-enrich-quoted-tweets-upgrades-preview-and-prefetches-media ()
   "Quoted tweet enrichment should replace the preview and kick media prefetch."
-  (let ((chirp-quoted-tweet-cache (make-hash-table :test #'equal))
-        (chirp-quoted-tweet-pending (make-hash-table :test #'equal))
+  (let ((chirp--app nil)
         (tweet (chirp-test--sample-quoted-tweet))
         rerendered-buffer
         prefetched-media-url)
@@ -1232,8 +1231,8 @@
                            ("media" . ((("type" . "photo")
                                         ("url" . "https://example.com/quoted.jpg"))))))
                         nil)))
-                    ((symbol-function 'chirp-request-rerender)
-                     (lambda (target &optional _delay)
+                    ((symbol-function 'chirp-request-tweet-rerender)
+                     (lambda (_tweet-id target &optional _delay)
                        (setq rerendered-buffer target)))
                     ((symbol-function 'chirp-media-prefetch-tweet)
                      (lambda (quoted _buffer)
@@ -1246,13 +1245,14 @@
             (should (equal prefetched-media-url "https://example.com/quoted.jpg"))
             (should (equal (plist-get (car (plist-get quoted :media)) :url)
                            "https://example.com/quoted.jpg"))))
+      (chirp-stop)
       (dolist (name '(" *chirp-quote-enrich-test*"))
         (when-let* ((buffer (get-buffer name)))
           (kill-buffer buffer))))))
 
 (ert-deftest chirp-quoted-tweet-callback-errors-are-reported-and-isolated ()
   "A failed quoted-tweet callback should not block later pending callbacks."
-  (let ((chirp-quoted-tweet-pending (make-hash-table :test #'equal))
+  (let ((chirp--app nil)
         warning
         later-payload)
     (puthash "456"
@@ -1260,16 +1260,17 @@
                      (error "quoted-tweet callback failed"))
                    (lambda (payload)
                      (setq later-payload payload)))
-             chirp-quoted-tweet-pending)
+             (chirp--quoted-tweet-pending))
     (cl-letf (((symbol-function 'display-warning)
                (lambda (type message &rest _args)
                  (setq warning (list type message)))))
       (chirp--dispatch-quoted-tweet-callbacks "456" :payload))
     (should (eq later-payload :payload))
-    (should-not (gethash "456" chirp-quoted-tweet-pending))
+    (should-not (gethash "456" (chirp--quoted-tweet-pending)))
     (should (eq (car warning) 'chirp-core))
     (should (string-match-p "Quoted-tweet callback failed for 456"
-                            (cadr warning)))))
+                            (cadr warning)))
+    (chirp-stop)))
 
 (ert-deftest chirp-entry-navigation-jumps-between-top-level-tweets ()
   "Entry navigation should move between top-level tweets from nested regions."

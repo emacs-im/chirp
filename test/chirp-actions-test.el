@@ -486,7 +486,7 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-toggle-like-at-point-uses-like-and-unlike-commands ()
   "Toggle like should choose the backend command from the current local state."
-  (clrhash chirp-tweet-state-overrides)
+  (clrhash (chirp--tweet-state-table))
   (let (captured-args rerendered)
     (unwind-protect
         (progn
@@ -548,7 +548,7 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-translate-at-point-caches-and-renders-result ()
   "Translation should be stored on the current tweet and trigger a rerender."
-  (clrhash chirp-tweet-state-overrides)
+  (clrhash (chirp--tweet-state-table))
   (let ((chirp-translation-language "zh")
         rerendered)
     (unwind-protect
@@ -571,10 +571,10 @@ Return a list of (compose source foreign)."
              (should (equal (plist-get (chirp-entry-at-point) :translation)
                             "你好"))
              (should (equal
-                      (plist-get (gethash "123" chirp-tweet-state-overrides)
+                      (plist-get (gethash "123" (chirp--tweet-state-table))
                                  :translation-language)
                       "zh")))))
-      (clrhash chirp-tweet-state-overrides))))
+      (clrhash (chirp--tweet-state-table)))))
 
 (ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
   "The Chirp transient should expose only toggle entries for like/RT/bookmark."
