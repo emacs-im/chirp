@@ -948,6 +948,67 @@ revisited later."
    (t
     (string-trim (format "%s" value)))))
 
+(defun chirp--utf16-units (character)
+  "Return the number of UTF-16 code units needed for CHARACTER."
+  (if (<= character #xFFFF) 1 2))
+
+(defun chirp--charpos-from-utf16 (string units)
+  "Return the character position in STRING at UTF-16 index UNITS."
+  (let ((pos 0)
+        (seen 0)
+        (len (length string)))
+    (while (and (< pos len) (< seen units))
+      (setq seen (+ seen (chirp--utf16-units (aref string pos)))
+            pos (1+ pos)))
+    pos))
+
+(defun chirp--substring-utf16 (string start &optional end)
+  "Return the substring of STRING between UTF-16 indices START and END."
+  (let* ((len-units (cl-loop for index from 0 below (length string)
+                             sum (chirp--utf16-units (aref string index))))
+         (from (min (max 0 (or start 0)) len-units))
+         (to (min (max from (or end len-units)) len-units)))
+    (substring string
+               (chirp--charpos-from-utf16 string from)
+               (chirp--charpos-from-utf16 string to))))
+
+(defun chirp--display-text-range (value)
+  "Return VALUE as a (START . END) UTF-16 range, or nil."
+  (cond
+   ((and (vectorp value) (>= (length value) 2)
+         (integerp (aref value 0)) (integerp (aref value 1)))
+    (cons (aref value 0) (aref value 1)))
+   ((and (consp value) (integerp (car value)) (integerp (cadr value)))
+    (cons (car value) (cadr value)))
+   (t nil)))
+
+(defun chirp--tweet-display-text-range (object legacy)
+  "Return OBJECT or LEGACY's display text range, or nil."
+  (chirp--display-text-range
+   (or (chirp-get object "display_text_range" "displayTextRange")
+       (chirp-get legacy "display_text_range" "displayTextRange"))))
+
+(defun chirp--strip-leading-reply-mentions (text)
+  "Remove a leading run of @handle tokens from TEXT."
+  (if (and (stringp text)
+           (string-match "\\`\\(?:@[A-Za-z0-9_]+[ \t]+\\)+" text))
+      (substring text (match-end 0))
+    text))
+
+(defun chirp--visible-tweet-text (text range replyp)
+  "Return the web-visible portion of tweet TEXT.
+
+RANGE is an optional (START . END) UTF-16 display range.  REPLYP is
+non-nil when TEXT belongs to a reply.  X hides the leading reply-chain
+@handles; they are not part of the visible post."
+  (cond
+   ((not (stringp text)) "")
+   (range
+    (chirp--substring-utf16 text (car range) (cdr range)))
+   (replyp
+    (chirp--strip-leading-reply-mentions text))
+   (t text)))
+
 (defconst chirp--short-url-regexp "https?://t\\.co/[[:alnum:]]+"
   "Regexp that matches short X/Twitter URLs in tweet text.")
 
@@ -1891,12 +1952,30 @@ Return non-nil when BUFFER currently projects a primary feed."
                     (format "https://x.com/%s/status/%s" author-handle id))
                (and id (format "https://x.com/i/status/%s" id))))
          (tweet-identity (list :id id :url url :author-handle author-handle))
+         (raw-source
+          (chirp-first-nonblank
+           (chirp-get object "full_text" "text")
+           (chirp-get legacy "full_text" "text")
+           (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
+           (chirp-get-in object '("note_tweet" "text"))))
+         (display-range (chirp--tweet-display-text-range object legacy))
+         (reply-to-handle (let ((handle (chirp-first-nonblank
+                                         (chirp-get object "inReplyToScreenName"
+                                                    "in_reply_to_screen_name")
+                                         (chirp-get legacy "in_reply_to_screen_name"))))
+                            (and handle
+                                 (string-remove-prefix "@" handle))))
+         (reply-to-id (chirp-first-nonblank
+                       (chirp-get object "inReplyToStatusId"
+                                  "in_reply_to_status_id_str"
+                                  "in_reply_to_status_id")
+                       (chirp-get legacy "in_reply_to_status_id_str"
+                                  "in_reply_to_status_id")))
          (text (chirp-clean-text
-                (chirp-first-nonblank
-                 (chirp-get object "full_text" "text")
-                 (chirp-get legacy "full_text" "text")
-                 (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
-                 (chirp-get-in object '("note_tweet" "text")))))
+                (chirp--visible-tweet-text
+                 raw-source display-range
+                 (or reply-to-id reply-to-handle))))
+         (full-text (chirp-clean-text raw-source))
          (quoted-tweet (chirp-normalize-quoted-tweet object))
          (timeline-context
           (pcase (or (chirp-get wrapper "timelineContext" "timeline_context")
@@ -1940,18 +2019,6 @@ Return non-nil when BUFFER currently projects a primary feed."
            (chirp-get article-result "plain_text")))
          (article-text (and article-text-raw
                             (chirp-clean-text article-text-raw)))
-         (reply-to-handle (let ((handle (chirp-first-nonblank
-                                         (chirp-get object "inReplyToScreenName"
-                                                    "in_reply_to_screen_name")
-                                         (chirp-get legacy "in_reply_to_screen_name"))))
-                            (and handle
-                                 (string-remove-prefix "@" handle))))
-         (reply-to-id (chirp-first-nonblank
-                       (chirp-get object "inReplyToStatusId"
-                                  "in_reply_to_status_id_str"
-                                  "in_reply_to_status_id")
-                       (chirp-get legacy "in_reply_to_status_id_str"
-                                  "in_reply_to_status_id")))
          (retweeted-by
           (let ((handle (chirp-first-nonblank
                          (chirp-get wrapper "retweetedBy" "retweeted_by")
@@ -1992,7 +2059,7 @@ Return non-nil when BUFFER currently projects a primary feed."
       (list :kind 'tweet
             :id id
             :text display-text
-            :raw-text text
+            :raw-text full-text
             :created-at (chirp-first-nonblank
                          (chirp-get object "createdAtLocal" "createdAtISO" "createdAt" "created_at")
                          (chirp-get legacy "created_at"))

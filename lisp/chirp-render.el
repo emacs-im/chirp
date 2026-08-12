@@ -987,13 +987,14 @@ TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
     (tweet &key prefix prefix-face show-reply-context reply-parent)
   "Insert social and parent context for TWEET.
 
-PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT controls the
-related-reply line, and REPLY-PARENT supplies the preceding tweet."
+PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT is accepted
+for existing callers; related items are labeled independently.  REPLY-PARENT
+supplies the preceding tweet."
+  (ignore show-reply-context)
   (when reply-parent
     (chirp-render--insert-list-reply-context
      tweet reply-parent prefix prefix-face))
-  (when (and show-reply-context
-             (eq (plist-get tweet :timeline-context) 'related))
+  (when (eq (plist-get tweet :timeline-context) 'related)
     (chirp-render--insert-prefix prefix prefix-face)
     (insert (propertize "Related tweet"
                         'face 'chirp-thread-related-context))

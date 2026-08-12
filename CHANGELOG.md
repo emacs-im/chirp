@@ -44,6 +44,9 @@ history remains available in Git.
 ### Fixed
 
 - Compose is now a chatbuf: committed posts render as draft rows, the trailing composer holds the current post, and undo no longer rewrites generated chrome.
+- An empty post compose now shows only the header line and composer. Reply/quote context, media rows, and the Posts count appear when they have something to show.
+- Opening a reply thread now shows the ancestor chain above the focus tweet with a prefix spine, then nests later replies from that focus instead of indenting the whole conversation from the root.
+- Reply tweets no longer show the leading @handles X prepends for the conversation; visible text follows `display_text_range` when X sends it.
 - Primary Home and Following rows no longer receive an extra projection separator between tweets.
 - `chirp-stop` now cancels desktop notification polling with the Appkit session instead of allowing the next timer to recreate Chirp.
 - Background image and link-card prefetches now enforce bounded protocols, redirects, time, and response sizes.
