@@ -872,10 +872,67 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should envelope)
     (should (equal (alist-get "tweet_text" variables nil nil #'string=)
                    "hello"))
+    (should-not (assoc-string "conversation_control" variables t))
     (should (vectorp
              (chirp-get-in variables '("media" "media_entities"))))
     (should (vectorp
              (chirp-get variables "semantic_annotation_ids")))))
+
+(ert-deftest chirp-backend-compose-includes-reply-audience-for-posts ()
+  "Post and quote drafts should send conversation_control for a reply audience."
+  (dolist (kind '(post quote))
+    (let (variables)
+      (cl-letf (((symbol-function 'chirp-x-graphql-request)
+                 (lambda (_operation request-variables callback &rest _options)
+                   (setq variables request-variables)
+                   (funcall
+                    callback
+                    (chirp-backend-test--payload-at-path
+                     '("data" "create_tweet" "tweet_results" "result")
+                     '(("rest_id" . "123")))))))
+        (chirp-backend-compose
+         :kind kind :text "hello"
+         :target-id (and (eq kind 'quote) "99")
+         :reply-audience 'community
+         :attachments nil
+         :callback #'ignore))
+      (should (equal (chirp-get-in variables '("conversation_control" "mode"))
+                     "Community"))
+      (when (eq kind 'quote)
+        (should (equal (chirp-get variables "attachment_url")
+                       "https://x.com/i/status/99"))))))
+
+(ert-deftest chirp-backend-compose-omits-reply-audience-for-replies ()
+  "Replies should inherit conversation rules and omit conversation_control."
+  (let (variables)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (_operation request-variables callback &rest _options)
+                 (setq variables request-variables)
+                 (funcall
+                  callback
+                  (chirp-backend-test--payload-at-path
+                   '("data" "create_tweet" "tweet_results" "result")
+                   '(("rest_id" . "456")))))))
+      (chirp-backend-compose
+       :kind 'reply :text "hello" :target-id "99"
+       :reply-audience 'community :attachments nil
+       :callback #'ignore))
+    (should-not (assoc-string "conversation_control" variables t))
+    (should (equal (chirp-get-in variables '("reply" "in_reply_to_tweet_id"))
+                   "99"))))
+
+(ert-deftest chirp-backend-compose-rejects-an-invalid-reply-audience ()
+  "Unknown reply-audience symbols should fail before CreateTweet."
+  (let (success failure)
+    (chirp-backend-compose
+     :kind 'post :text "hello" :reply-audience 'nobody
+     :attachments nil
+     :callback (lambda (&rest _args)
+                 (setq success t))
+     :errback (lambda (message)
+                (setq failure message)))
+    (should-not success)
+    (should (string-match-p "Reply audience is invalid" failure))))
 
 (ert-deftest chirp-backend-compose-builds-reply-quote-and-media-variables ()
   "Replies and quotes should share create routing with structured targets."

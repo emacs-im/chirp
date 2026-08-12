@@ -25,12 +25,14 @@ history remains available in Git.
 - Mouse-1 controls on visible tweet reply, repost/retweet, like, and bookmark metrics, routed through the existing tweet action commands.
 - Tweet timelines and threads now display X reply-audience controls and omit the Reply action when X explicitly limits the current account.
 - Compose buffers now use Appkit's shared generated context, status-field, attachment, and editable-body boundary primitives.
+- Post and quote drafts can set who may reply through the Appkit audience status field, and `CreateTweet` / `CreateNoteTweet` send that reply audience as `conversation_control`.
+- A post draft can hold several ordered items on Appkit's multi-part compose surface. `C-c C-n` inserts another post after the current one, `C-c C-p` drops the current extra post, and send publishes the root then each following item as a reply.
 
 ### Breaking Changes
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.4 or newer for read-only stable-key projections and display-only discussion/card prefixes.
+- Chirp now requires Appkit 0.2.5 or newer for multi-part compose surfaces and read-only stable-key projections.
 
 ### Fixed
 
@@ -57,3 +59,5 @@ history remains available in Git.
 - Recovered XChat keys are now bound to the registered X user for the native session, and outgoing Lisp input can no longer override the signing sender.
 - Likes views now show every returned tweet with its like state active.
 - Reply filtering now recognizes collected affiliate, dating, and drug-spam nickname templates, including the shared `返佣` marker and the combined `FoxLink` + `银狐` signature.
+- `x r` and `chirp-reply-at-point` now refuse when X limits the current account, matching the hidden Reply metric.
+- Compose keeps the draft until a send succeeds. Known failures leave it editable; unknown outcomes warn and require confirmation before sending again.

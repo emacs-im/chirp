@@ -53,8 +53,11 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose-source-buffer nil
   "Source Chirp view buffer that opened the current compose buffer.")
 
-(defvar-local chirp-compose-attachments nil
-  "Attached image paths for the current compose buffer.")
+(defvar-local chirp-compose-items nil
+  "Ordered compose items for the current draft.
+
+Each item is a plist with `:attachments'.  Editable text lives in the
+Appkit compose parts until the draft is snapshotted for send.")
 
 (defvar-local chirp-compose-temp-attachments nil
   "Temporary attachment paths owned by the current compose buffer.")
@@ -62,6 +65,21 @@ cancelled, the attachment is removed, or the send completes."
 
 (defvar-local chirp-compose-sending nil
   "Non-nil while the current compose buffer is sending a draft.")
+
+(defvar-local chirp-compose-unknown-outcome nil
+  "Non-nil when the last send for this draft had an unknown remote outcome.")
+
+(defvar-local chirp-compose-reply-audience nil
+  "Reply audience for the current post or quote draft.
+
+`everyone' omits a conversation-control rule.  Replies leave this nil.")
+
+(defconst chirp-compose--reply-audience-choices
+  '((everyone . "Everyone")
+    (community . "People you follow")
+    (verified . "Verified accounts")
+    (byinvitation . "Accounts you mention"))
+  "Reply audience symbols and their compose status labels.")
 
 (defvar-local chirp-compose--mention-cache nil
   "User completion results keyed by query in the current draft.")
@@ -80,6 +98,8 @@ cancelled, the attachment is removed, or the send completes."
     (define-key map (kbd "C-c C-a") #'chirp-compose-attach-image)
     (define-key map (kbd "C-c C-v") #'chirp-compose-paste-image)
     (define-key map (kbd "C-c C-d") #'chirp-compose-remove-image)
+    (define-key map (kbd "C-c C-n") #'chirp-compose-add-post)
+    (define-key map (kbd "C-c C-p") #'chirp-compose-remove-post)
     (define-key map (kbd "M-TAB") #'completion-at-point)
     map)
   "Keymap for `chirp-compose-mode'.")
@@ -221,10 +241,15 @@ cancelled, the attachment is removed, or the send completes."
                                    (string-remove-prefix "@" handle)))
       (user-error "No profile available at point"))))
 
+(defun chirp-actions--unknown-write-outcome-p (message)
+  "Return non-nil when MESSAGE reports an unknown write outcome."
+  (and (stringp message)
+       (string-prefix-p "X write outcome is unknown" message)))
+
 (defun chirp-actions--show-error (message)
   "Show MESSAGE as a condensed action failure."
   (let ((condensed (replace-regexp-in-string "[\r\n]+" "  " message)))
-    (if (string-prefix-p "X write outcome is unknown" condensed)
+    (if (chirp-actions--unknown-write-outcome-p condensed)
         (display-warning 'chirp condensed :warning)
       (message "Chirp action failed: %s" condensed))))
 
@@ -459,30 +484,117 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
        (concat "\n"
                (propertize chirp-compose-target-url 'face 'link))))))
 
+(defun chirp-compose--ensure-idle ()
+  "Signal a user error when the current draft is already sending."
+  (when chirp-compose-sending
+    (user-error "Draft is already sending")))
+
+(defun chirp-compose--reply-audience-label (audience)
+  "Return the status-field label for reply AUDIENCE."
+  (or (alist-get (or audience 'everyone) chirp-compose--reply-audience-choices)
+      (format "%s" audience)))
+
+(defun chirp-compose--read-reply-audience ()
+  "Read a reply audience from `completing-read'."
+  (let* ((choices chirp-compose--reply-audience-choices)
+         (current (chirp-compose--reply-audience-label
+                   chirp-compose-reply-audience))
+         (label (completing-read "Who can reply: "
+                                 (mapcar #'cdr choices)
+                                 nil t nil nil current)))
+    (or (car (rassoc label choices))
+        (user-error "Reply audience is invalid"))))
+
+(defun chirp-compose-set-reply-audience (&optional audience)
+  "Set the reply audience for the current post or quote draft.
+
+AUDIENCE is `everyone', `community', `verified', or `byinvitation'.
+When called interactively, prompt for AUDIENCE."
+  (interactive)
+  (unless (derived-mode-p 'chirp-compose-mode)
+    (user-error "Not in a Chirp compose buffer"))
+  (chirp-compose--ensure-idle)
+  (unless (memq chirp-compose-kind '(post quote))
+    (user-error "Reply audience can be set only for a new post or quote"))
+  (let ((choice (or audience (chirp-compose--read-reply-audience))))
+    (unless (assq choice chirp-compose--reply-audience-choices)
+      (user-error "Reply audience is invalid: %S" choice))
+    (setq-local chirp-compose-reply-audience choice)
+    (appkit-compose-refresh)
+    (set-buffer-modified-p t)
+    choice))
+
+(defun chirp-compose--current-index ()
+  "Return the compose item index that contains point."
+  (or (appkit-compose-current-part-index) 0))
+
+(defun chirp-compose--current-item ()
+  "Return the compose item that contains point."
+  (nth (chirp-compose--current-index) chirp-compose-items))
+
+(defun chirp-compose--set-current-item (item)
+  "Replace the current compose item with ITEM."
+  (setcar (nthcdr (chirp-compose--current-index) chirp-compose-items) item)
+  item)
+
+(defun chirp-compose--item-attachments (&optional item)
+  "Return attachment paths for ITEM or the current compose item."
+  (plist-get (or item (chirp-compose--current-item)) :attachments))
+
 (defun chirp-compose--status-fields ()
   "Return current Chirp compose status fields."
-  (list (list :label "Media"
-              :value (format "%d/4" (length chirp-compose-attachments)))))
+  (let ((fields
+         (list (list :label "Media"
+                     :value (format "%d/4"
+                                    (length
+                                     (chirp-compose--item-attachments)))))))
+    (when (eq chirp-compose-kind 'post)
+      (push (list :label "Posts"
+                  :value (format "%d" (length chirp-compose-items)))
+            fields))
+    (when (memq chirp-compose-kind '(post quote))
+      (push (list :label "Audience"
+                  :value (chirp-compose--reply-audience-label
+                          chirp-compose-reply-audience)
+                  :action #'chirp-compose-set-reply-audience
+                  :help-echo "Change who can reply to this post")
+            fields))
+    fields))
 
-(defun chirp-compose--attachments-section ()
-  "Return the Appkit attachment section for the current draft."
+(defun chirp-compose--attachments-section (&optional item)
+  "Return the Appkit attachment section for ITEM or the current item."
   (list :title "Images"
         :items
         (mapcar (lambda (path)
                   (list :label (abbreviate-file-name path)
                         :object path))
-                chirp-compose-attachments)
+                (chirp-compose--item-attachments item))
         :empty-label "  No images attached."))
+
+(defun chirp-compose--parts ()
+  "Return Appkit compose parts for the current draft."
+  (let ((total (length chirp-compose-items))
+        (index 0))
+    (mapcar (lambda (item)
+              (setq index (1+ index))
+              (list :title (and (> total 1)
+                                (format "Post %d/%d" index total))
+                    :attachments (chirp-compose--attachments-section item)))
+            chirp-compose-items)))
 
 (defun chirp-compose--footer-string ()
   "Return the read-only footer shown after the compose body."
   (propertize
-   "C-c C-a attach   C-c C-v paste   C-c C-d remove   C-c C-c send   C-c C-k cancel"
+   (concat
+    "C-c C-a attach   C-c C-v paste   C-c C-d remove   "
+    (when (eq chirp-compose-kind 'post)
+      "C-c C-n add post   C-c C-p drop post   ")
+    "C-c C-c send   C-c C-k cancel")
    'face 'shadow))
 
 (defun chirp-compose--ensure-attachment-room ()
-  "Signal a user error when the current draft already has four images."
-  (when (>= (length chirp-compose-attachments) 4)
+  "Signal a user error when the current item already has four images."
+  (when (>= (length (chirp-compose--item-attachments)) 4)
     (user-error "Up to 4 attached images are supported")))
 
 (defun chirp-compose--mime-extension (mime-type)
@@ -607,20 +719,25 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
       (user-error "Attachment is not a regular file"))
     (unless (file-readable-p file)
       (user-error "Attachment is not readable"))
-    (when (member file chirp-compose-attachments)
-      (user-error "Image already attached"))
-    (setq-local chirp-compose-attachments
-                (append chirp-compose-attachments (list file)))
-    (when temporary
-      (setq-local chirp-compose-temp-attachments
-                  (append chirp-compose-temp-attachments (list file))))
-    (appkit-compose-refresh)
-    (set-buffer-modified-p t)
-    file))
+    (let ((item (or (chirp-compose--current-item)
+                    (user-error "No compose item at point")))
+          (attachments (chirp-compose--item-attachments)))
+      (when (member file attachments)
+        (user-error "Image already attached"))
+      (chirp-compose--set-current-item
+       (plist-put (copy-sequence item) :attachments
+                  (append attachments (list file))))
+      (when temporary
+        (setq-local chirp-compose-temp-attachments
+                    (append chirp-compose-temp-attachments (list file))))
+      (appkit-compose-refresh)
+      (set-buffer-modified-p t)
+      file)))
 
 (defun chirp-compose-attach-image (path)
   "Attach image PATH to the current draft."
   (interactive (list (read-file-name "Attach image: " nil nil t)))
+  (chirp-compose--ensure-idle)
   (chirp-compose--ensure-attachment-room)
   (message "Attached %s"
            (file-name-nondirectory
@@ -629,6 +746,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
 (defun chirp-compose-paste-image ()
   "Paste one image from the clipboard into the current draft."
   (interactive)
+  (chirp-compose--ensure-idle)
   (chirp-compose--ensure-attachment-room)
   (let* ((backend (chirp-compose--clipboard-image-backend))
          (file nil)
@@ -655,82 +773,160 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
 (defun chirp-compose-remove-image ()
   "Remove one image attachment from the current draft."
   (interactive)
-  (unless chirp-compose-attachments
-    (user-error "No attached images"))
-  (let* ((choice (if (= (length chirp-compose-attachments) 1)
-                     (car chirp-compose-attachments)
-                   (completing-read "Remove image: "
-                                    chirp-compose-attachments
-                                    nil
-                                    t
-                                    nil
-                                    nil
-                                    (car chirp-compose-attachments))))
-         (removed (expand-file-name choice)))
-    (setq-local chirp-compose-attachments
-                (delete removed chirp-compose-attachments))
-    (chirp-compose--drop-temp-attachment removed)
-    (appkit-compose-refresh)
-    (set-buffer-modified-p t)
-    (message "Removed %s" (file-name-nondirectory removed))))
+  (chirp-compose--ensure-idle)
+  (let ((attachments (chirp-compose--item-attachments)))
+    (unless attachments
+      (user-error "No attached images"))
+    (let* ((choice (if (= (length attachments) 1)
+                       (car attachments)
+                     (completing-read "Remove image: "
+                                      attachments
+                                      nil
+                                      t
+                                      nil
+                                      nil
+                                      (car attachments))))
+           (removed (expand-file-name choice))
+           (item (chirp-compose--current-item)))
+      (chirp-compose--set-current-item
+       (plist-put (copy-sequence item) :attachments
+                  (delete removed attachments)))
+      (chirp-compose--drop-temp-attachment removed)
+      (appkit-compose-refresh)
+      (set-buffer-modified-p t)
+      (message "Removed %s" (file-name-nondirectory removed)))))
 
-(defun chirp-compose--body-text ()
-  "Return the current compose body."
-  (let ((text (string-trim (appkit-compose-body))))
-    (if (string-empty-p text)
-        (user-error "Text cannot be empty")
-      text)))
+(defun chirp-compose--snapshot-items ()
+  "Return draft items with text copied from the Appkit compose parts."
+  (let ((bodies (appkit-compose-bodies))
+        (index 0)
+        items)
+    (dolist (item chirp-compose-items)
+      (let ((text (string-trim (or (nth index bodies) ""))))
+        (when (string-empty-p text)
+          (user-error "Text cannot be empty"))
+        (push (list :text text
+                    :attachments
+                    (copy-sequence (plist-get item :attachments)))
+              items))
+      (setq index (1+ index)))
+    (nreverse items)))
 
 (defun chirp-compose--draft ()
   "Return the current compose buffer as a structured backend draft."
-  (list :kind chirp-compose-kind
-        :text (chirp-compose--body-text)
-        :target-id chirp-compose-target-id
-        :attachments (copy-sequence chirp-compose-attachments)))
+  (let ((draft (list :kind chirp-compose-kind
+                     :target-id chirp-compose-target-id
+                     :items (chirp-compose--snapshot-items))))
+    (when (memq chirp-compose-kind '(post quote))
+      (setq draft
+            (plist-put draft :reply-audience
+                       (or chirp-compose-reply-audience 'everyone))))
+    draft))
+
+(defun chirp-compose--unlock (buffer temp-attachments &optional unknown-p)
+  "Restore BUFFER after a failed send and reattach TEMP-ATTACHMENTS.
+
+When UNKNOWN-P is non-nil, mark the draft as having an unknown outcome."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq-local chirp-compose-sending nil)
+      (setq-local chirp-compose-unknown-outcome unknown-p)
+      (setq-local chirp-compose-temp-attachments
+                  (append (copy-sequence temp-attachments)
+                          chirp-compose-temp-attachments))
+      (setq-local buffer-read-only nil))))
+
+(defun chirp-compose--finish-send
+    (compose-buffer source-buffer temp-attachments success-message)
+  "Close COMPOSE-BUFFER after a successful send from SOURCE-BUFFER.
+
+TEMP-ATTACHMENTS are deleted.  SUCCESS-MESSAGE is shown after the source
+view is refreshed."
+  (chirp-backend-clear-cache)
+  (chirp-compose--cleanup-files temp-attachments)
+  (when (buffer-live-p compose-buffer)
+    (chirp-compose--close compose-buffer source-buffer))
+  (when (buffer-live-p source-buffer)
+    (chirp-actions--refresh-buffer source-buffer))
+  (message "%s" success-message))
+
+(defun chirp-compose--fail-send (compose-buffer temp-attachments message)
+  "Restore COMPOSE-BUFFER after MESSAGE, or delete TEMP-ATTACHMENTS."
+  (let ((unknown-p (chirp-actions--unknown-write-outcome-p message)))
+    (if (buffer-live-p compose-buffer)
+        (chirp-compose--unlock compose-buffer temp-attachments unknown-p)
+      (chirp-compose--cleanup-files temp-attachments))
+    (chirp-actions--show-error message)))
+
+(defun chirp-compose--send-next
+    (compose-buffer source-buffer draft items index previous-id
+                    temp-attachments success-message)
+  "Send ITEMS of DRAFT from INDEX, replying to PREVIOUS-ID after the first."
+  (if (>= index (length items))
+      (chirp-compose--finish-send
+       compose-buffer source-buffer temp-attachments success-message)
+    (let* ((item (nth index items))
+           (root-p (zerop index))
+           (kind (if root-p (plist-get draft :kind) 'reply))
+           (target-id (if root-p (plist-get draft :target-id) previous-id)))
+      (chirp-backend-compose
+       :kind kind
+       :text (plist-get item :text)
+       :target-id target-id
+       :attachments (plist-get item :attachments)
+       :reply-audience (and root-p (plist-get draft :reply-audience))
+       :callback
+       (lambda (created _envelope)
+         (chirp-compose--send-next
+          compose-buffer source-buffer draft items (1+ index)
+          (plist-get created :id) temp-attachments success-message))
+       :errback
+       (lambda (message)
+         (chirp-compose--fail-send
+          compose-buffer temp-attachments message))))))
 
 (defun chirp-compose-send ()
-  "Send the current draft."
+  "Send the current draft and keep it until the request settles."
   (interactive)
-  (when chirp-compose-sending
-    (user-error "Draft is already sending"))
+  (chirp-compose--ensure-idle)
+  (when (and chirp-compose-unknown-outcome
+             (not (yes-or-no-p
+                   (concat
+                    "Previous send outcome is unknown; "
+                    "the post may already exist. Send again? "))))
+    (user-error "Send canceled"))
   (let* ((compose-buffer (current-buffer))
          (source-buffer chirp-compose-source-buffer)
          (draft (chirp-compose--draft))
+         (items (plist-get draft :items))
          (temp-attachments (chirp-compose--take-temp-attachments))
+         (thread-p (> (length items) 1))
          (success-message
-          (pcase chirp-compose-kind
-            ('reply "Reply sent.")
-            ('quote "Quote tweet sent.")
-            (_ "Post sent.")))
+          (cond
+           (thread-p "Posts sent.")
+           ((eq chirp-compose-kind 'reply) "Reply sent.")
+           ((eq chirp-compose-kind 'quote) "Quote tweet sent.")
+           (t "Post sent.")))
          (sending-message
-          (pcase chirp-compose-kind
-            ('reply "Sending reply...")
-            ('quote "Sending quote tweet...")
-            (_ "Sending post..."))))
+          (cond
+           (thread-p "Sending posts...")
+           ((eq chirp-compose-kind 'reply) "Sending reply...")
+           ((eq chirp-compose-kind 'quote) "Sending quote tweet...")
+           (t "Sending post..."))))
     (setq-local chirp-compose-sending t)
+    (setq-local chirp-compose-unknown-outcome nil)
+    (setq-local buffer-read-only t)
     (condition-case err
         (progn
-          (chirp-backend-compose
-           :kind (plist-get draft :kind)
-           :text (plist-get draft :text)
-           :target-id (plist-get draft :target-id)
-           :attachments (plist-get draft :attachments)
-           :callback
-           (lambda (_data _envelope)
-             (chirp-backend-clear-cache)
-             (chirp-compose--cleanup-files temp-attachments)
-             (when (buffer-live-p source-buffer)
-               (chirp-actions--refresh-buffer source-buffer))
-             (message "%s" success-message))
-           :errback
-           (lambda (message)
-             (chirp-compose--cleanup-files temp-attachments)
-             (chirp-actions--show-error message)))
-          (chirp-compose--close compose-buffer source-buffer)
-          (message "%s" sending-message))
+          (chirp-compose--send-next
+           compose-buffer source-buffer draft items 0 nil
+           temp-attachments success-message)
+          (when (and (buffer-live-p compose-buffer)
+                     (with-current-buffer compose-buffer
+                       chirp-compose-sending))
+            (message "%s" sending-message)))
       (error
-       (setq-local chirp-compose-sending nil)
-       (setq-local chirp-compose-temp-attachments temp-attachments)
+       (chirp-compose--unlock compose-buffer temp-attachments)
        (signal (car err) (cdr err))))))
 
 (defun chirp-compose--other-window-showing-buffer (buffer &optional except-window)
@@ -774,6 +970,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
 (defun chirp-compose-cancel ()
   "Cancel the current draft."
   (interactive)
+  (chirp-compose--ensure-idle)
   (chirp-compose--close (current-buffer) chirp-compose-source-buffer))
 
 (defun chirp-compose--view-buffer-p (buffer)
@@ -810,18 +1007,65 @@ When TWEET is non-nil, use it as the reply or quote target."
       (setq-local chirp-compose-target-handle (plist-get tweet :author-handle))
       (setq-local chirp-compose-target-url (plist-get tweet :url))
       (setq-local chirp-compose-source-buffer source)
-      (setq-local chirp-compose-attachments nil)
+      (setq-local chirp-compose-items (list (list :attachments nil)))
       (setq-local chirp-compose-temp-attachments nil)
       (setq-local chirp-compose-sending nil)
+      (setq-local chirp-compose-unknown-outcome nil)
+      (setq-local chirp-compose-reply-audience
+                  (and (memq kind '(post quote)) 'everyone))
       (rename-buffer (chirp-compose--buffer-name) t)
       (add-hook 'kill-buffer-hook #'chirp-compose--cleanup-temp-attachments nil t)
       (appkit-compose-setup
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
-       :attachments-function #'chirp-compose--attachments-section
+       :parts-function #'chirp-compose--parts
        :footer-function #'chirp-compose--footer-string)
       (set-buffer-modified-p nil)
       (goto-char (appkit-compose-body-start-position)))))
+
+(defun chirp-compose-add-post ()
+  "Insert an empty post after the current draft item."
+  (interactive)
+  (chirp-compose--ensure-idle)
+  (unless (eq chirp-compose-kind 'post)
+    (user-error "Another post can be added only to a new post draft"))
+  (let* ((index (1+ (chirp-compose--current-index)))
+         (bodies (appkit-compose-bodies)))
+    (setq-local chirp-compose-items
+                (append (cl-subseq chirp-compose-items 0 index)
+                        (list (list :attachments nil))
+                        (cl-subseq chirp-compose-items index)))
+    (appkit-compose-set-bodies
+     (append (cl-subseq bodies 0 index)
+             (list "")
+             (cl-subseq bodies index)))
+    (appkit-compose-refresh)
+    (appkit-compose-goto-part index)
+    (set-buffer-modified-p t)))
+
+(defun chirp-compose-remove-post ()
+  "Remove the current extra post from the draft."
+  (interactive)
+  (chirp-compose--ensure-idle)
+  (unless (eq chirp-compose-kind 'post)
+    (user-error "Only a new post draft can drop an extra post"))
+  (unless (> (length chirp-compose-items) 1)
+    (user-error "The draft already has only one post"))
+  (let* ((index (chirp-compose--current-index))
+         (item (nth index chirp-compose-items))
+         (bodies (appkit-compose-bodies)))
+    (dolist (file (plist-get item :attachments))
+      (chirp-compose--drop-temp-attachment file))
+    (setq-local chirp-compose-items
+                (append (cl-subseq chirp-compose-items 0 index)
+                        (cl-subseq chirp-compose-items (1+ index))))
+    (appkit-compose-set-bodies
+     (append (cl-subseq bodies 0 index)
+             (cl-subseq bodies (1+ index))))
+    (appkit-compose-refresh)
+    (appkit-compose-goto-part (min index (1- (length chirp-compose-items))))
+    (set-buffer-modified-p t)
+    (message "Removed post %d." (1+ index))))
 
 (defun chirp-compose-post ()
   "Open a compose buffer for a new post."
@@ -831,7 +1075,10 @@ When TWEET is non-nil, use it as the reply or quote target."
 (defun chirp-reply-at-point ()
   "Open a compose buffer to reply to the tweet at point."
   (interactive)
-  (chirp-compose-open 'reply (chirp-actions--tweet-at-point)))
+  (let ((tweet (chirp-actions--tweet-at-point)))
+    (when (plist-get tweet :reply-limited-p)
+      (user-error "You cannot reply to this conversation"))
+    (chirp-compose-open 'reply tweet)))
 
 (defun chirp--dispatch-mouse-action (event)
   "Dispatch the tweet action at mouse EVENT."

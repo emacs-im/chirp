@@ -18,15 +18,17 @@
       (chirp-compose-mode)
       (setq-local chirp-compose-kind 'post)
       (setq-local chirp-compose-source-buffer source)
-      (setq-local chirp-compose-attachments nil)
+      (setq-local chirp-compose-items (list (list :attachments nil)))
       (setq-local chirp-compose-temp-attachments nil)
       (setq-local chirp-compose-sending nil)
+      (setq-local chirp-compose-unknown-outcome nil)
+      (setq-local chirp-compose-reply-audience 'everyone)
       (erase-buffer)
       (insert body)
       (appkit-compose-setup
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
-       :attachments-function #'chirp-compose--attachments-section
+       :parts-function #'chirp-compose--parts
        :footer-function #'chirp-compose--footer-string))
     (cons compose source)))
 
@@ -52,9 +54,114 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello")))
     (unwind-protect
         (with-current-buffer compose
-          (setq-local chirp-compose-attachments '("/tmp/photo.png"))
+          (setq-local chirp-compose-items
+                      (list (list :attachments '("/tmp/photo.png"))))
           (appkit-compose-refresh)
+          (should (string-match-p "Audience: Everyone" (buffer-string)))
           (should (string-match-p "Media: 1/4" (buffer-string))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-reply-omits-reply-audience-field ()
+  "Reply drafts should not expose a reply-audience status field."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (unwind-protect
+        (with-current-buffer compose
+          (setq-local chirp-compose-kind 'reply)
+          (setq-local chirp-compose-reply-audience nil)
+          (appkit-compose-refresh)
+          (should-not (string-match-p "Audience:" (buffer-string)))
+          (should-not (plist-member (chirp-compose--draft) :reply-audience)))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-add-post-appends-an-empty-part ()
+  "A post draft should be able to grow into an ordered multi-part draft."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "first")))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose-add-post)
+          (should (= (length chirp-compose-items) 2))
+          (should (string-match-p "Posts: 2" (buffer-string)))
+          (should (string-match-p "Post 1/2" (buffer-string)))
+          (insert "second")
+          (let ((items (plist-get (chirp-compose--draft) :items)))
+            (should (equal (mapcar (lambda (item) (plist-get item :text))
+                                   items)
+                           '("first" "second")))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-add-and-remove-posts-in-the-middle ()
+  "Adding or removing a post should keep the surrounding items in order."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "first")))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose-add-post)
+          (insert "third")
+          (appkit-compose-goto-part 0)
+          (chirp-compose-add-post)
+          (insert "second")
+          (should (equal (appkit-compose-bodies)
+                         '("first" "second" "third")))
+          (appkit-compose-goto-part 1)
+          (chirp-compose-remove-post)
+          (should (equal (appkit-compose-bodies) '("first" "third")))
+          (should (eq (appkit-compose-current-part-index) 1)))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-send-posts-a-thread-in-order ()
+  "Sending a multi-part draft should create the root then reply to it."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "first")))
+    (let (requests)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-compose)
+                     (lambda (&rest draft)
+                       (push draft requests)
+                       (funcall (plist-get draft :callback)
+                                (list :id (format "%d" (length requests)))
+                                nil))))
+            (with-current-buffer compose
+              (chirp-compose-add-post)
+              (insert "second")
+              (chirp-compose-send))
+            (setq requests (nreverse requests))
+            (should (= (length requests) 2))
+            (should (eq (plist-get (car requests) :kind) 'post))
+            (should (equal (plist-get (car requests) :text) "first"))
+            (should (eq (plist-get (cadr requests) :kind) 'reply))
+            (should (equal (plist-get (cadr requests) :text) "second"))
+            (should (equal (plist-get (cadr requests) :target-id) "1"))
+            (should-not (buffer-live-p compose)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-set-reply-audience-updates-draft ()
+  "Choosing a reply audience should update the draft and status field."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose-set-reply-audience 'community)
+          (should (eq chirp-compose-reply-audience 'community))
+          (should (string-match-p "Audience: People you follow" (buffer-string)))
+          (should (eq (plist-get (chirp-compose--draft) :reply-audience)
+                      'community)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -110,8 +217,8 @@ Return a list of (compose source foreign)."
       (when (buffer-live-p source)
         (kill-buffer source)))))
 
-(ert-deftest chirp-compose-send-closes-buffer-immediately ()
-  "Sending should close the compose buffer before the backend replies."
+(ert-deftest chirp-compose-send-keeps-buffer-until-success ()
+  "Sending should keep the compose buffer until the backend succeeds."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "hello world")))
     (let (captured-draft)
@@ -121,11 +228,16 @@ Return a list of (compose source foreign)."
                        (lambda (&rest draft)
                          (setq captured-draft draft))))
               (with-current-buffer compose
-                (chirp-compose-send)))
-            (should (eq (plist-get captured-draft :kind) 'post))
-            (should (equal (plist-get captured-draft :text) "hello world"))
-            (should-not (plist-get captured-draft :attachments))
-            (should-not (buffer-live-p compose)))
+                (chirp-compose-send)
+                (should chirp-compose-sending)
+                (should buffer-read-only))
+              (should (buffer-live-p compose))
+              (should (eq (plist-get captured-draft :kind) 'post))
+              (should (equal (plist-get captured-draft :text) "hello world"))
+              (should (eq (plist-get captured-draft :reply-audience) 'everyone))
+              (should-not (plist-get captured-draft :attachments))
+              (funcall (plist-get captured-draft :callback) nil nil)
+              (should-not (buffer-live-p compose))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -138,10 +250,11 @@ Return a list of (compose source foreign)."
                  (chirp-test--make-compose-buffer body)))
       (unwind-protect
           (with-current-buffer compose
-            (let ((draft (chirp-compose--draft)))
+            (let* ((draft (chirp-compose--draft))
+                   (item (car (plist-get draft :items))))
               (should (eq (plist-get draft :kind) 'post))
-              (should (equal (plist-get draft :text) body))
-              (should-not (plist-get draft :attachments))))
+              (should (equal (plist-get item :text) body))
+              (should-not (plist-get item :attachments))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -158,7 +271,8 @@ Return a list of (compose source foreign)."
       (unwind-protect
           (progn
             (with-current-buffer compose
-              (setq-local chirp-compose-attachments (list temp-file))
+              (setq-local chirp-compose-items
+                          (list (list :attachments (list temp-file))))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
@@ -177,8 +291,8 @@ Return a list of (compose source foreign)."
         (when (file-exists-p temp-file)
           (delete-file temp-file))))))
 
-(ert-deftest chirp-compose-send-cleans-temp-files-after-failure ()
-  "Temporary attachments should be removed when an async send fails."
+(ert-deftest chirp-compose-send-keeps-draft-after-failure ()
+  "A known send failure should keep the draft and its temporary attachments."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "failed photo post")))
     (let* ((temp-file (make-temp-file "chirp-compose-test-" nil ".png"))
@@ -187,7 +301,8 @@ Return a list of (compose source foreign)."
       (unwind-protect
           (progn
             (with-current-buffer compose
-              (setq-local chirp-compose-attachments (list temp-file))
+              (setq-local chirp-compose-items
+                          (list (list :attachments (list temp-file))))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
@@ -196,20 +311,25 @@ Return a list of (compose source foreign)."
                        (lambda (message)
                          (setq reported message))))
               (with-current-buffer compose
-                (chirp-compose-send))
-              (should (file-exists-p temp-file))
-              (funcall error-callback "upload failed"))
-            (should-not (file-exists-p temp-file))
-            (should (equal reported "upload failed")))
+                (chirp-compose-send)
+                (should chirp-compose-sending)
+                (funcall error-callback "upload failed")
+                (should (buffer-live-p compose))
+                (should-not chirp-compose-sending)
+                (should-not chirp-compose-unknown-outcome)
+                (should-not buffer-read-only)
+                (should (member temp-file chirp-compose-temp-attachments))
+                (should (file-exists-p temp-file))
+                (should (equal reported "upload failed"))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
           (kill-buffer source))
         (when (file-exists-p temp-file)
-          (delete-file temp-file))))))
+          (delete-file temp-file)))))))
 
-(ert-deftest chirp-compose-stop-during-upload-cleans-temp-files ()
-  "Stopping during media processing should settle and clean detached files."
+(ert-deftest chirp-compose-stop-during-upload-keeps-draft ()
+  "Stopping during media processing should keep the draft and warn."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "stopped photo post")))
     (let ((chirp--app nil)
@@ -220,7 +340,8 @@ Return a list of (compose source foreign)."
           (progn
             (write-region "png" nil temp-file nil 'silent)
             (with-current-buffer compose
-              (setq-local chirp-compose-attachments (list temp-file))
+              (setq-local chirp-compose-items
+                          (list (list :attachments (list temp-file))))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-x--request)
                        (lambda (_url _method callback &rest _options)
@@ -238,9 +359,14 @@ Return a list of (compose source foreign)."
               (with-current-buffer compose
                 (chirp-compose-send))
               (should (file-exists-p temp-file))
-              (chirp-stop))
-            (should-not (file-exists-p temp-file))
-            (should (string-prefix-p "X write outcome is unknown" reported)))
+              (chirp-stop)
+              (should (buffer-live-p compose))
+              (with-current-buffer compose
+                (should-not chirp-compose-sending)
+                (should chirp-compose-unknown-outcome)
+                (should (member temp-file chirp-compose-temp-attachments)))
+              (should (file-exists-p temp-file))
+              (should (string-prefix-p "X write outcome is unknown" reported))))
         (chirp-stop)
         (when (buffer-live-p compose)
           (kill-buffer compose))
@@ -248,6 +374,39 @@ Return a list of (compose source foreign)."
           (kill-buffer source))
         (when (file-exists-p temp-file)
           (delete-file temp-file))))))
+
+(ert-deftest chirp-compose-send-confirms-after-unknown-outcome ()
+  "A later send after an unknown outcome should require confirmation."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "maybe posted")))
+    (let ((request-count 0)
+          confirmed)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-compose)
+                     (lambda (&rest _draft)
+                       (setq request-count (1+ request-count))))
+                    ((symbol-function 'yes-or-no-p)
+                     (lambda (_prompt)
+                       (setq confirmed t)
+                       nil)))
+            (with-current-buffer compose
+              (setq-local chirp-compose-unknown-outcome t)
+              (should-error (chirp-compose-send) :type 'user-error)
+              (should confirmed)
+              (should (= request-count 0))
+              (setq confirmed nil)
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (_prompt)
+                           (setq confirmed t)
+                           t)))
+                (chirp-compose-send)
+                (should confirmed)
+                (should (= request-count 1))
+                (should-not chirp-compose-unknown-outcome))))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
 
 (ert-deftest chirp-actions-warns-when-a-write-outcome-is-unknown ()
   "Ambiguous write failures should remain visible and discourage retrying."
@@ -261,6 +420,39 @@ Return a list of (compose source foreign)."
     (should (eq (car warning) 'chirp))
     (should (eq (nth 2 warning) :warning))
     (should (string-match-p "may have succeeded" (cadr warning)))))
+
+(ert-deftest chirp-compose-send-passes-reply-audience ()
+  "Sending a post should forward the selected reply audience."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "audience post")))
+    (let (captured-draft)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-compose)
+                     (lambda (&rest draft)
+                       (setq captured-draft draft))))
+            (with-current-buffer compose
+              (chirp-compose-set-reply-audience 'byinvitation)
+              (chirp-compose-send))
+            (should (eq (plist-get captured-draft :reply-audience)
+                        'byinvitation)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-cancel-rejects-in-flight-send ()
+  "Cancel should refuse while a draft is already sending."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "in flight")))
+    (unwind-protect
+        (with-current-buffer compose
+          (setq-local chirp-compose-sending t)
+          (should-error (chirp-compose-cancel) :type 'user-error)
+          (should (buffer-live-p compose)))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
 
 (ert-deftest chirp-compose-send-rejects-duplicate-submit ()
   "Sending should reject a second submit while a draft is marked in flight."
@@ -303,7 +495,8 @@ Return a list of (compose source foreign)."
                 (chirp-compose-paste-image)
                 (should (string-prefix-p (file-name-as-directory temp-root)
                                          pasted-path))
-                (should (member pasted-path chirp-compose-attachments))
+                (should (member pasted-path
+                                (chirp-compose--item-attachments)))
                 (should (member pasted-path chirp-compose-temp-attachments)))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
@@ -319,12 +512,12 @@ Return a list of (compose source foreign)."
         (with-current-buffer buffer
           (chirp-compose-mode)
           (setq-local chirp-compose-kind 'post)
-          (setq-local chirp-compose-attachments nil)
+          (setq-local chirp-compose-items (list (list :attachments nil)))
           (setq-local chirp-compose-temp-attachments nil)
           (appkit-compose-setup
            :context-function #'chirp-compose--header-string
            :status-fields-function #'chirp-compose--status-fields
-           :attachments-function #'chirp-compose--attachments-section
+           :parts-function #'chirp-compose--parts
            :footer-function #'chirp-compose--footer-string)
           (goto-char (appkit-compose-body-start-position))
           (insert "abc")
@@ -432,9 +625,12 @@ Return a list of (compose source foreign)."
                 (goto-char (appkit-compose-body-start-position))
                 (insert "hello quote")
                 (chirp-compose-send)))
+            (should (buffer-live-p compose))
             (should (eq (plist-get captured-draft :kind) 'quote))
             (should (equal (plist-get captured-draft :target-id) "123"))
             (should (equal (plist-get captured-draft :text) "hello quote"))
+            (should (eq (plist-get captured-draft :reply-audience) 'everyone))
+            (funcall (plist-get captured-draft :callback) nil nil)
             (should-not (buffer-live-p compose))
             (should (eq (window-buffer (selected-window)) source)))
         (dolist (buffer (list compose source foreign))
@@ -460,21 +656,27 @@ Return a list of (compose source foreign)."
               (chirp-compose-mode)
               (setq-local chirp-compose-kind 'post)
               (setq-local chirp-compose-source-buffer source)
-              (setq-local chirp-compose-attachments nil)
+              (setq-local chirp-compose-items (list (list :attachments nil)))
               (setq-local chirp-compose-temp-attachments nil)
               (setq-local chirp-compose-sending nil)
+              (setq-local chirp-compose-unknown-outcome nil)
+              (setq-local chirp-compose-reply-audience 'everyone)
               (erase-buffer)
               (insert "hello world")
               (appkit-compose-setup
                :context-function #'chirp-compose--header-string
                :status-fields-function #'chirp-compose--status-fields
-               :attachments-function #'chirp-compose--attachments-section
+               :parts-function #'chirp-compose--parts
                :footer-function #'chirp-compose--footer-string))
-            (cl-letf (((symbol-function 'chirp-backend-compose)
-                       (lambda (&rest _draft)
-                         nil)))
-              (with-current-buffer compose
-                (chirp-compose-send)))
+            (let (success-callback)
+              (cl-letf (((symbol-function 'chirp-backend-compose)
+                         (lambda (&rest draft)
+                           (setq success-callback
+                                 (plist-get draft :callback)))))
+                (with-current-buffer compose
+                  (chirp-compose-send)))
+              (should (buffer-live-p compose))
+              (funcall success-callback nil nil))
             (should-not (buffer-live-p compose))
             (should (= (length (window-list nil 'no-minibuf)) 1))
             (should (eq (window-buffer (selected-window)) source))))
@@ -516,6 +718,30 @@ Return a list of (compose source foreign)."
           (funcall fn buffer))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest chirp-reply-at-point-rejects-limited-conversations ()
+  "Reply should refuse tweets that X marks as reply-limited."
+  (chirp-test--with-tweet-buffer
+   '(:kind tweet :id "123" :author-handle "alice" :reply-limited-p t)
+   (lambda (_buffer)
+     (let ((err (should-error (chirp-reply-at-point) :type 'user-error)))
+       (should (string-match-p "cannot reply" (error-message-string err)))))))
+
+(ert-deftest chirp-reply-at-point-opens-compose-for-allowed-tweets ()
+  "Reply should open a compose draft when the conversation allows it."
+  (let (compose)
+    (unwind-protect
+        (chirp-test--with-tweet-buffer
+         '(:kind tweet :id "123" :author-handle "alice")
+         (lambda (_buffer)
+           (chirp-reply-at-point)
+           (setq compose (current-buffer))
+           (should (derived-mode-p 'chirp-compose-mode))
+           (should (eq chirp-compose-kind 'reply))
+           (should (equal chirp-compose-target-id "123"))
+           (should-not chirp-compose-reply-audience)))
+      (when (buffer-live-p compose)
+        (kill-buffer compose)))))
 
 (ert-deftest chirp-actions-mouse-action-targets-clicked-tweet ()
   "Mouse tweet metrics should dispatch their action for the clicked tweet."

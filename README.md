@@ -98,19 +98,23 @@ M-x chirp-profile-following-users
 - `A`: open the author profile
 - `S`: add a persistent spam phrase or keyword using the active region or current tweet text; use `C-u S` to start with the author's display name
 - `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
+- `x r`: reply to the tweet at point, or refuse when X limits replies from the current account
 - `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
 
 Inside the compose buffer:
 
-- `C-c C-a`: attach an image file (up to 4)
+- `C-c C-a`: attach an image file to the current post (up to 4)
 - `C-c C-v`: paste one image from the clipboard
-- `C-c C-d`: remove an attached image
+- `C-c C-d`: remove an attached image from the current post
+- `C-c C-n`: insert another post after the current one (new posts only)
+- `C-c C-p`: drop the current extra post from this draft
 - `M-TAB`: complete a user handle after typing an `@` prefix (also available
   to completion-at-point frontends such as Corfu)
-- `C-c C-c`: close the draft immediately and send it in the background
-- `C-c C-k`: cancel the draft
-- The Appkit-backed compose header shows the current media count, and generated context and attachment sections remain read-only while the draft body stays editable.
+- `C-c C-c`: send the draft and keep it until X acknowledges success. A multi-post draft publishes the first item, then each later item as a reply to the previous one
+- `C-c C-k`: cancel the draft; this is refused while a send is in flight
+- Click `Audience` on a post or quote to choose who can reply; replies inherit the conversation rule
+- The Appkit-backed compose header shows the reply audience, post count, and current media count, and generated context and attachment sections remain read-only while each draft body stays editable. A known send failure leaves the draft editable. If the remote outcome is unknown, Chirp warns and asks before sending the same draft again.
 
 Premium accounts can send drafts over the standard 280 weighted-character limit. Chirp computes X's weighted length and selects the direct long-form operation for posts, replies, and quotes. JPEG, PNG, and WebP attachments may be up to 5 MiB; GIF attachments may be up to 15 MiB.
 
