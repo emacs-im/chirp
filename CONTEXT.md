@@ -45,3 +45,21 @@ _Avoid_: File upload job, HTTP request
 **Media attachment**:
 A media item included in a compose draft, with descriptive metadata that is independent of the post text and reply audience.
 _Avoid_: Image (when the item may be a video or GIF)
+
+## Conversations
+
+**Focus tweet**:
+The post a thread view was opened on.
+_Avoid_: Selected tweet, current tweet, root (when the opened post is a reply)
+
+**Ancestor chain**:
+The linear parents from the conversation root down to the focus tweet, shown above that focus.
+_Avoid_: Reply tree, nested thread, indent stack
+
+**Reply tree**:
+The replies that come after the focus tweet, nested by their parent below that focus.
+_Avoid_: Ancestor chain, conversation root depth
+
+**Hidden reply mentions**:
+The leading @handles X prepends to a reply for the conversation participants. They are not part of the visible post text.
+_Avoid_: Reply target, reply audience

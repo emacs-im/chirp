@@ -25,7 +25,8 @@
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-backend-article) #'ignore)
                   ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered &optional _anchor-id _display-p)
+                   (lambda (_buffer _title _refresh ordered
+                            &optional _anchor-id _display-p _focus-id)
                      (push ordered renders)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -63,6 +64,24 @@
     (should (equal (mapcar (lambda (row) (plist-get row :depth)) rows)
                    '(0 1 2)))
     (should (plist-get (car rows) :focus-p))))
+
+(ert-deftest chirp-thread-reorder-puts-ancestor-chain-before-focus ()
+  "A reply focus should keep its ancestors above it and replies below it."
+  (let* ((tweets '((:kind tweet :id "focus" :reply-to-id "parent" :text "Focus")
+                   (:kind tweet :id "root" :text "Root")
+                   (:kind tweet :id "reply" :reply-to-id "focus" :text "Reply")
+                   (:kind tweet :id "parent" :reply-to-id "root" :text "Parent")))
+         (ordered (chirp-thread--reorder tweets "focus"))
+         (rows (chirp-thread--discussion-rows ordered "focus")))
+    (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) ordered)
+                   '("root" "parent" "focus" "reply")))
+    (should (equal (mapcar (lambda (row) (plist-get row :role)) rows)
+                   '(chain chain focus tree)))
+    (should (equal (mapcar (lambda (row) (plist-get row :depth)) rows)
+                   '(0 0 0 1)))
+    (should (equal (mapcar (lambda (row) (plist-get row :connector)) rows)
+                   '(continue continue end nil)))
+    (should (plist-get (nth 2 rows) :focus-p))))
 
 (ert-deftest chirp-thread-discussion-rows-flatten-orphans-and-cycles ()
   "Missing or cyclic visible parents should not create invalid nesting."
@@ -125,17 +144,10 @@
                      "    "
                      (get-text-property (point) 'line-prefix)))
             (forward-line 1)
-            (let ((context-line
-                   (buffer-substring (line-beginning-position)
-                                     (line-end-position))))
-              (should (= 0 (- (length context-line)
-                              (length (string-trim-left context-line)))))
-              (should (equal "    "
-                             (get-text-property (point) 'line-prefix))))
-            (forward-line 1)
             (let ((body-line
                    (buffer-substring (line-beginning-position)
                                      (line-end-position))))
+              (should (string-match-p "Reply" body-line))
               (should (= 0 (- (length body-line)
                               (length (string-trim-left body-line)))))
               (should (equal "    "
@@ -147,6 +159,41 @@
             (chirp-previous-entry)
             (should (equal (plist-get (chirp-entry-at-point) :id)
                            "root"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-thread-render-view-draws-ancestor-chain-prefix ()
+  "Ancestors should share a prefix spine and keep replies nested under the focus."
+  (let ((buffer (generate-new-buffer " *chirp-thread-chain-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                   (lambda (&rest _args) nil)))
+          (chirp-thread--render-view
+           buffer
+           "Thread"
+           #'ignore
+           '((:kind tweet :id "root" :text "Root"
+              :author-name "Alice" :author-handle "alice")
+             (:kind tweet :id "focus" :text "Focus"
+              :reply-to-id "root"
+              :author-name "Bob" :author-handle "bob")
+             (:kind tweet :id "reply" :text "Reply"
+              :reply-to-id "focus"
+              :author-name "Carol" :author-handle "carol"))
+           nil nil "focus")
+          (with-current-buffer buffer
+            (should (equal (plist-get (chirp-entry-at-point) :id) "focus"))
+            (should (string-prefix-p
+                     "│ " (get-text-property (point) 'line-prefix)))
+            (goto-char (point-min))
+            (should (equal (plist-get (chirp-entry-at-point) :id) "root"))
+            (should (string-prefix-p
+                     "│ " (get-text-property (point) 'line-prefix)))
+            (goto-char (appkit-discussion-next-position))
+            (goto-char (appkit-discussion-next-position))
+            (should (equal (plist-get (chirp-entry-at-point) :id) "reply"))
+            (should (equal "    "
+                           (get-text-property (point) 'line-prefix)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -170,7 +217,8 @@
                    (lambda (_target callback &optional _errback)
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered &optional _anchor-id _display-p)
+                   (lambda (_buffer _title _refresh ordered
+                            &optional _anchor-id _display-p _focus-id)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -225,7 +273,7 @@
                   ((symbol-function 'chirp-backend-article) #'ignore)
                   ((symbol-function 'chirp-thread--render-view)
                    (lambda (_buffer _title _refresh ordered
-                            &optional _anchor-id _display-p)
+                            &optional _anchor-id _display-p _focus-id)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)

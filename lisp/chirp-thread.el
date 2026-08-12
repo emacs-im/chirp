@@ -5,7 +5,9 @@
 
 ;;; Commentary:
 
-;; Fetch, enrich, order, and render a focused tweet conversation.
+;; Fetch, enrich, order, and render a focused tweet conversation.  Ancestors
+;; of the focus tweet form a linear prefix chain; later replies nest as a
+;; tree from that focus.
 
 ;;; Code:
 
@@ -165,74 +167,138 @@ display name or handle instead."
   (when-let* ((key (chirp-thread--key tweet)))
     (list 'tweet key)))
 
-(defun chirp-thread--discussion-depth (tweet by-id)
-  "Return TWEET's visible parent depth from BY-ID, or zero on a cycle."
-  (let ((current tweet)
+(defun chirp-thread--index-tweets (tweets)
+  "Return a lookup table of TWEETS keyed by discussion key and id."
+  (let ((by-id (make-hash-table :test #'equal)))
+    (dolist (tweet tweets by-id)
+      (when-let* ((key (chirp-thread--discussion-key tweet)))
+        (puthash key tweet by-id)
+        (when-let* ((id (plist-get tweet :id)))
+          (puthash id tweet by-id))))))
+
+(defun chirp-thread--find-tweet (tweets tweet-id)
+  "Return the tweet in TWEETS whose key equals TWEET-ID, or nil."
+  (and tweet-id
+       (cl-find tweet-id tweets :key #'chirp-thread--key :test #'equal)))
+
+(defun chirp-thread--ancestor-tweets (focus by-id)
+  "Return FOCUS's visible ancestors from BY-ID, root first."
+  (let ((current focus)
         (seen (make-hash-table :test #'equal))
-        (depth 0)
-        (valid-p t))
-    (while (and valid-p current)
+        ancestors)
+    (while current
       (let* ((key (chirp-thread--discussion-key current))
              (parent-id (plist-get current :reply-to-id))
              (parent (and parent-id (gethash parent-id by-id))))
         (cond
          ((or (null key) (gethash key seen))
-          (setq valid-p nil))
+          (setq current nil))
+         (parent
+          (puthash key t seen)
+          (push parent ancestors)
+          (setq current parent))
+         (t
+          (setq current nil)))))
+    ancestors))
+
+(defun chirp-thread--depth-from-focus (tweet focus by-id)
+  "Return TWEET's visible depth below FOCUS, or zero when it is unreachable."
+  (let ((current tweet)
+        (seen (make-hash-table :test #'equal))
+        (depth 0)
+        (focus-key (chirp-thread--discussion-key focus))
+        reached-p)
+    (while current
+      (let* ((key (chirp-thread--discussion-key current))
+             (parent-id (plist-get current :reply-to-id))
+             (parent (and parent-id (gethash parent-id by-id))))
+        (cond
+         ((or (null key) (gethash key seen))
+          (setq current nil))
+         ((equal key focus-key)
+          (setq reached-p t
+                current nil))
          (parent
           (puthash key t seen)
           (setq depth (1+ depth)
                 current parent))
          (t
           (setq current nil)))))
-    (if valid-p depth 0)))
+    (if reached-p depth 0)))
 
-(defun chirp-thread--discussion-rows (tweets)
+(defun chirp-thread--discussion-rows (tweets &optional focus-id)
   "Return ordered Appkit discussion row data for TWEETS.
 
-Each row contains `:key', `:parent-key', `:depth', `:focus-p', and `:tweet'.
-Only parents present in TWEETS are used for nesting; the first renderable tweet
-is always the focus row."
-  (let ((by-id (make-hash-table :test #'equal))
-        (rows nil)
-        (seen (make-hash-table :test #'equal)))
-    (dolist (tweet tweets)
+Each row contains `:key', `:parent-key', `:depth', `:role', `:connector',
+`:focus-p', and `:tweet'.  Ancestors of FOCUS-ID form a depth-0 chain.
+Replies after the focus nest by their distance below that focus.  When
+FOCUS-ID is nil, the first renderable tweet is the focus."
+  (let* ((by-id (chirp-thread--index-tweets tweets))
+         (focus (or (chirp-thread--find-tweet tweets focus-id)
+                    (car tweets)))
+         (focus-key (and focus (chirp-thread--discussion-key focus)))
+         (ancestor-keys (make-hash-table :test #'equal))
+         (rows nil)
+         (seen (make-hash-table :test #'equal)))
+    (dolist (tweet (and focus (chirp-thread--ancestor-tweets focus by-id)))
       (when-let* ((key (chirp-thread--discussion-key tweet)))
-        (puthash key tweet by-id)
-        (when-let* ((id (plist-get tweet :id)))
-          (puthash id tweet by-id))))
+        (puthash key t ancestor-keys)))
     (dolist (tweet tweets (nreverse rows))
       (when-let* ((key (chirp-thread--discussion-key tweet))
                   ((not (gethash key seen))))
-        (let* ((focus-p (null rows))
+        (let* ((focus-p (equal key focus-key))
+               (chain-p (gethash key ancestor-keys))
                (parent-id (plist-get tweet :reply-to-id))
                (parent (and parent-id (gethash parent-id by-id)))
-               (depth (if focus-p
-                          0
-                        (chirp-thread--discussion-depth tweet by-id)))
-               (parent-key (and (> depth 0)
-                                parent
-                                (chirp-thread--discussion-key parent))))
+               (depth (cond
+                       ((or focus-p chain-p) 0)
+                       (focus (chirp-thread--depth-from-focus
+                               tweet focus by-id))
+                       (t 0)))
+               (parent-key (and parent
+                                (chirp-thread--discussion-key parent)))
+               (role (cond
+                      (focus-p 'focus)
+                      (chain-p 'chain)
+                      (t 'tree)))
+               (connector (cond
+                           (chain-p 'continue)
+                           ((and focus-p
+                                 (> (hash-table-count ancestor-keys) 0))
+                            'end)
+                           (t nil))))
           (puthash key t seen)
           (push (list :key key
-                      :parent-key parent-key
-                      :depth (if parent-key depth 0)
+                      :parent-key (and (or chain-p focus-p (> depth 0))
+                                       parent-key)
+                      :depth (if (and (eq role 'tree) parent-key)
+                                 depth
+                               0)
+                      :role role
+                      :connector connector
                       :focus-p focus-p
                       :tweet tweet)
                 rows))))))
 
 (defun chirp-thread--reorder (tweets focus-id)
-  "Move the tweet matching FOCUS-ID to the front of TWEETS."
+  "Return TWEETS as the ancestor chain, focus tweet, then remaining replies."
   (if (not focus-id)
       tweets
-    (let* ((focus (cl-find focus-id tweets
-                           :key #'chirp-thread--key
-                           :test #'equal))
-           (rest (cl-remove focus-id tweets
-                            :key #'chirp-thread--key
-                            :test #'equal)))
-      (if focus
-          (cons focus rest)
-        tweets))))
+    (let* ((by-id (chirp-thread--index-tweets tweets))
+           (focus (chirp-thread--find-tweet tweets focus-id))
+           (ancestors (and focus (chirp-thread--ancestor-tweets focus by-id)))
+           (skip (make-hash-table :test #'equal)))
+      (if (not focus)
+          tweets
+        (puthash (chirp-thread--key focus) t skip)
+        (dolist (tweet ancestors)
+          (puthash (chirp-thread--key tweet) t skip))
+        (append ancestors
+                (list focus)
+                (cl-remove-if
+                 (lambda (tweet)
+                   (gethash (chirp-thread--key tweet) skip))
+                 tweets))))))
 
 (defun chirp-thread--spam-reply-p (tweet &optional rules)
   "Return non-nil when reply TWEET or its author matches a spam keyword.
@@ -263,17 +329,29 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
                 (matches rule)))
             (or rules chirp-thread-spam-keywords))))))
 
-(defun chirp-thread--filter-spam-replies (tweets)
-  "Hide keyword-matching replies from TWEETS while preserving the focus."
+(defun chirp-thread--filter-spam-replies (tweets &optional focus-id)
+  "Hide keyword-matching replies from TWEETS.
+
+The focus tweet and its ancestor chain are kept even when they match.
+FOCUS-ID selects the focus tweet; when it is nil, the first tweet is
+protected."
   (if (or (null tweets)
           (null chirp-thread-spam-keywords))
       tweets
-    (let ((rules (chirp-thread--effective-spam-rules)))
-      (cons (car tweets)
-            (cl-remove-if
-             (lambda (tweet)
-               (chirp-thread--spam-reply-p tweet rules))
-             (cdr tweets))))))
+    (let* ((rules (chirp-thread--effective-spam-rules))
+           (by-id (chirp-thread--index-tweets tweets))
+           (focus (or (chirp-thread--find-tweet tweets focus-id)
+                      (car tweets)))
+           (protected (make-hash-table :test #'equal)))
+      (when focus
+        (puthash (chirp-thread--key focus) t protected)
+        (dolist (tweet (chirp-thread--ancestor-tweets focus by-id))
+          (puthash (chirp-thread--key tweet) t protected)))
+      (cl-remove-if
+       (lambda (tweet)
+         (and (not (gethash (chirp-thread--key tweet) protected))
+              (chirp-thread--spam-reply-p tweet rules)))
+       tweets))))
 
 (defun chirp-thread--title (tweet-or-url)
   "Return a display title for TWEET-OR-URL."
@@ -302,21 +380,24 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
                 (plist-get tweet :urls)))))
 
 (defun chirp-thread--maybe-apply-article (tweets article-tweet)
-  "Return TWEETS with ARTICLE-TWEET replacing the current focus when ids match."
-  (if (and tweets
-           article-tweet
-           (equal (plist-get (car tweets) :id)
-                  (plist-get article-tweet :id)))
-      (cons article-tweet (cdr tweets))
+  "Return TWEETS with ARTICLE-TWEET replacing the matching tweet when ids match."
+  (if (and tweets article-tweet)
+      (mapcar (lambda (tweet)
+                (if (equal (plist-get tweet :id)
+                           (plist-get article-tweet :id))
+                    article-tweet
+                  tweet))
+              tweets)
     tweets))
 
 (defun chirp-thread--render-view
-    (buffer title refresh ordered &optional anchor-id display-p)
+    (buffer title refresh ordered &optional anchor-id display-p focus-id)
   "Render ORDERED thread tweets into BUFFER with Appkit discussion geometry.
 
 TITLE and REFRESH are the usual buffer metadata.  When ANCHOR-ID is non-nil,
-restore point to that entry after rendering."
-  (let ((rows (chirp-thread--discussion-rows ordered)))
+restore point to that entry after rendering.  FOCUS-ID selects the focus
+tweet used for chain/tree layout and the default point."
+  (let ((rows (chirp-thread--discussion-rows ordered focus-id)))
     (chirp-render-into-buffer
      buffer title refresh
      (lambda ()
@@ -327,6 +408,8 @@ restore point to that entry after rendering."
     (with-current-buffer buffer
       (or (and anchor-id
                (chirp-restore-point-anchor anchor-id))
+          (and focus-id
+               (chirp-restore-point-anchor focus-id))
           (chirp-move-point-to-first-entry)))
     (when display-p
       (chirp-display-buffer buffer))))
@@ -353,7 +436,8 @@ restore point to that entry after rendering."
     (cl-labels
         ((render-current (&optional anchor-id display-p)
            (chirp-thread--render-view
-            buffer title refresh saved-ordered anchor-id display-p)
+            buffer title refresh saved-ordered
+            anchor-id display-p focus-id)
            (with-current-buffer buffer
              (setq-local chirp--rerender-function
                          (lambda ()
@@ -405,10 +489,12 @@ restore point to that entry after rendering."
        (when (chirp-request-current-p buffer token)
          (setq saved-ordered
                (chirp-thread--filter-spam-replies
-                (chirp-thread--reorder tweets focus-id)))
+                (chirp-thread--reorder tweets focus-id)
+                focus-id))
          (apply-prefetched-article)
          (present-current nil t)
-         (if-let* ((focus (car saved-ordered)))
+         (if-let* ((focus (or (chirp-thread--find-tweet saved-ordered focus-id)
+                              (car saved-ordered))))
              (progn
                (maybe-request-article focus)
                (unless article-requested-p

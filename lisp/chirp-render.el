@@ -1123,11 +1123,15 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
 (defun chirp-render-insert-discussion-entry (row)
   "Insert normalized discussion ROW and return its buffer span.
 
-ROW contains `:key', `:parent-key', `:depth', `:focus-p', and `:tweet'.
-Appkit owns the threaded geometry; Chirp owns tweet content and actions."
+ROW contains `:key', `:parent-key', `:depth', `:role', `:connector',
+`:focus-p', and `:tweet'.  Appkit owns the threaded geometry; Chirp owns
+tweet content and actions."
   (let* ((tweet (plist-get row :tweet))
          (key (plist-get row :key))
          (focus-p (plist-get row :focus-p))
+         (show-reply-context
+          (and (eq (plist-get row :role) 'tree)
+               (> (or (plist-get row :depth) 0) 1)))
          (action-regions nil)
          (span
           (appkit-discussion-insert-entry
@@ -1135,6 +1139,7 @@ Appkit owns the threaded geometry; Chirp owns tweet content and actions."
             :key key
             :parent-key (plist-get row :parent-key)
             :depth (plist-get row :depth)
+            :connector (plist-get row :connector)
             :avatar nil
             :avatar-fallback " "
             :heading-inserter
@@ -1147,12 +1152,12 @@ Appkit owns the threaded geometry; Chirp owns tweet content and actions."
               (let ((body-start (point)))
                 (chirp-render--insert-tweet-context
                  tweet :prefix nil
-                 :show-reply-context (not focus-p))
+                 :show-reply-context show-reply-context)
                 (setq action-regions
                       (chirp-render--insert-tweet-body
                        tweet :prefix nil
                        :reply-context-prefix nil
-                       :show-reply-context (not focus-p)
+                       :show-reply-context show-reply-context
                        :article-mode (and focus-p 'full)
                        :trailing-newlines 0))
                 (appkit-ui-apply-line-prefix
