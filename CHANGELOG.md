@@ -28,17 +28,22 @@ history remains available in Git.
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.3 or newer for read-only stable-key projections.
+- Chirp now requires Appkit 0.2.4 or newer for read-only stable-key projections and display-only discussion/card prefixes.
 
 ### Fixed
 
-- Reopening Home or Following, switching back with `TAB`, or recreating a killed primary buffer now restores the corresponding loaded feed without creating another primary view or issuing a redundant initial request.
+- Primary Home and Following rows no longer receive an extra projection separator between tweets.
+- `chirp-stop` now cancels desktop notification polling with the Appkit session instead of allowing the next timer to recreate Chirp.
+- Background image and link-card prefetches now enforce bounded protocols, redirects, time, and response sizes.
+- Thread views now use Appkit discussion geometry with single-line tweet avatars, first-line timestamps, and stable parent/depth properties.
+- Quoted tweets now render as Appkit card-prefixed normal tweet previews with author avatars, timestamps, reply context, media, and metrics.
 - Acknowledged tweet deletion now removes the tweet from both retained primary feeds and updates the active projection without a merge refresh that could preserve the deleted row.
 - Acknowledged XChat sends now bridge disjoint focused fragments through bounded older-history pages before merging one continuous conversation window; focused payloads may omit inbox-only deletion metadata, and inbox continuation may omit a false snapshot-restart flag.
 - Verified XChat image attachments now use Appkit media resources and inline rendering when X provides a trusted URL, while verified reply previews and unsupported attachments no longer remain encrypted placeholders.
 - Videos carried only in X unified cards now expose their native thumbnail and bitrate variants for display and external playback.
 - Photo media now prefers X's `media_url_https` over the tweet short link, and invalid HTML responses no longer become persistent image-cache entries.
 - Structured X view metrics and detail-only bookmark counts now render their numeric values, while unavailable metric counts show only their icon rather than `-`.
+- Home and Following now use the documented current HomeTimeline and HomeLatestTimeline operations and feature/field-toggle set, restoring public view counts when X returns them.
 - X GraphQL identities now prefer numeric `rest_id` values over opaque global IDs when routing profile and tweet requests.
 - Direct GraphQL retweets now render the original author and content while preserving the retweeter context.
 - Mention completion no longer moves point back to the `@` character.

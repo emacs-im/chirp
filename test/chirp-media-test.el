@@ -115,6 +115,44 @@ rerender and creates a CPU loop."
       (chirp-stop)
       (delete-directory chirp-cache-directory t))))
 
+(ert-deftest chirp-media-prefetch-commands-are-bounded ()
+  "Background curl commands should bound sources and redirects."
+  (let ((chirp-media-prefetch-command "/usr/bin/curl")
+        (chirp-link-card-fetch-timeout 7)
+        link-card-command
+        image-command)
+    (cl-labels
+        ((option (command name)
+           (when-let* ((position (cl-position name command :test #'equal)))
+             (nth (1+ position) command))))
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest args)
+                   (let ((name (plist-get args :name)))
+                     (cond
+                      ((equal name "chirp-link-card")
+                       (setq link-card-command (plist-get args :command)))
+                      ((equal name "chirp-prefetch")
+                       (setq image-command (plist-get args :command)))))
+                   nil)))
+        (funcall
+         (chirp-media--start-link-card-task
+          "http://example.com" #'ignore))
+        (funcall
+         (chirp-media--start-prefetch-task
+          "https://pbs.twimg.com/media/photo.jpg"
+          "/tmp/chirp-prefetch-test.jpg"
+          #'ignore)))
+      (should (equal (option link-card-command "--max-filesize")
+                     (number-to-string (* 256 1024))))
+      (should (equal (option link-card-command "--max-time") "7"))
+      (should (equal (option link-card-command "--proto") "=http,https"))
+      (should-not (member "-L" link-card-command))
+      (should (equal (option image-command "--max-filesize")
+                     (number-to-string (* 25 1024 1024))))
+      (should (equal (option image-command "--max-time") "60"))
+      (should (equal (option image-command "--proto") "=https"))
+      (should-not (member "-L" image-command)))))
+
 (ert-deftest chirp-media-image-resource-retries-and-binds-cache-to-source ()
   "Image retries should be explicit, source-bound, and lifecycle-safe."
   (let ((chirp--app nil)

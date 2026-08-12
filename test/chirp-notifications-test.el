@@ -110,6 +110,28 @@
     (should-not (string-match-p "A \"title\"" (nth 2 command)))
     (should-not (string-match-p "line 1" (nth 4 command)))))
 
+(ert-deftest chirp-notifications-stop-app-cancels-polling-timer ()
+  "Stopping Chirp should disable app-owned notification polling."
+  (let ((chirp--app nil)
+        (chirp-notifications-mode nil)
+        (chirp-notifications--timer nil)
+        (chirp-notifications--timer-handle nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-backend-notifications)
+                   (lambda (&rest _args) nil)))
+          (chirp-notifications-mode 1)
+          (should (appkit-handle-p chirp-notifications--timer-handle))
+          (chirp-stop)
+          (should-not chirp-notifications-mode)
+          (should-not chirp-notifications--timer)
+          (should-not chirp-notifications--timer-handle))
+      (when (appkit-app-live-p chirp--app)
+        (chirp-stop))
+      (when chirp-notifications-mode
+        (chirp-notifications-mode -1))
+      (setq chirp-notifications--timer nil
+            chirp-notifications--timer-handle nil))))
+
 (provide 'chirp-notifications-test)
 
 ;;; chirp-notifications-test.el ends here

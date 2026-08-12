@@ -196,13 +196,32 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 (defconst chirp-media--link-card-fetch-failed :chirp-link-card-fetch-failed
   "Sentinel stored for failed link-card fetches.")
 
+(defconst chirp-media--link-card-source-limit (* 256 1024)
+  "Maximum bytes accepted from one background link-card response.")
+
+(defun chirp-media--curl-protocols (url)
+  "Return curl's allowed protocols for uncredentialed URL."
+  (if (string-prefix-p "http://" (downcase url))
+      "=http,https"
+    "=https"))
+
+(defun chirp-media--curl-default-args (max-bytes max-time protocols)
+  "Return bounded curl arguments for MAX-BYTES and MAX-TIME."
+  (append
+   (list "--disable" "--silent" "--fail"
+         "--proto" protocols
+         "--max-redirs" "0"
+         "--connect-timeout" "10"
+         "--max-time" (number-to-string max-time))
+   (when max-bytes
+     (list "--max-filesize" (number-to-string max-bytes)))))
+
 (defconst chirp-media--image-source-limit (* 25 1024 1024)
   "Maximum bytes accepted from one background image URL.")
 
 (defconst chirp-media--safe-curl-default-args
-  (list "--disable" "--silent" "--proto" "=https"
-        "--max-filesize" (number-to-string chirp-media--image-source-limit)
-        "--max-redirs" "0" "--connect-timeout" "10" "--max-time" "60")
+  (chirp-media--curl-default-args
+   chirp-media--image-source-limit 60 "=https")
   "Fixed curl defaults for uncredentialed background image reads.")
 
 (defun chirp-media--runtime ()
@@ -636,11 +655,14 @@ HELP-ECHO customize the accessible image action."
           (make-process
            :name "chirp-link-card"
            :buffer buffer
-           :command (list chirp-media-prefetch-command
-                          "-L" "-f" "-sS"
-                          "--max-time"
-                          (number-to-string chirp-link-card-fetch-timeout)
-                          url)
+           :command
+           (append
+            (list chirp-media-prefetch-command)
+            (chirp-media--curl-default-args
+             chirp-media--link-card-source-limit
+             chirp-link-card-fetch-timeout
+             (chirp-media--curl-protocols url))
+            (list url))
            :noquery t
            :sentinel
            (lambda (finished _event)
@@ -664,13 +686,21 @@ HELP-ECHO customize the accessible image action."
 (defun chirp-media--start-prefetch-task (url path complete)
   "Download URL to PATH and call COMPLETE with its success state."
   (let ((buffer (generate-new-buffer " *chirp-prefetch*"))
+        (max-bytes
+         (and (member (downcase (or (file-name-extension path) ""))
+                      chirp-media--image-cache-extensions)
+              chirp-media--image-source-limit))
         process)
     (setq process
           (make-process
            :name "chirp-prefetch"
            :buffer buffer
-           :command (list chirp-media-prefetch-command
-                          "-L" "-f" "-sS" "-o" path url)
+           :command
+           (append
+            (list chirp-media-prefetch-command)
+            (chirp-media--curl-default-args
+             max-bytes 60 (chirp-media--curl-protocols url))
+            (list "-o" path url))
            :noquery t
            :sentinel
            (lambda (finished _event)

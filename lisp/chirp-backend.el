@@ -59,23 +59,46 @@
   "Compact URL regexp used only for tweet operation routing.")
 
 (defconst chirp-backend--tweet-features
-  '(("responsive_web_graphql_exclude_directive_enabled" . t)
+  '(("rweb_cashtags_enabled" . t)
+    ("profile_label_improvements_pcf_label_in_post_enabled" . t)
+    ("responsive_web_profile_redirect_enabled" . t)
     ("creator_subscriptions_tweet_preview_api_enabled" . t)
     ("responsive_web_graphql_timeline_navigation_enabled" . t)
+    ("communities_web_enable_tweet_community_results_fetch" . t)
     ("c9s_tweet_anatomy_moderator_badge_enabled" . t)
-    ("tweetypie_unmention_optimization_enabled" . t)
+    ("rweb_cashtags_composer_attachment_enabled" . t)
+    ("responsive_web_jetfuel_frame" . t)
+    ("responsive_web_grok_share_attachment_enabled" . t)
+    ("responsive_web_grok_annotations_enabled" . t)
+    ("articles_preview_enabled" . t)
     ("responsive_web_edit_tweet_api_enabled" . t)
     ("graphql_is_translatable_rweb_tweet_is_translatable_enabled" . t)
     ("view_counts_everywhere_api_enabled" . t)
     ("longform_notetweets_consumption_enabled" . t)
     ("responsive_web_twitter_article_tweet_consumption_enabled" . t)
-    ("longform_notetweets_rich_text_read_enabled" . t)
-    ("longform_notetweets_inline_media_enabled" . t)
-    ("rweb_video_timestamps_enabled" . t)
-    ("responsive_web_media_download_video_enabled" . t)
+    ("content_disclosure_indicator_enabled" . t)
+    ("content_disclosure_ai_generated_indicator_enabled" . t)
+    ("responsive_web_grok_show_grok_translated_post" . t)
+    ("responsive_web_grok_analysis_button_from_backend" . t)
     ("freedom_of_speech_not_reach_fetch_enabled" . t)
-    ("standardized_nudges_misinfo" . t))
-  "Feature switches shared by X operations that return tweets.")
+    ("standardized_nudges_misinfo" . t)
+    ("tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled" . t)
+    ("longform_notetweets_rich_text_read_enabled" . t)
+    ("responsive_web_grok_image_annotation_enabled" . t)
+    ("responsive_web_grok_imagine_annotation_enabled" . t)
+    ("responsive_web_grok_community_note_auto_translation_is_enabled" . t))
+  "Feature switches documented for current tweet GraphQL operations.")
+
+(defconst chirp-backend--timeline-field-toggles
+  '(("withPayments" . t)
+    ("withAuxiliaryUserLabels" . t)
+    ("withArticleRichContentState" . t)
+    ("withArticlePlainText" . t)
+    ("withArticleSummaryText" . t)
+    ("withArticleVoiceOver" . t)
+    ("withGrokAnalyze" . t)
+    ("withDisallowedReplyControls" . t))
+  "Field toggles documented for HomeTimeline operations.")
 
 (defconst chirp-backend--note-tweet-features
   (append
@@ -102,13 +125,13 @@
 
 (defconst chirp-backend--operations
   `((home
-     :query-id "3b9_7tltt0hJRef-xm_3sw" :name "HomeTimeline"
-     :features (("responsive_web_graphql_exclude_directive_enabled" . t)
-                ("responsive_web_graphql_timeline_navigation_enabled" . t)))
+     :query-id "wp06oo3fRGU4P1sK8rECqQ" :name "HomeTimeline"
+     :features ,chirp-backend--tweet-features
+     :field-toggles ,chirp-backend--timeline-field-toggles)
     (following
-     :query-id "m1G65W9TS1-g-AllrKKYDQ" :name "HomeLatestTimeline"
-     :features (("responsive_web_graphql_exclude_directive_enabled" . t)
-                ("responsive_web_graphql_timeline_navigation_enabled" . t)))
+     :query-id "BLQWpfVqtgBqAqwRRJcJjA" :name "HomeLatestTimeline"
+     :features ,chirp-backend--tweet-features
+     :field-toggles ,chirp-backend--timeline-field-toggles)
     (user
      :query-id "1VOOyvKkiI3FMmkeDNxM9A" :name "UserByScreenName"
      :features ,chirp-backend--user-features)

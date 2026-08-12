@@ -10,6 +10,9 @@
 (require 'chirp-render)
 (require 'chirp-thread)
 
+(declare-function chirp--dispatch-mouse-action
+                  "chirp-actions" (event))
+
 (defun chirp-test--face-member-p (face value)
   "Return non-nil when FACE appears in text property VALUE."
   (cond
@@ -30,6 +33,14 @@
         (when (eq (car-safe (car-safe display)) 'slice)
           (push (cons position display) result))))
     (nreverse result)))
+
+(defun chirp-test--discussion-row (tweet &optional focus-p parent-key depth)
+  "Return a discussion row for TWEET in render tests."
+  (list :key (list 'tweet (plist-get tweet :id))
+        :parent-key parent-key
+        :depth (or depth 0)
+        :focus-p focus-p
+        :tweet tweet))
 
 (defun chirp-test--sample-article-tweet ()
   "Return a normalized tweet payload with article metadata."
@@ -63,6 +74,8 @@
                   ("name" . "Alice")))
      ("quotedTweet" . (("id" . "456")
                        ("text" . "Quoted body text that is intentionally long enough to be shown as a short preview instead of the entire post verbatim.")
+                       ("createdAt" . "QUOTE-TIME")
+                       ("inReplyToScreenName" . "parent")
                        ("author" . (("screenName" . "bob")
                                     ("name" . "Bob"))))))))
 
@@ -151,12 +164,12 @@
              "https://pbs.twimg.com/media/photo.jpg?format=jpg")
             ("ext_alt_text" . "Alt text")
             ("original_info" . (("width" . 1200)
-                                 ("height" . 800)))))
+                                ("height" . 800)))))
          (author
           '(("id" . "VXNlcjo0Mg==")
             ("rest_id" . "42")
             ("core" . (("name" . "Alice")
-                        ("screen_name" . "alice")))
+                       ("screen_name" . "alice")))
             ("avatar" .
              (("image_url" .
                "https://pbs.twimg.com/profile_images/alice.jpg")))))
@@ -219,15 +232,15 @@
                         ((("key" . 1) ("offset" . 0) ("length" . 0)))))))
                     ("entityMap" .
                      (("0" . (("type" . "LINK")
-                               ("data" .
-                                (("url" . "https://example.com/docs")))))
+                              ("data" .
+                               (("url" . "https://example.com/docs")))))
                       ("1" . (("type" . "IMAGE")
-                               ("data" .
-                                (("caption" . "Cover")
-                                 ("mediaItems" .
-                                  ((("mediaId" . "media-1"))
-                                   (("mediaId" . "media-2")
-                                    ("caption" . "Detail"))))))))))))
+                              ("data" .
+                               (("caption" . "Cover")
+                                ("mediaItems" .
+                                 ((("mediaId" . "media-1"))
+                                  (("mediaId" . "media-2")
+                                   ("caption" . "Detail"))))))))))))
                   ("media_entities" .
                    ((("media_id" . "media-1")
                      ("media_info" .
@@ -323,9 +336,9 @@
 (ert-deftest chirp-normalize-tweet-hides-photo-and-video-links ()
   "Media placeholders and resource URLs should not be displayed as links."
   (dolist (media '((("type" . "photo")
-                     ("url" . "https://pbs.twimg.com/media/example.jpg"))
-                    (("type" . "video")
-                     ("url" . "https://video.twimg.com/ext_tw_video/example.mp4"))))
+                    ("url" . "https://pbs.twimg.com/media/example.jpg"))
+                   (("type" . "video")
+                    ("url" . "https://video.twimg.com/ext_tw_video/example.mp4"))))
     (let* ((media-url (cdr (assoc "url" media)))
            (tweet (chirp-normalize-tweet
                    `(("id" . "123")
@@ -443,7 +456,7 @@
                        ("created_at" . "Mon Jan 01 00:00:00 +0000 2024")))
             ("profile_bio" . (("description" . "Emacs user")))
             ("relationship_counts" . (("followers" . 120)
-                                       ("following" . 30)))
+                                      ("following" . 30)))
             ("tweet_counts" . (("tweets" . 450)))
             ("avatar" . (("image_url" . "https://example.com/avatar.jpg")))
             ("relationship_perspectives" . (("following" . t)))))))
@@ -756,7 +769,7 @@
           (chirp-render-insert-tweet-list tweets)))
       (should-not (string-match-p "- - - -" (buffer-string))))))
 
-(ert-deftest chirp-render-insert-thread-focus-tweet-renders-full-article-body ()
+(ert-deftest chirp-render-insert-discussion-entry-renders-full-article-body ()
   "Thread focus rendering should include the full article text."
   (let ((tweet (chirp-test--sample-article-tweet)))
     (with-temp-buffer
@@ -764,13 +777,14 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-thread-focus-tweet tweet)))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet t))))
       (let ((rendered (buffer-string)))
         (should (string-match-p "Longform title" rendered))
         (should (string-match-p "First paragraph with \\[details\\]" rendered))
         (should (string-match-p "Second paragraph\\." rendered))))))
 
-(ert-deftest chirp-render-insert-thread-focus-tweet-renders-article-images ()
+(ert-deftest chirp-render-insert-discussion-entry-renders-article-images ()
   "Thread focus rendering should show inline article images instead of raw Markdown."
   (let ((tweet (chirp-test--sample-article-tweet-with-image)))
     (with-temp-buffer
@@ -778,7 +792,8 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-thread-focus-tweet tweet)))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet t))))
       (let ((rendered (buffer-string)))
         (should (string-match-p "First paragraph\\." rendered))
         (should (string-match-p "Second paragraph\\." rendered))
@@ -905,7 +920,7 @@
                    "bookmark-icon"))))
 
 (ert-deftest chirp-render-insert-tweet-renders-quoted-tweet-preview ()
-  "Tweet rendering should show quoted tweet text instead of just its link."
+  "Tweet rendering should show a normal quoted tweet card instead of a label."
   (let ((tweet (chirp-test--sample-quoted-tweet)))
     (with-temp-buffer
       (chirp-view-mode)
@@ -914,14 +929,40 @@
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((rendered (buffer-string)))
-        (should (string-match-p "Quoted @bob (Bob)" rendered))
+        (should (string-match-p "Bob @bob" rendered))
+        (should (string-match-p "QUOTE-TIME" rendered))
+        (should (string-match-p "replying to @parent" rendered))
         (should (string-match-p "Quoted body text" rendered))
+        (should-not (string-match-p "Quoted @bob" rendered))
         (should-not (string-match-p "https://x\\.com/bob/status/456" rendered)))
       (goto-char (point-min))
-      (search-forward "Quoted @bob (Bob)")
+      (search-forward "Bob @bob")
       (should (equal (plist-get (chirp-entry-at-point) :id) "456")))))
 
-(ert-deftest chirp-render-insert-thread-reply-labels-related-tweet ()
+(ert-deftest chirp-render-quoted-tweet-follows-own-media ()
+  "A tweet's own media should render before its quoted tweet card."
+  (let ((tweet (chirp-test--sample-quoted-tweet))
+        (chirp-show-tweet-media nil))
+    (setf (plist-get tweet :media)
+          '((:type "video"
+             :url "https://example.com/outer.mp4"
+             :width 640
+             :height 360)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (let* ((rendered (buffer-string))
+             (media-position (string-match "\\[video 640x360\\]"
+                                           rendered))
+             (quote-position (string-match "Bob @bob" rendered)))
+        (should media-position)
+        (should quote-position)
+        (should (< media-position quote-position))))))
+
+(ert-deftest chirp-render-insert-discussion-entry-labels-related-tweet ()
   "Thread replies should visibly distinguish related timeline items."
   (let ((tweet
          (chirp-normalize-tweet
@@ -929,23 +970,25 @@
             ("text" . "Related body")
             ("timelineContext" . "related")
             ("author" . (("screenName" . "alice")
-                          ("name" . "Alice")))))))
+                         ("name" . "Alice")))))))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-thread-reply tweet)))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet))))
       (goto-char (point-min))
-      (search-forward "Related tweet")
-      (let ((label-position (match-beginning 0)))
-        (should (chirp-test--face-member-p
-                 'chirp-thread-related-context
-                 (get-text-property label-position 'face)))
-        (search-forward "Alice @alice")
-        (should (< label-position (match-beginning 0)))))))
+      (search-forward "Alice @alice")
+      (let ((heading-position (match-beginning 0)))
+        (search-forward "Related tweet")
+        (let ((label-position (match-beginning 0)))
+          (should (chirp-test--face-member-p
+                   'chirp-thread-related-context
+                   (get-text-property label-position 'face)))
+          (should (< heading-position label-position)))))))
 
-(ert-deftest chirp-render-insert-thread-reply-highlights-reply-handle ()
+(ert-deftest chirp-render-insert-discussion-entry-highlights-reply-handle ()
   "Thread reply context should highlight only the target handle."
   (let ((tweet '(:kind tweet
                  :id "reply-1"
@@ -958,7 +1001,8 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-thread-reply tweet)))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet))))
       (goto-char (point-min))
       (search-forward "replying to ")
       (should (eq (get-text-property (match-beginning 0) 'face)
@@ -968,7 +1012,7 @@
                   'chirp-handle-face)))))
 
 (ert-deftest chirp-render-insert-tweet-highlights-quoted-tweet-block ()
-  "Quoted tweet previews should carry a distinct block face."
+  "Quoted tweet cards should carry a distinct block face and prefix."
   (let ((tweet (chirp-test--sample-quoted-tweet)))
     (with-temp-buffer
       (chirp-view-mode)
@@ -977,18 +1021,20 @@
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (goto-char (point-min))
-      (search-forward "Quoted @bob (Bob)")
+      (search-forward "Bob @bob")
+      (let ((heading-position (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-quoted-tweet-block-face
+                 (get-text-property heading-position 'face)))
+        (should (stringp (get-text-property heading-position 'line-prefix))))
+      (goto-char (point-min))
+      (search-forward "Quoted body text")
       (should (chirp-test--face-member-p
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
-      (goto-char (point-min))
-      (search-forward "   Quoted body text")
-      (should (chirp-test--face-member-p
-               'chirp-quoted-tweet-block-face
-               (get-text-property (match-beginning 0) 'face))))))
-
+      (should (stringp (get-text-property (match-beginning 0) 'line-prefix))))))
 (ert-deftest chirp-render-quoted-tweet-lines-use-wrap-prefix ()
-  "Quoted tweet body lines should keep the quote indent on visual wraps."
+  "Quoted tweet body lines should keep the card prefix on visual wraps."
   (let ((tweet (chirp-test--sample-quoted-tweet)))
     (with-temp-buffer
       (chirp-view-mode)
@@ -998,11 +1044,51 @@
           (chirp-render-insert-tweet tweet)))
       (goto-char (point-min))
       (search-forward "Quoted body text")
-        (let* ((needle "Quoted body text")
-               (pos (- (point) (length needle)))
-               (wrap-prefix (get-text-property pos 'wrap-prefix)))
-          (should (stringp wrap-prefix))
-        (should (string-match-p "^   " wrap-prefix))))))
+      (let* ((needle "Quoted body text")
+             (pos (- (point) (length needle)))
+             (wrap-prefix (get-text-property pos 'wrap-prefix)))
+        (should (stringp wrap-prefix))
+        (should (>= (string-width wrap-prefix) 3))))))
+(ert-deftest chirp-render-quoted-tweet-media-uses-gapless-image-slices ()
+  "Quoted tweet media should use the card prefix on gapless image slices."
+  (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
+        (fake-image '(image :type png :file "/tmp/fake.png")))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--thumbnail-row-metrics)
+                 (lambda (&rest _args) '(24 . 75)))
+                ((symbol-function 'image-size)
+                 (lambda (&rest _args) '(64 . 96))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (let ((slices (chirp-test--slice-displays)))
+        (should (eq line-spacing 0))
+        (should (= (length slices) 4))
+        (should
+         (cl-every
+          (lambda (item)
+            (stringp (get-text-property (car item) 'line-prefix)))
+          slices))
+        (should (equal
+                 (mapcar (lambda (item) (nth 2 (car (cdr item)))) slices)
+                 '(0 24 48 72)))
+        (cl-loop for (position . display) in slices
+                 for finalp = (= position (caar (last slices)))
+                 do (should (= (plist-get (cdr (cadr display)) :height) 96))
+                 do (should (= (plist-get (cdr (cadr display)) :ascent) 75))
+                 do (should (plist-get
+                             (get-text-property position 'chirp-media-item)
+                             :url))
+                 do (unless finalp
+                      (save-excursion
+                        (goto-char position)
+                        (should (eq (char-after (line-end-position)) ?\n))
+                        (should (eq (get-text-property
+                                     (line-end-position) 'line-height)
+                                    t)))))))))
 
 (ert-deftest chirp-render-thumbnail-slices-cover-an-integer-pixel-canvas ()
   "Thumbnail slices should cover a copied one-to-one pixel canvas exactly."
@@ -1027,46 +1113,6 @@
         (should (equal source
                        '(image :type png :file "/tmp/fake.png")))))))
 
-(ert-deftest chirp-render-quoted-tweet-media-uses-gapless-image-slices ()
-  "Quoted tweet media should repeat its indent across gapless image slices."
-  (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
-        (fake-image '(image :type png :file "/tmp/fake.png")))
-    (with-temp-buffer
-      (chirp-view-mode)
-      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
-                ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-render--thumbnail-row-metrics)
-                 (lambda (&rest _args) '(24 . 75)))
-                ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(64 . 96))))
-        (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet tweet)))
-      (let ((quoted-prefix-lines 0)
-            (slices (chirp-test--slice-displays)))
-        (dolist (line (split-string (buffer-string) "\n"))
-          (when (string-prefix-p "   " line)
-            (setq quoted-prefix-lines (1+ quoted-prefix-lines))))
-        (should (eq line-spacing 0))
-        (should (>= quoted-prefix-lines 5))
-        (should (= (length slices) 4))
-        (should (equal
-                 (mapcar (lambda (item) (nth 2 (car (cdr item)))) slices)
-                 '(0 24 48 72)))
-        (cl-loop for (position . display) in slices
-                 for finalp = (= position (caar (last slices)))
-                 do (should (= (plist-get (cdr (cadr display)) :height) 96))
-                 do (should (= (plist-get (cdr (cadr display)) :ascent) 75))
-                 do (should (plist-get
-                             (get-text-property position 'chirp-media-item)
-                             :url))
-                 do (unless finalp
-                      (save-excursion
-                        (goto-char position)
-                        (should (eq (char-after (line-end-position)) ?\n))
-                        (should (eq (get-text-property
-                                     (line-end-position) 'line-height)
-                                    t)))))))))
 
 (ert-deftest chirp-render-video-placeholder-cover-is-sliced ()
   "Video placeholders should use the same sliced cover path as photos."
@@ -1438,7 +1484,7 @@
           (chirp-render-insert-tweet tweet-a)
           (chirp-render-insert-tweet tweet-b)))
       (goto-char (point-min))
-      (search-forward "Quoted @bob (Bob)")
+      (search-forward "Bob @bob")
       (chirp-next-entry)
       (should (equal (plist-get (chirp-entry-at-point) :id) "123"))
       (search-forward "First paragraph")

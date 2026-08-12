@@ -10,8 +10,8 @@
 ;;; Code:
 
 (require 'seq)
+(require 'appkit-core)
 (require 'chirp-core)
-(require 'chirp-backend)
 
 (declare-function notifications-notify "notifications" (&rest params))
 
@@ -31,6 +31,9 @@
 (defvar chirp-notifications--timer nil
   "Timer used by `chirp-notifications-mode'.")
 
+(defvar chirp-notifications--timer-handle nil
+  "Appkit lifecycle handle for the notification polling timer.")
+
 (defvar chirp-notifications--checking nil
   "Non-nil while a notification request is running.")
 
@@ -39,6 +42,18 @@
 
 (defvar chirp-notifications--seen-ids nil
   "Recently seen notification ids, newest first.")
+
+(defun chirp-notifications--cancel-owned-timer (timer)
+  "Cancel TIMER and disable notification polling when its app stops."
+  (when (timerp timer)
+    (cancel-timer timer))
+  (when (eq timer chirp-notifications--timer)
+    (setq chirp-notifications--timer nil))
+  (setq chirp-notifications--timer-handle nil
+        chirp-notifications--checking nil
+        chirp-notifications--initialized nil
+        chirp-notifications--seen-ids nil
+        chirp-notifications-mode nil))
 
 (defun chirp-notifications--plain-string (value)
   "Return VALUE as a string without text properties."
@@ -155,20 +170,32 @@
   :group 'chirp
   (if chirp-notifications-mode
       (progn
+        (when (appkit-handle-p chirp-notifications--timer-handle)
+          (appkit-retire-handle chirp-notifications--timer-handle))
         (when (timerp chirp-notifications--timer)
           (cancel-timer chirp-notifications--timer))
-        (setq chirp-notifications--initialized nil
+        (setq chirp-notifications--timer nil
+              chirp-notifications--timer-handle nil
+              chirp-notifications--initialized nil
               chirp-notifications--seen-ids nil
               chirp-notifications--checking nil)
         (chirp-notifications-check)
         (let ((interval (max 1 chirp-notifications-interval)))
           (setq chirp-notifications--timer
-                (run-at-time interval
-                             interval
-                             #'chirp-notifications-check))))
-    (when (timerp chirp-notifications--timer)
-      (cancel-timer chirp-notifications--timer))
+                (run-at-time interval interval
+                             #'chirp-notifications-check))
+          (setq chirp-notifications--timer-handle
+                (appkit-register-handle
+                 (chirp-app)
+                 'timer
+                 chirp-notifications--timer
+                 #'chirp-notifications--cancel-owned-timer))))
+    (if (appkit-handle-p chirp-notifications--timer-handle)
+        (appkit-cancel-handle chirp-notifications--timer-handle)
+      (when (timerp chirp-notifications--timer)
+        (cancel-timer chirp-notifications--timer)))
     (setq chirp-notifications--timer nil
+          chirp-notifications--timer-handle nil
           chirp-notifications--checking nil)))
 
 (provide 'chirp-notifications)

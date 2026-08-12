@@ -152,7 +152,8 @@
     (appkit-projection-ensure
      view
      :printer #'chirp-timeline--print-row
-     :anchor-property 'chirp-entry-id)
+     :anchor-property 'chirp-entry-id
+     :no-separator-p t)
     (appkit-view-enqueue-event
      view (list :position (or (plist-get state :position) 'first)))
     (appkit-invalidate view :structure t :part 'frame :position t)
@@ -640,15 +641,14 @@ DISPLAY-P, and NEXT-CURSOR control pagination and presentation."
 
 (cl-defun chirp-timeline--handle-feed-success
     (buffer title refresh tweets
-            &key kind limit anchor-id loading-more refreshing previous-count
+            &key kind limit anchor-id loading-more refreshing
             previous-tweets previous-exhausted-p previous-next-cursor envelope)
   "Handle a successful feed response for BUFFER with TITLE and REFRESH.
 
 TWEETS, KIND, LIMIT, and ANCHOR-ID describe the new view.  LOADING-MORE and
-REFRESHING select merge behavior.  PREVIOUS-COUNT, PREVIOUS-TWEETS,
-PREVIOUS-EXHAUSTED-P, and PREVIOUS-NEXT-CURSOR describe the old view.  ENVELOPE
-contains response pagination metadata."
-  (ignore previous-count)
+REFRESHING select merge behavior.  PREVIOUS-TWEETS, PREVIOUS-EXHAUSTED-P, and
+PREVIOUS-NEXT-CURSOR describe the old view.  ENVELOPE contains response
+pagination metadata."
   (with-current-buffer buffer
     (setq-local chirp--request-token nil))
   (let ((next-cursor (chirp-backend-envelope-next-cursor envelope)))
@@ -748,8 +748,6 @@ requests a specific pagination page."
                        (t
                         limit)))
          (refresh (chirp-timeline--refresh-function kind buffer))
-         (previous-count (and (or loading-more refreshing)
-                              (chirp-timeline--current-count buffer)))
          (previous-tweets (and (or loading-more refreshing)
                                (chirp-timeline--buffer-tweets buffer)))
          (previous-exhausted-p (and refreshing
@@ -782,7 +780,6 @@ requests a specific pagination page."
           :anchor-id anchor-id
           :loading-more loading-more
           :refreshing refreshing
-          :previous-count previous-count
           :previous-tweets previous-tweets
           :previous-exhausted-p previous-exhausted-p
           :previous-next-cursor previous-next-cursor
