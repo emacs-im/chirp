@@ -50,6 +50,106 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-thread-discussion-rows-compute-visible-parent-depth ()
+  "Discussion rows should derive stable parent keys and visible depths."
+  (let* ((tweets '((:kind tweet :id "root" :text "Root")
+                   (:kind tweet :id "reply" :reply-to-id "root" :text "Reply")
+                   (:kind tweet :id "nested" :reply-to-id "reply" :text "Nested")))
+         (rows (chirp-thread--discussion-rows tweets)))
+    (should (equal (mapcar (lambda (row) (plist-get row :key)) rows)
+                   '((tweet "root") (tweet "reply") (tweet "nested"))))
+    (should (equal (mapcar (lambda (row) (plist-get row :parent-key)) rows)
+                   '(nil (tweet "root") (tweet "reply"))))
+    (should (equal (mapcar (lambda (row) (plist-get row :depth)) rows)
+                   '(0 1 2)))
+    (should (plist-get (car rows) :focus-p))))
+
+(ert-deftest chirp-thread-discussion-rows-flatten-orphans-and-cycles ()
+  "Missing or cyclic visible parents should not create invalid nesting."
+  (let* ((tweets '((:kind tweet :id "root" :text "Root")
+                   (:kind tweet :id "orphan" :reply-to-id "missing")
+                   (:kind tweet :id "cycle-a" :reply-to-id "cycle-b")
+                   (:kind tweet :id "cycle-b" :reply-to-id "cycle-a")))
+         (rows (chirp-thread--discussion-rows tweets)))
+    (dolist (row (cdr rows))
+      (should (= (plist-get row :depth) 0))
+      (should-not (plist-get row :parent-key)))))
+
+
+(ert-deftest chirp-thread-render-view-preserves-discussion-properties ()
+  "Thread rendering should expose Appkit and Chirp entry properties."
+  (let ((buffer (generate-new-buffer " *chirp-thread-discussion-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                   (lambda (&rest _args) nil)))
+          (chirp-thread--render-view
+           buffer
+           "Thread"
+           #'ignore
+           '((:kind tweet :id "root" :text "Root"
+              :author-name "Alice" :author-handle "alice"
+              :created-at "ROOT-TIME")
+             (:kind tweet :id "reply" :text "Reply"
+              :reply-to-id "root"
+              :reply-to-handle "Alice"
+              :author-name "Bob"))
+           nil)
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (let ((heading-line
+                   (buffer-substring (line-beginning-position)
+                                     (line-end-position))))
+              (should (string-match-p "Alice @alice" heading-line))
+              (should (string-match-p "ROOT-TIME" heading-line))
+              (should (equal ""
+                             (or (get-text-property (point) 'line-prefix)
+                                 ""))))
+            (should (equal (appkit-discussion-key-at-point)
+                           '(tweet "root")))
+            (should (= (get-text-property
+                        (point) appkit-discussion-depth-property)
+                       0))
+            (should (equal (plist-get (chirp-entry-at-point) :id)
+                           "root"))
+            (goto-char (appkit-discussion-next-position))
+            (should (equal (appkit-discussion-key-at-point)
+                           '(tweet "reply")))
+            (should (equal
+                     (get-text-property
+                      (point) appkit-discussion-parent-key-property)
+                     '(tweet "root")))
+            (should (= (get-text-property
+                        (point) appkit-discussion-depth-property)
+                       1))
+            (should (equal
+                     "    "
+                     (get-text-property (point) 'line-prefix)))
+            (forward-line 1)
+            (let ((context-line
+                   (buffer-substring (line-beginning-position)
+                                     (line-end-position))))
+              (should (= 0 (- (length context-line)
+                              (length (string-trim-left context-line)))))
+              (should (equal "    "
+                             (get-text-property (point) 'line-prefix))))
+            (forward-line 1)
+            (let ((body-line
+                   (buffer-substring (line-beginning-position)
+                                     (line-end-position))))
+              (should (= 0 (- (length body-line)
+                              (length (string-trim-left body-line)))))
+              (should (equal "    "
+                             (get-text-property (point) 'line-prefix))))
+            (goto-char (point-min))
+            (chirp-next-entry)
+            (should (equal (plist-get (chirp-entry-at-point) :id)
+                           "reply"))
+            (chirp-previous-entry)
+            (should (equal (plist-get (chirp-entry-at-point) :id)
+                           "root"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-thread-open-prefetched-article-is-applied-before-first-render ()
   "Article enrichment should overlap thread loading and feed the first render."
   (let ((buffer (generate-new-buffer " *chirp-thread-test*"))

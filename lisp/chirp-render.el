@@ -11,9 +11,13 @@
 
 (declare-function nerd-icons-faicon "nerd-icons" (icon-name &rest args))
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
+(declare-function chirp-profile-open "chirp-profile"
+                  (handle &optional buffer))
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'appkit-discussion)
+(require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-media)
 (require 'nerd-icons nil t)
@@ -69,6 +73,12 @@
        :extend t))
   "Face layered beneath quoted-tweet blocks."
   :group 'chirp)
+
+(defface chirp-quoted-tweet-border-face
+  '((t :inherit shadow))
+  "Face used for the display-only border of quoted-tweet cards."
+  :group 'chirp)
+
 
 (defface chirp-quoted-tweet-face
   '((t :inherit (bold font-lock-doc-face)))
@@ -323,13 +333,13 @@ CURRENT-MODE marks the active entry."
       (let ((start (point)))
         (insert
          (propertize
-         (pcase mode
-            ('posts "Posts")
-            ('replies "Replies")
-            ('highlights "Highlights")
-            ('media "Media")
-            ('likes "Likes")
-            (_ (capitalize (symbol-name mode))))
+          (pcase mode
+             ('posts "Posts")
+             ('replies "Replies")
+             ('highlights "Highlights")
+             ('media "Media")
+             ('likes "Likes")
+             (_ (capitalize (symbol-name mode))))
           'face (if (eq mode current-mode)
                     'chirp-profile-view-active-face
                   'chirp-profile-view-inactive-face)))
@@ -344,18 +354,26 @@ CURRENT-MODE marks the active entry."
   (insert "\n"))
 
 (defun chirp-render--insert-prefix (prefix &optional face)
-  "Insert PREFIX using FACE."
-  (when prefix
+  "Insert PREFIX using FACE.
+
+PREFIX may be an Appkit mutable prefix state; its first prefix is consumed."
+  (when-let* ((text (if (appkit-ui-prefix-state-p prefix)
+                       (appkit-ui-prefix-string prefix t)
+                     prefix)))
     (insert (if face
-                (propertize prefix 'face face)
-              prefix))))
+                (propertize text 'face face)
+              text))))
 
 (defun chirp-render--prefix-string (prefix face)
-  "Return PREFIX propertized with FACE, or nil."
-  (when prefix
+  "Return PREFIX propertized with FACE, or nil.
+
+An Appkit prefix state is read without consuming its current prefix."
+  (when-let* ((text (if (appkit-ui-prefix-state-p prefix)
+                       (appkit-ui-prefix-string prefix)
+                     prefix)))
     (if face
-        (propertize prefix 'face face)
-      prefix)))
+        (propertize text 'face face)
+      text)))
 
 (defun chirp-render--apply-wrap-prefix (start end prefix face)
   "Apply PREFIX as the visual wrap prefix on text between START and END."
@@ -614,48 +632,39 @@ Precede each line with PREFIX using PREFIX-FACE when provided."
   (dolist (card (chirp-media-link-cards-for-tweet tweet))
     (chirp-render--insert-link-card card prefix prefix-face)))
 
-(defun chirp-render--insert-quoted-tweet (tweet &optional prefix prefix-face)
-  "Insert the quoted tweet preview inside TWEET.
+(defvar chirp-render--quoted-tweet-depth 0
+  "Dynamic nesting depth while rendering quoted tweets.")
 
-Nest it below PREFIX.  PREFIX-FACE is accepted for caller consistency; the
-quoted-tweet face is used for the nested block."
+(defun chirp-render--quoted-tweet-prefix-state (prefix)
+  "Return a display-only card prefix state nested below PREFIX."
+  (let* ((base (if (appkit-ui-prefix-state-p prefix)
+                   (appkit-ui-prefix-string prefix)
+                 (or prefix "")))
+         (indent (concat base "   "))
+         (face 'chirp-quoted-tweet-border-face))
+    (appkit-ui-make-prefix-state
+     (appkit-ui-card-line-prefix :face face :indent indent)
+     (appkit-ui-card-line-prefix :face face :indent indent))))
+
+
+(defun chirp-render--insert-quoted-tweet (tweet &optional prefix prefix-face)
+  "Insert a normal tweet presentation inside TWEET's card.
+
+PREFIX supplies the card's outer nesting indentation.  PREFIX-FACE is accepted
+for caller consistency; the card owns its border face.  Nested quoted tweets
+are intentionally omitted after the first card level."
   (ignore prefix-face)
-  (when-let* ((quoted (plist-get tweet :quoted-tweet)))
-    (let* ((start (point))
-           (quoted-prefix (concat (or prefix "") "   "))
-           (quoted-prefix-face 'chirp-quoted-tweet-block-face)
-           (handle (plist-get quoted :author-handle))
-           (name (plist-get quoted :author-name))
-           (label (cond
-                   ((and handle name)
-                    (format "Quoted @%s (%s)" handle name))
-                   (handle
-                    (format "Quoted @%s" handle))
-                   (name
-                    (format "Quoted %s" name))
-                   (t
-                    "Quoted tweet"))))
-      (chirp-render--insert-prefix prefix quoted-prefix-face)
-      (let ((line-start (point)))
-        (chirp-render--insert-prefix quoted-prefix quoted-prefix-face)
-        (insert (propertize label
-                            'face '(chirp-quoted-tweet-face
-                                    chirp-quoted-tweet-block-face)))
-        (insert "\n")
-        (chirp-render--apply-wrap-prefix
-         line-start (point) quoted-prefix quoted-prefix-face))
-      (when-let* ((text (chirp-tweet-preview-text quoted 140)))
-        (unless (string-empty-p text)
-          (chirp-render--insert-filled-text text quoted-prefix quoted-prefix-face)))
-      (chirp-render--insert-translation
-       quoted quoted-prefix quoted-prefix-face)
-      (chirp-render--insert-article-preview quoted nil quoted-prefix quoted-prefix-face)
-      (chirp-render--insert-article-media-preview quoted nil quoted-prefix quoted-prefix-face)
-      (chirp-render-insert-media-strip (plist-get quoted :media)
-                                       quoted-prefix
-                                       quoted-prefix-face)
-      (chirp-render--insert-link-cards quoted quoted-prefix quoted-prefix-face)
-      (add-face-text-property start (point) 'chirp-quoted-tweet-block-face 'append)
+  (when-let* ((quoted (plist-get tweet :quoted-tweet))
+              ((< chirp-render--quoted-tweet-depth 1)))
+    (let ((start (point)))
+      (let ((chirp-render--quoted-tweet-depth
+             (1+ chirp-render--quoted-tweet-depth)))
+        (chirp-render--insert-tweet quoted nil nil t nil nil))
+      (add-face-text-property start (point)
+                              'chirp-quoted-tweet-block-face 'append)
+      (appkit-ui-apply-line-prefix
+       start (point) (chirp-render--quoted-tweet-prefix-state prefix))
+      (put-text-property start (1+ start) 'chirp-entry-start nil)
       (chirp-render--mark-subentry start (point) quoted))))
 
 (defun chirp-render--insert-list-reply-context (tweet reply-parent &optional prefix prefix-face)
@@ -908,53 +917,74 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
       (chirp-render--insert-media-grid media-list prefix prefix-face))
     (insert "\n\n")))
 
-(defun chirp-render--insert-tweet
-    (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
-  "Insert TWEET at point, optionally prefixed for thread rendering.
-
-Use PREFIX and PREFIX-FACE for indentation.  When SHOW-REPLY-CONTEXT is
-non-nil, show the reply target.  ARTICLE-MODE controls full article rendering,
-and REPLY-PARENT supplies the preceding parent tweet when available."
-  (let* ((start (point))
-         (author (or (plist-get tweet :author-name) "Unknown"))
-         (handle (plist-get tweet :author-handle))
-         (retweeted-by (plist-get tweet :retweeted-by))
-         (created-at (plist-get tweet :created-at))
-         (article-mode
-          (if (or (eq article-mode 'full)
-                  (chirp--tweet-expanded-p tweet))
-              'full
-            article-mode))
-         (meta-start nil)
-         (action-regions nil))
-    (when reply-parent
-      (chirp-render--insert-list-reply-context tweet reply-parent prefix prefix-face))
-    (when (and show-reply-context
-               (eq (plist-get tweet :timeline-context) 'related))
-      (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize "Related tweet"
-                          'face 'chirp-thread-related-context))
-      (insert "\n"))
-    (when retweeted-by
-      (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize (format "retweeted by @%s" retweeted-by)
-                          'face 'chirp-social-context-face))
-      (insert "\n"))
+(cl-defun chirp-render--insert-tweet-heading
+    (tweet &key prefix prefix-face avatar-p (time-p t) (newline-p t))
+  "Insert TWEET's author heading with optional PREFIX and avatar."
+  (let ((author (or (plist-get tweet :author-name) "Unknown"))
+        (handle (plist-get tweet :author-handle))
+        (created-at (plist-get tweet :created-at)))
     (chirp-render--insert-prefix prefix prefix-face)
-    (chirp-render--insert-avatar (plist-get tweet :author-avatar-url) handle)
+    (when avatar-p
+      (chirp-render--insert-avatar
+       (plist-get tweet :author-avatar-url) handle))
     (let ((author-start (point)))
       (insert (propertize author 'face 'chirp-author-face))
       (when handle
         (insert " ")
         (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
       (chirp-render--mark-author-region author-start (point) handle))
-    (when created-at
+    (when (and time-p created-at)
       (insert "  ")
       (insert (propertize created-at 'face 'chirp-meta-face)))
-    (insert "\n")
+    (when newline-p
+      (insert "\n"))))
+
+(cl-defun chirp-render--insert-tweet-context
+    (tweet &key prefix prefix-face show-reply-context reply-parent)
+  "Insert social and parent context for TWEET."
+  (when reply-parent
+    (chirp-render--insert-list-reply-context
+     tweet reply-parent prefix prefix-face))
+  (when (and show-reply-context
+             (eq (plist-get tweet :timeline-context) 'related))
+    (chirp-render--insert-prefix prefix prefix-face)
+    (insert (propertize "Related tweet"
+                        'face 'chirp-thread-related-context))
+    (insert "\n"))
+  (when-let* ((retweeted-by (plist-get tweet :retweeted-by)))
+    (chirp-render--insert-prefix prefix prefix-face)
+    (insert (propertize (format "retweeted by @%s" retweeted-by)
+                        'face 'chirp-social-context-face))
+    (insert "\n")))
+
+(defun chirp-render--mark-tweet-actions (action-regions)
+  "Apply Chirp action properties to ACTION-REGIONS."
+  (dolist (action-region action-regions)
+    (pcase-let ((`(,action ,region-start . ,region-end) action-region))
+      (chirp-render--mark-tweet-action-region
+       region-start region-end action))))
+
+(cl-defun chirp-render--insert-tweet-body
+    (tweet &key prefix prefix-face reply-context-prefix show-reply-context
+           article-mode
+           (trailing-newlines 1))
+  "Insert TWEET content and actions using PREFIX.
+
+SHOW-REPLY-CONTEXT controls the inline reply target.  REPLY-CONTEXT-PREFIX
+overrides PREFIX for that context line.  ARTICLE-MODE selects full article
+rendering when it is `full'.  TRAILING-NEWLINES controls the number of
+additional newlines after the metrics row."
+  (let* ((article-mode
+          (if (or (eq article-mode 'full)
+                  (chirp--tweet-expanded-p tweet))
+              'full
+            article-mode))
+         (meta-start nil)
+         (action-regions nil))
     (when (and show-reply-context
                (plist-get tweet :reply-to-handle))
-      (chirp-render--insert-prefix prefix prefix-face)
+      (chirp-render--insert-prefix
+       (or reply-context-prefix prefix) prefix-face)
       (insert (propertize "replying to "
                           'face 'chirp-thread-reply-context-face))
       (insert (propertize (format "@%s"
@@ -965,20 +995,22 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
       (unless (string-empty-p text)
         (chirp-render--insert-filled-text text prefix prefix-face)))
     (chirp-render--insert-translation tweet prefix prefix-face)
-    (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
     (pcase article-mode
       ('full
        (chirp-render--insert-article-body tweet prefix prefix-face))
       (_
-       (chirp-render--insert-article-preview tweet article-mode prefix prefix-face)
-       (chirp-render--insert-article-media-preview tweet article-mode prefix prefix-face)
+       (chirp-render--insert-article-preview
+        tweet article-mode prefix prefix-face)
+       (chirp-render--insert-article-media-preview
+        tweet article-mode prefix prefix-face)
        (when (chirp-render--article-expandable-p tweet article-mode)
          (chirp-render--insert-show-more tweet prefix prefix-face))))
     (chirp-render--insert-link-cards tweet prefix prefix-face)
-    (chirp-render--insert-expanded-urls (plist-get tweet :urls) prefix prefix-face)
-    (chirp-render-insert-media-strip (plist-get tweet :media)
-                                     prefix
-                                     prefix-face)
+    (chirp-render--insert-expanded-urls
+     (plist-get tweet :urls) prefix prefix-face)
+    (chirp-render-insert-media-strip
+     (plist-get tweet :media) prefix prefix-face)
+    (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
     (setq meta-start (point))
     (chirp-render--insert-prefix prefix prefix-face)
     (push (cons 'reply
@@ -1011,17 +1043,84 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
     (insert "   ")
     (chirp-render--insert-metric 'view (plist-get tweet :view-count))
     (insert "\n")
-    (insert "\n")
-    (chirp-render--mark-entry start (point) tweet)
-    (dolist (action-region action-regions)
-      (pcase-let ((`(,action ,region-start . ,region-end) action-region))
-        (chirp-render--mark-tweet-action-region
-         region-start region-end action)))
-    (put-text-property meta-start (point) 'rear-nonsticky t)))
+    (dotimes (_ trailing-newlines)
+      (insert "\n"))
+    (put-text-property meta-start (point) 'rear-nonsticky t)
+    action-regions))
+(defun chirp-render--insert-tweet
+    (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
+  "Insert TWEET at point, optionally prefixed for thread rendering.
+
+Use PREFIX and PREFIX-FACE for indentation.  When SHOW-REPLY-CONTEXT is
+non-nil, show the reply target.  ARTICLE-MODE controls full article rendering,
+and REPLY-PARENT supplies the preceding parent tweet when available."
+  (let ((start (point)))
+    (chirp-render--insert-tweet-context
+     tweet :prefix prefix :prefix-face prefix-face
+     :show-reply-context show-reply-context :reply-parent reply-parent)
+    (chirp-render--insert-tweet-heading
+     tweet :prefix prefix :prefix-face prefix-face :avatar-p t)
+    (let ((action-regions
+           (chirp-render--insert-tweet-body
+            tweet :prefix prefix :prefix-face prefix-face
+            :show-reply-context show-reply-context
+            :article-mode article-mode)))
+      (chirp-render--mark-entry start (point) tweet)
+      (chirp-render--mark-tweet-actions action-regions))))
 
 (defun chirp-render-insert-tweet (tweet)
   "Insert TWEET at point."
   (chirp-render--insert-tweet tweet))
+
+(defun chirp-render-insert-discussion-entry (row)
+  "Insert normalized discussion ROW and return its buffer span.
+
+ROW contains `:key', `:parent-key', `:depth', `:focus-p', and `:tweet'.
+Appkit owns the threaded geometry; Chirp owns tweet content and actions."
+  (let* ((tweet (plist-get row :tweet))
+         (key (plist-get row :key))
+         (focus-p (plist-get row :focus-p))
+         (action-regions nil)
+         (span
+          (appkit-discussion-insert-entry
+           (appkit-discussion-entry-create
+            :key key
+            :parent-key (plist-get row :parent-key)
+            :depth (plist-get row :depth)
+            :avatar nil
+            :avatar-fallback " "
+            :heading-inserter
+            (lambda ()
+              (chirp-render--insert-tweet-heading
+               tweet :avatar-p t :time-p nil :newline-p nil))
+            :time (plist-get tweet :created-at)
+            :body-inserter
+            (lambda (body-prefix _properties)
+              (let ((body-start (point)))
+                (chirp-render--insert-tweet-context
+                 tweet :prefix nil
+                 :show-reply-context (not focus-p))
+                (setq action-regions
+                      (chirp-render--insert-tweet-body
+                       tweet :prefix nil
+                       :reply-context-prefix nil
+                       :show-reply-context (not focus-p)
+                       :article-mode (and focus-p 'full)
+                       :trailing-newlines 0))
+                (appkit-ui-apply-line-prefix
+                 body-start (point) body-prefix)))
+            :properties
+            (list 'chirp-entry-item tweet
+                  'chirp-entry-id key
+                  'chirp-entry-url (plist-get tweet :url)
+                  'pointer 'hand
+                  'help-echo "RET: open  m: media  A: author  o: browser"
+                  'rear-nonsticky t))
+           :avatar-p nil)))
+    (put-text-property (car span) (1+ (car span))
+                       'chirp-entry-start t)
+    (chirp-render--mark-tweet-actions action-regions)
+    span))
 
 (defun chirp-render--tweet-separator-line ()
   "Return the tweet separator line, or nil when disabled."
@@ -1060,18 +1159,6 @@ projections can replace it as one unit."
       (chirp-render-insert-tweet-row tweet previous)
       (setq previous tweet))))
 
-(defun chirp-render-insert-thread-focus-tweet (tweet)
-  "Insert the focus TWEET in a thread view."
-  (chirp-render--insert-tweet tweet nil nil nil 'full))
-
-(defun chirp-render-insert-thread-reply (tweet)
-  "Insert a reply TWEET in a thread view."
-  (chirp-render--insert-tweet tweet nil nil t))
-
-(defun chirp-render-insert-thread-divider ()
-  "Insert a subtle divider between the focus tweet and replies."
-  (insert (propertize (make-string 36 ?-) 'face 'chirp-thread-divider-face))
-  (insert "\n\n"))
 
 (defun chirp-render-insert-user-summary (user)
   "Insert USER summary."

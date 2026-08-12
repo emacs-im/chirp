@@ -160,6 +160,66 @@ display name or handle instead."
   (or (plist-get tweet :id)
       (plist-get tweet :url)))
 
+(defun chirp-thread--discussion-key (tweet)
+  "Return the opaque discussion key for TWEET, or nil."
+  (when-let* ((key (chirp-thread--key tweet)))
+    (list 'tweet key)))
+
+(defun chirp-thread--discussion-depth (tweet by-id)
+  "Return TWEET's visible parent depth from BY-ID, or zero on a cycle."
+  (let ((current tweet)
+        (seen (make-hash-table :test #'equal))
+        (depth 0)
+        (valid-p t))
+    (while (and valid-p current)
+      (let* ((key (chirp-thread--discussion-key current))
+             (parent-id (plist-get current :reply-to-id))
+             (parent (and parent-id (gethash parent-id by-id))))
+        (cond
+         ((or (null key) (gethash key seen))
+          (setq valid-p nil))
+         (parent
+          (puthash key t seen)
+          (setq depth (1+ depth)
+                current parent))
+         (t
+          (setq current nil)))))
+    (if valid-p depth 0)))
+
+(defun chirp-thread--discussion-rows (tweets)
+  "Return ordered Appkit discussion row data for TWEETS.
+
+Each row contains `:key', `:parent-key', `:depth', `:focus-p', and `:tweet'.
+Only parents present in TWEETS are used for nesting; the first renderable tweet
+is always the focus row."
+  (let ((by-id (make-hash-table :test #'equal))
+        (rows nil)
+        (seen (make-hash-table :test #'equal)))
+    (dolist (tweet tweets)
+      (when-let* ((key (chirp-thread--discussion-key tweet)))
+        (puthash key tweet by-id)
+        (when-let* ((id (plist-get tweet :id)))
+          (puthash id tweet by-id))))
+    (dolist (tweet tweets (nreverse rows))
+      (when-let* ((key (chirp-thread--discussion-key tweet))
+                  ((not (gethash key seen))))
+        (let* ((focus-p (null rows))
+               (parent-id (plist-get tweet :reply-to-id))
+               (parent (and parent-id (gethash parent-id by-id)))
+               (depth (if focus-p
+                          0
+                        (chirp-thread--discussion-depth tweet by-id)))
+               (parent-key (and (> depth 0)
+                                parent
+                                (chirp-thread--discussion-key parent))))
+          (puthash key t seen)
+          (push (list :key key
+                      :parent-key parent-key
+                      :depth (if parent-key depth 0)
+                      :focus-p focus-p
+                      :tweet tweet)
+                rows))))))
+
 (defun chirp-thread--reorder (tweets focus-id)
   "Move the tweet matching FOCUS-ID to the front of TWEETS."
   (if (not focus-id)
@@ -252,22 +312,17 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
 
 (defun chirp-thread--render-view
     (buffer title refresh ordered &optional anchor-id display-p)
-  "Render ORDERED thread tweets into BUFFER.
+  "Render ORDERED thread tweets into BUFFER with Appkit discussion geometry.
 
 TITLE and REFRESH are the usual buffer metadata.  When ANCHOR-ID is non-nil,
 restore point to that entry after rendering."
-  (let ((focus (car ordered))
-        (replies (cdr ordered)))
+  (let ((rows (chirp-thread--discussion-rows ordered)))
     (chirp-render-into-buffer
      buffer title refresh
      (lambda ()
-       (if focus
-           (progn
-             (chirp-render-insert-thread-focus-tweet focus)
-             (when replies
-               (chirp-render-insert-thread-divider)
-               (dolist (tweet replies)
-                 (chirp-render-insert-thread-reply tweet))))
+       (if rows
+           (dolist (row rows)
+             (chirp-render-insert-discussion-entry row))
          (chirp-render-insert-empty "No thread data returned."))))
     (with-current-buffer buffer
       (or (and anchor-id

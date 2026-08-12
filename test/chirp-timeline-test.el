@@ -230,6 +230,38 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-primary-projection-uses-row-owned-separators ()
+  "Primary timeline rows should not receive an EWOC separator."
+  (let ((chirp--app nil)
+        (chirp-tweet-separator "-----")
+        (chirp-tweet-separator-indent 2)
+        buffer
+        callback)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall
+               callback
+               (list '(:kind tweet :id "1" :text "First"
+                       :author-name "Alice")
+                     '(:kind tweet :id "2" :text "Second"
+                       :author-name "Bob"))
+               nil)
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (let ((text (buffer-string)))
+                  (should (string-match-p "Views\n\n  -----" text))
+                  (should-not (string-match-p "Views\n\n\n  -----" text)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-primary-superseding-request-cancels-old-transport ()
   "Starting a replacement generation should cancel its prior transport."
   (let ((chirp--app nil)
@@ -746,7 +778,6 @@
                :anchor-id "2"
                :loading-more t
                :refreshing nil
-               :previous-count 2
                :previous-tweets (list (list :id "1") (list :id "2"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
@@ -779,7 +810,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p t
        :previous-next-cursor nil
@@ -820,7 +850,6 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor nil
@@ -850,7 +879,6 @@
        :anchor-id "2"
        :loading-more nil
        :refreshing t
-       :previous-count nil
        :previous-tweets (list (list :id "2") (list :id "1"))
        :previous-exhausted-p nil
        :previous-next-cursor nil
@@ -892,7 +920,6 @@
                :anchor-id "2"
                :loading-more nil
                :refreshing t
-               :previous-count 2
                :previous-tweets (list (list :id "2") (list :id "1"))
                :previous-exhausted-p nil
                :previous-next-cursor "cursor-next"
@@ -1247,7 +1274,6 @@
               (should (= (window-vscroll (selected-window) t) vscroll)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
-
 
 (ert-deftest chirp-clean-text-decodes-html-entities ()
   "Tweet text should decode common HTML entities."
