@@ -24,6 +24,7 @@ history remains available in Git.
 - Persistent user spam phrases and keywords in a plain-text rule file, with `S`/`C-u S` capture from reply content or author names, one shared match scope, and a structured upstream submission form.
 - Mouse-1 controls on visible tweet reply, repost/retweet, like, and bookmark metrics, routed through the existing tweet action commands.
 - Tweet timelines and threads now display X reply-audience controls and omit the Reply action when X explicitly limits the current account.
+- Compose buffers now use Appkit's shared generated context, status-field, attachment, and editable-body boundary primitives.
 
 ### Breaking Changes
 

@@ -110,6 +110,7 @@ Inside the compose buffer:
   to completion-at-point frontends such as Corfu)
 - `C-c C-c`: close the draft immediately and send it in the background
 - `C-c C-k`: cancel the draft
+- The Appkit-backed compose header shows the current media count, and generated context and attachment sections remain read-only while the draft body stays editable.
 
 Premium accounts can send drafts over the standard 280 weighted-character limit. Chirp computes X's weighted length and selects the direct long-form operation for posts, replies, and quotes. JPEG, PNG, and WebP attachments may be up to 5 MiB; GIF attachments may be up to 15 MiB.
 
