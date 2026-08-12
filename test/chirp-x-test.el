@@ -398,8 +398,8 @@
           (delete-process process))
         (chirp-stop)))))
 
-(ert-deftest chirp-x-stale-read-refreshes-without-retrying-requests ()
-  "Only definitive stale reads should refresh IDs; no request is retried."
+(ert-deftest chirp-x-stale-read-refreshes-and-retries-once ()
+  "A stale read should refresh IDs and retry once; writes must not retry."
   (let ((responses '("X request failed: PersistedQueryNotFound"
                      "X request failed: PersistedQueryNotFound"
                      "X request failed: PersistedQueryNotFound"
@@ -408,17 +408,23 @@
         (chirp-x-query-id-overrides nil)
         (requests 0)
         (refreshes 0)
-        (errors 0))
+        (errors 0)
+        succeeded)
     (cl-letf (((symbol-function 'chirp-x--request)
-               (lambda (_url _method _callback &rest options)
+               (lambda (_url _method callback &rest options)
                  (setq requests (1+ requests))
-                 (funcall (plist-get options :errback) (pop responses))
+                 (if (= requests 2)
+                     (funcall callback '(("ok" . t)))
+                   (funcall (plist-get options :errback) (pop responses)))
                  'request))
               ((symbol-function 'chirp-x--refresh-query-ids)
-               (lambda (_listener)
-                 (setq refreshes (1+ refreshes)))))
+               (lambda (listener)
+                 (setq refreshes (1+ refreshes))
+                 (puthash "ReadOp" "new-read" chirp-x--query-id-cache)
+                 (funcall listener '(:count 1)))))
       (chirp-x-graphql-request
-       '(:query-id "read" :name "ReadOp") nil #'ignore
+       '(:query-id "read" :name "ReadOp") nil
+       (lambda (_payload) (setq succeeded t))
        :errback (lambda (_message) (setq errors (1+ errors))))
       (chirp-x-graphql-request
        '(:query-id "write" :name "WriteOp" :method post) nil #'ignore
@@ -430,8 +436,9 @@
       (chirp-x-graphql-request
        '(:query-id "read" :name "ReadOp") nil #'ignore
        :errback (lambda (_message) (setq errors (1+ errors)))))
-    (should (= requests 4))
-    (should (= errors 4))
+    (should succeeded)
+    (should (= requests 5))
+    (should (= errors 3))
     (should (= refreshes 1))))
 
 (ert-deftest chirp-x-graphql-get-encodes-a-persisted-operation ()
