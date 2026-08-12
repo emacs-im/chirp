@@ -88,9 +88,8 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 ## Pre-Commit Gates
 
 - Read every changed line and run `git diff --check`. Search for dead symbols, accidental private API use, and generated `.elc`, backup, or lock files.
-- Byte-compile every distributable `.el` file with zero warnings. Remove generated `.elc` files after the check.
+- Eask owns package activation, local sibling dependencies, byte compilation, and test load paths. Run `eask run script test-local`; byte compilation must finish with zero warnings.
 - Run `checkdoc` with zero warnings across all distributable `.el` files, not only the main entry file. Public definitions have complete docstrings whose first line is a complete sentence ending in a period; document arguments in uppercase and in use order without visually aligning continuation lines inside help text.
-- Run `package-lint` with zero warnings across all distributable `.el` files with `package-lint-main-file` configured to `chirp.el`; do not duplicate package metadata in implementation files.
 - When native module sources change, run its locked Rust tests, formatting, Clippy, and the ERT module smoke under `--module-assertions`. The release module supports explicit Juicebox recovery, but every automated gate must use synthetic adapters and make no realm requests:
 
 ```bash
@@ -116,19 +115,7 @@ CHIRP_XCHAT_MODULE_FILE="$MODULE_FILE" \
 - Run the complete ERT suite, not a single test file:
 
 ```bash
-emacs -Q -batch --eval '(setq load-prefer-newer t)' -L ../appkit.el \
-  -L ../browser-session -L ../plz -L . -L lisp -l ert \
-  -l test/chirp-actions-test.el -l test/chirp-backend-test.el \
-  -l test/chirp-dm-test.el -l test/chirp-xchat-native-test.el \
-  -l test/chirp-x-test.el -l test/chirp-media-test.el \
-  -l test/chirp-notifications-test.el \
-  -l test/chirp-profile-test.el -l test/chirp-render-test.el \
-  -l test/chirp-thread-test.el -l test/chirp-timeline-test.el \
-  --eval '(ert-run-tests-batch-and-exit)'
-
-emacs -Q -batch --eval '(setq load-prefer-newer t)' -L ../appkit.el \
-  -L ../browser-session -L ../plz -L . -L lisp \
-  -f batch-byte-compile chirp.el lisp/*.el test/*.el
+eask run script test-local
 ```
 
 - Keep package metadata only in `chirp.el`: `Author`, `URL`, `Version`, and complete direct `Package-Requires` minimum versions including Emacs. Split implementation files retain formal license metadata. Main and implementation headers use concise package descriptions, and every file ends with its matching standard footer.

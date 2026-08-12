@@ -20,6 +20,7 @@
 (require 'plz)
 (require 'appkit-core)
 (require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
 (require 'appkit-task-queue)
@@ -548,15 +549,13 @@ HELP-ECHO customize the accessible image action."
       :warning))))
 
 (defun chirp-media--invalidate-resource (resource)
-  "Invalidate live Appkit rows that depend on RESOURCE."
+  "Invalidate live Appkit projections that depend on RESOURCE."
   (when (appkit-app-live-p chirp--app)
     (maphash
      (lambda (_id view)
-       (when (appkit-view-live-p view)
-         (when-let* ((keys (gethash resource
-                                    (appkit-view-resource-index view))))
-           (appkit-request-sync
-            view :entries keys :resource resource :position t))))
+       (when (and (appkit-projection-view-p view)
+                  (appkit-projection-dependent-keys view (list resource)))
+         (appkit-request-sync view :resource resource :position t)))
      (appkit-app-view-registry chirp--app))))
 
 (defun chirp-media--prefetch-finish (path success resource)
