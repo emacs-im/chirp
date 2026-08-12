@@ -31,8 +31,7 @@
        :app (chirp-app)
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
-       :parts-function #'chirp-compose--parts
-       :footer-function #'chirp-compose--footer-string))
+       :parts-function #'chirp-compose--parts))
     (cons compose source)))
 
 (defun chirp-test--open-compose-from-foreign-current-buffer (kind &optional tweet)
@@ -756,8 +755,12 @@ Return a list of (compose source foreign)."
           (appkit-compose-setup
            :context-function #'chirp-compose--header-string
            :status-fields-function #'chirp-compose--status-fields
-           :parts-function #'chirp-compose--parts
-           :footer-function #'chirp-compose--footer-string)
+           :parts-function #'chirp-compose--parts)
+          (let ((display (appkit-compose-display-string)))
+            (should-not (string-match-p "Compose a new post" display))
+            (should-not (string-match-p "No images attached" display))
+            (should-not (string-match-p "C-c C-a attach" display))
+            (should-not (string-match-p "Posts:" display)))
           (goto-char (appkit-compose-body-start-position))
           (insert "abc")
           (should (equal (appkit-compose-body) "abc"))
@@ -904,8 +907,7 @@ Return a list of (compose source foreign)."
               (appkit-compose-setup
                :context-function #'chirp-compose--header-string
                :status-fields-function #'chirp-compose--status-fields
-               :parts-function #'chirp-compose--parts
-               :footer-function #'chirp-compose--footer-string))
+               :parts-function #'chirp-compose--parts))
             (let (success-callback)
               (cl-letf (((symbol-function 'chirp-backend-compose)
                          (lambda (&rest draft)
