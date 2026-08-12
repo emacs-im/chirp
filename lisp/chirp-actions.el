@@ -522,12 +522,8 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
     (_ "*chirp compose: Post*")))
 
 (defun chirp-compose--header-string ()
-  "Return the read-only header shown above the compose body."
-  (let ((title (pcase chirp-compose-kind
-                 ('reply "Reply")
-                 ('quote "Quote")
-                 (_ "Post")))
-        (context
+  "Return reply or quote context, or an empty string for a new post."
+  (let ((context
          (pcase chirp-compose-kind
            ('reply
             (if chirp-compose-target-handle
@@ -537,14 +533,14 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
             (if chirp-compose-target-handle
                 (format "Quoting @%s" chirp-compose-target-handle)
               (format "Quoting %s" chirp-compose-target-id)))
-           (_ "Compose a new post."))))
-    (concat
-     (propertize title 'face 'bold)
-     "\n"
-     (propertize context 'face 'shadow)
-     (when chirp-compose-target-url
-       (concat "\n"
-               (propertize chirp-compose-target-url 'face 'link))))))
+           (_ nil))))
+    (if (null context)
+        ""
+      (concat
+       (propertize context 'face 'shadow)
+       (when chirp-compose-target-url
+         (concat "\n"
+                 (propertize chirp-compose-target-url 'face 'link)))))))
 
 (defun chirp-compose--ensure-idle ()
   "Signal a user error when the current draft is already sending."
@@ -803,7 +799,8 @@ When called interactively, prompt for AUDIENCE."
                      :value (chirp-compose--media-label)))))
     (when-let* ((state (appkit-compose-progress-text)))
       (push (list :label "State" :value state) fields))
-    (when (eq chirp-compose-kind 'post)
+    (when (and (eq chirp-compose-kind 'post)
+               (> (length (appkit-compose-items)) 1))
       (push (list :label "Posts"
                   :value (format "%d" (length (appkit-compose-items))))
             fields))
@@ -817,21 +814,21 @@ When called interactively, prompt for AUDIENCE."
     fields))
 
 (defun chirp-compose--attachments-section (&optional item)
-  "Return the Appkit attachment section for ITEM or the current item."
-  (list :title "Images"
-        :items
-        (mapcar
-         (lambda (attachment)
-           (list :label (chirp-compose--attachment-label attachment)
-                 :preview (chirp-compose--attachment-preview attachment)
-                 :description
-                 (chirp-compose--attachment-description attachment)
-                 :description-label "Alt"
-                 :object (chirp-compose--attachment-choice attachment)
-                 :action #'chirp-compose-describe-image
-                 :help-echo "Edit alt text"))
-         (chirp-compose--item-attachments item))
-        :empty-label "  No images attached."))
+  "Return the Appkit attachment section for ITEM, or nil when empty."
+  (when-let* ((attachments (chirp-compose--item-attachments item)))
+    (list :title "Media"
+          :items
+          (mapcar
+           (lambda (attachment)
+             (list :label (chirp-compose--attachment-label attachment)
+                   :preview (chirp-compose--attachment-preview attachment)
+                   :description
+                   (chirp-compose--attachment-description attachment)
+                   :description-label "Alt"
+                   :object (chirp-compose--attachment-choice attachment)
+                   :action #'chirp-compose-describe-image
+                   :help-echo "Edit alt text"))
+           attachments))))
 
 (defun chirp-compose--display-items ()
   "Return compose items with Chirp attachments merged onto Appkit items."
@@ -860,18 +857,6 @@ When called interactively, prompt for AUDIENCE."
                                 (format "Post %d/%d" index total))
                     :attachments (chirp-compose--attachments-section item)))
             items)))
-
-(defun chirp-compose--footer-string ()
-  "Return the read-only footer shown after the compose body."
-  (propertize
-   (if (appkit-compose-submitting-p)
-       "C-c C-k cancel submit"
-     (concat
-      "C-c C-a attach   C-c C-v paste   C-c C-d remove   C-c C-e alt   "
-      (when (eq chirp-compose-kind 'post)
-        "C-c C-n add post   C-c C-p drop post   ")
-      "C-c C-s save   C-c C-t schedule   C-c C-c send   C-c C-k cancel"))
-   'face 'shadow))
 
 (defun chirp-compose--video-path-p (path)
   "Return non-nil when PATH is an MP4 file."
@@ -1555,8 +1540,7 @@ When TWEET is non-nil, use it as the reply or quote target."
        :app (chirp-app)
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
-       :parts-function #'chirp-compose--parts
-       :footer-function #'chirp-compose--footer-string)
+       :parts-function #'chirp-compose--parts)
       (set-buffer-modified-p nil)
       (goto-char (appkit-compose-body-start-position)))))
 
