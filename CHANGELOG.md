@@ -27,15 +27,23 @@ history remains available in Git.
 - Compose buffers now use Appkit's shared generated context, status-field, attachment, and editable-body boundary primitives.
 - Post and quote drafts can set who may reply through the Appkit audience status field, and `CreateTweet` / `CreateNoteTweet` send that reply audience as `conversation_control`.
 - A post draft can hold several ordered items on Appkit's multi-part compose surface. `C-c C-n` inserts another post after the current one, `C-c C-p` drops the current extra post, and send publishes the root then each following item as a reply.
+- Compose status fields show the current item's X weighted length and switch to the long-form label above 280.
+- Attached images can carry alt text through `C-c C-e` or the attachment row; Chirp writes it with X's media metadata API after upload.
+- Compose can save an unsent draft on X with `C-c C-s` and schedule publication with `C-c C-t`. A multi-item draft is one `post_tweet_request` with `thread_tweets`; a later save edits the same draft ID.
+- `x d` and `x t` open X drafts and scheduled posts in a `tabulated-list-mode` buffer. Buffer Menu marks flag rows, `x` deletes them, `RET` reopens text in compose, and `TAB` switches the two collections.
+- Reopening an unsent post keeps its X `media_ids` and shows `media_entities` previews in compose. Sending that restored draft deletes the corresponding X draft or scheduled post after publish.
+- Compose can attach one MP4 video through the same upload path as images. INIT uses `tweet_video`, large files are read in 1 MiB chunks, and a video cannot be mixed with other attachments.
+- Compose shows Appkit submit progress while media uploads, including video `n/N` chunk status, and `C-c C-k` cancels that in-flight submit instead of refusing. Closing the compose buffer cancels the same view-owned upload.
 
 ### Breaking Changes
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.5 or newer for multi-part compose surfaces and read-only stable-key projections.
+- Chirp now requires Appkit 0.2.6 or newer for compose submit progress, cancel hooks, multi-part compose surfaces, and read-only stable-key projections.
 
 ### Fixed
 
+- Compose is now a chatbuf: committed posts render as draft rows, the trailing composer holds the current post, and undo no longer rewrites generated chrome.
 - Primary Home and Following rows no longer receive an extra projection separator between tweets.
 - `chirp-stop` now cancels desktop notification polling with the Appkit session instead of allowing the next timer to recreate Chirp.
 - Background image and link-card prefetches now enforce bounded protocols, redirects, time, and response sizes.

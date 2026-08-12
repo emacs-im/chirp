@@ -22,6 +22,14 @@ _Avoid_: Timeline cache, response list
 A not-yet-published post authored in Chirp, with one or more ordered items, optional reply or quote target, reply audience, and media attachments. One draft may contain several items; publishing turns each item into its own post.
 _Avoid_: Post (when still local), request, payload
 
+**Unsent draft**:
+An X-server draft created from a compose draft. One object stores the root item and any following items as `thread_tweets`.
+_Avoid_: Compose draft (when referring to the server object)
+
+**Scheduled post**:
+An X-server post that will publish at `execute_at`. One object stores the same root-plus-`thread_tweets` shape as an unsent draft.
+_Avoid_: Local timer, Emacs timer
+
 **Reply target**:
 The existing post that a compose draft replies to.
 _Avoid_: Reply (when referring to the target)
@@ -29,6 +37,10 @@ _Avoid_: Reply (when referring to the target)
 **Reply audience**:
 The post-level rule attached to a newly published post that determines which accounts may reply.
 _Avoid_: Reply target, reply endpoint
+
+**Compose submit**:
+The current send, save, or schedule attempt on a compose draft, including optional upload progress and a cancel hook owned by the compose view.
+_Avoid_: File upload job, HTTP request
 
 **Media attachment**:
 A media item included in a compose draft, with descriptive metadata that is independent of the post text and reply audience.

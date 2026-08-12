@@ -5,7 +5,7 @@
 
 ;; Author: lucius
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (appkit "0.2.5") (browser-session "0.1.0") (plz "0.8") (transient "0.4.3"))
+;; Package-Requires: ((emacs "29.1") (appkit "0.2.8") (browser-session "0.1.0") (plz "0.8") (transient "0.4.3"))
 ;; Keywords: convenience, comm
 ;; URL: https://github.com/LuciusChen/chirp
 
@@ -29,6 +29,7 @@
 (require 'chirp-media)
 (require 'chirp-render)
 (require 'chirp-actions)
+(require 'chirp-unsent)
 (require 'chirp-thread)
 (require 'chirp-profile)
 (require 'chirp-timeline)

@@ -97,26 +97,31 @@ M-x chirp-profile-following-users
 - `D`: download the current media, or choose one media item from the current tweet; photos try the original-resolution URL and videos use the highest-quality variant
 - `A`: open the author profile
 - `S`: add a persistent spam phrase or keyword using the active region or current tweet text; use `C-u S` to start with the author's display name
-- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, follow/unfollow, translation, and tweet actions
+- `x`: open the actions menu for timeline switching, your own profile, bookmarks, liked tweets, lists, post/reply/quote, drafts, scheduled posts, follow/unfollow, translation, and tweet actions
 - `x r`: reply to the tweet at point, or refuse when X limits replies from the current account
 - `x T`: translate the tweet at point and show the result below its original text
 - `o`: open the current item in a browser
 
 Inside the compose buffer:
 
-- `C-c C-a`: attach an image file to the current post (up to 4)
+- `C-c C-a`: attach an image file (up to 4) or one MP4 video; video cannot be mixed with images
 - `C-c C-v`: paste one image from the clipboard
 - `C-c C-d`: remove an attached image from the current post
-- `C-c C-n`: insert another post after the current one (new posts only)
-- `C-c C-p`: drop the current extra post from this draft
+- `C-c C-e`: edit alt text for an attached image
+- `C-c C-n`: commit the current composer text as a draft row and start the next post (new posts only)
+- `C-c C-p`: drop the current extra draft row
+- `RET` or `e` on a draft row: load that post back into the composer
 - `M-TAB`: complete a user handle after typing an `@` prefix (also available
   to completion-at-point frontends such as Corfu)
+- `C-c C-s`: save the draft on X as one unsent object; a later save updates that same draft
+- `C-c C-t`: schedule the draft on X for a future local time and close the buffer after X acknowledges it
 - `C-c C-c`: send the draft and keep it until X acknowledges success. A multi-post draft publishes the first item, then each later item as a reply to the previous one
-- `C-c C-k`: cancel the draft; this is refused while a send is in flight
+- `C-c C-k`: cancel an in-flight send, save, or schedule, or close the draft when idle. Video uploads show `Uploading video n/N` progress in the status strip while chunks are sent.
 - Click `Audience` on a post or quote to choose who can reply; replies inherit the conversation rule
-- The Appkit-backed compose header shows the reply audience, post count, and current media count, and generated context and attachment sections remain read-only while each draft body stays editable. A known send failure leaves the draft editable. If the remote outcome is unknown, Chirp warns and asks before sending the same draft again.
+- `x d` opens X drafts and `x t` opens scheduled posts. The list uses Emacs's tabulated list with Buffer Menu marks: `m` marks, `u` unmarks, `U` unmarks all, `d` flags deletion, `x` deletes flagged rows, `RET` reopens the item in compose, `TAB` switches drafts/scheduled, and `g` reloads
+- The Appkit-backed compose surface is a chatbuf: committed posts are rendered draft rows, the trailing composer holds the current post, and the header line shows reply audience, post count, weighted length, media count, and in-flight submit progress. Emacs undo applies to the composer only. Click an image row or use `C-c C-e` to set alt text. A known send, save, or schedule failure leaves the draft editable. Canceling an in-flight submit also leaves the draft editable; if the remote outcome is unknown, Chirp warns and asks before repeating that submit. Reopening an unsent post restores its text parts and X media IDs, and shows image previews on the compose attachment rows. Publishing a restored draft or scheduled post deletes that unsent object after X acknowledges the new posts.
 
-Premium accounts can send drafts over the standard 280 weighted-character limit. Chirp computes X's weighted length and selects the direct long-form operation for posts, replies, and quotes. JPEG, PNG, and WebP attachments may be up to 5 MiB; GIF attachments may be up to 15 MiB.
+Premium accounts can send drafts over the standard 280 weighted-character limit. Chirp computes X's weighted length and selects the direct long-form operation for posts, replies, and quotes. JPEG, PNG, and WebP attachments may be up to 5 MiB; GIF attachments may be up to 15 MiB; MP4 videos may be up to 512 MiB and upload in 1 MiB chunks as `tweet_video`.
 
 Tweet metrics also reflect the current local state: liked tweets show `Liked`, bookmarked tweets show `Saved`, and retweeted tweets show `RTed`. The visible reply, repost/retweet, like, and bookmark metrics also provide mouse-1 action controls.
 Every tweet returned by the Likes view is shown with its like state active, even when an upstream payload omits the per-item `favorited` field.

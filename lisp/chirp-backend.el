@@ -215,7 +215,26 @@
     (bookmark
      :query-id "aoDbu3RHznuiSkQ9aNM67Q" :name "CreateBookmark" :method post)
     (unbookmark
-     :query-id "Wlmlj2-xzyS1GN3a6cj-mQ" :name "DeleteBookmark" :method post))
+     :query-id "Wlmlj2-xzyS1GN3a6cj-mQ" :name "DeleteBookmark" :method post)
+    (create-draft-tweet
+     :query-id "cH9HZWz_EW9gnswvA4ZRiQ" :name "CreateDraftTweet" :method post)
+    (edit-draft-tweet
+     :query-id "JIeXE-I6BZXHfxsgOkyHYQ" :name "EditDraftTweet" :method post)
+    (create-scheduled-tweet
+     :query-id "LCVzRQGxOaGnOnYH01NQXg" :name "CreateScheduledTweet"
+     :method post)
+    (edit-scheduled-tweet
+     :query-id "_mHkQ5LHpRRjSXKOcG6eZw" :name "EditScheduledTweet"
+     :method post)
+    (fetch-draft-tweets
+     :query-id "L9RqKWmAWxK6vGtR3Qdsxw" :name "FetchDraftTweets")
+    (fetch-scheduled-tweets
+     :query-id "H2elmT2R9DLhWoo0DZFNkA" :name "FetchScheduledTweets")
+    (delete-draft-tweet
+     :query-id "bkh9G3FGgTldS9iTKWWYYw" :name "DeleteDraftTweet" :method post)
+    (delete-scheduled-tweet
+     :query-id "CTOVqej0JBXAZSwkp1US0g" :name "DeleteScheduledTweet"
+     :method post))
   "Persisted X web operations used by Chirp's direct backend.")
 
 (defconst chirp-backend--user-timeline-paths
@@ -612,30 +631,90 @@ REPLY-AUDIENCE is a post or quote conversation-control symbol, or nil."
             variables))
     variables))
 
-(defun chirp-backend--upload-compose-media
-    (files callback errback &optional media-ids)
-  "Upload FILES sequentially and call CALLBACK with their media IDs.
+(defun chirp-backend--media-id (value)
+  "Return VALUE as a numeric media ID string, or nil."
+  (let ((id (and value (format "%s" value))))
+    (and (stringp id)
+         (string-match-p "\\`[0-9]+\\'" id)
+         id)))
 
-ERRBACK receives the first failure.  MEDIA-IDS carries recursive state."
-  (if (null files)
+(defun chirp-backend--attachment-spec (attachment)
+  "Return ATTACHMENT as a plist with `:path' or `:media-id'.
+
+Optional `:description' carries alt text.  A `:media-id' identifies media
+already stored on X and does not require a local file."
+  (let ((spec (cond
+               ((stringp attachment) (list :path attachment))
+               ((listp attachment) attachment)
+               (t nil))))
+    (cond
+     ((chirp-backend--media-id (plist-get spec :media-id))
+      (plist-put (copy-sequence spec) :media-id
+                 (chirp-backend--media-id (plist-get spec :media-id))))
+     ((and (stringp (plist-get spec :path))
+           (file-regular-p (plist-get spec :path))
+           (file-readable-p (plist-get spec :path)))
+      spec)
+     (t
+      (error "Image file is not readable: %s"
+             (or (plist-get spec :path) attachment))))))
+
+(defun chirp-backend--apply-media-description
+    (media-id description callback errback &optional owner)
+  "Attach DESCRIPTION to MEDIA-ID when it is non-empty, then call CALLBACK."
+  (let ((text (and (stringp description) (string-trim description))))
+    (if (or (null text) (string-empty-p text))
+        (funcall callback)
+      (chirp-x-upload-media-alt-text media-id text
+                                     (lambda (_payload)
+                                       (funcall callback))
+                                     :errback errback
+                                     :owner owner))))
+
+(cl-defun chirp-backend--upload-compose-media
+    (attachments callback errback &key media-ids progress owner)
+  "Upload ATTACHMENTS sequentially and call CALLBACK with their media IDs.
+
+Each attachment is a file path or a plist with `:path' or `:media-id' and
+optional `:description'.  Existing `:media-id' values are reused without
+uploading.  ERRBACK receives the first failure.  MEDIA-IDS carries recursive
+state.  PROGRESS and OWNER are forwarded to the upload transport."
+  (if (null attachments)
       (funcall callback (nreverse media-ids))
-    (chirp-x-upload-media
-     (car files)
-     (lambda (media-id)
-       (chirp-backend--upload-compose-media
-        (cdr files) callback errback (cons media-id media-ids)))
-     :errback errback)))
+    (let* ((spec (chirp-backend--attachment-spec (car attachments)))
+           (existing (plist-get spec :media-id))
+           (continue
+            (lambda (media-id)
+              (chirp-backend--apply-media-description
+               media-id (plist-get spec :description)
+               (lambda ()
+                 (chirp-backend--upload-compose-media
+                  (cdr attachments) callback errback
+                  :media-ids (cons media-id media-ids)
+                  :progress progress
+                  :owner owner))
+               errback owner))))
+      (if existing
+          (funcall continue existing)
+        (chirp-x-upload-media
+         (plist-get spec :path) continue
+         :errback errback
+         :progress progress
+         :owner owner)))))
 
 (cl-defun chirp-backend-compose
-    (&key kind text target-id attachments reply-audience callback errback)
+    (&key kind text target-id attachments reply-audience callback errback
+          progress owner)
   "Publish a KIND draft containing TEXT and ATTACHMENTS through X.
 
 KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
-quotes.  REPLY-AUDIENCE is a post or quote conversation-control symbol;
-`everyone' and nil omit the rule, and replies ignore it.  CALLBACK receives a
-plist containing the created tweet ID and the raw GraphQL envelope.  ERRBACK
-receives upload or create failures.  Create and upload mutations are never
-retried automatically."
+quotes.  ATTACHMENTS are file paths or plists with `:path' or `:media-id'
+and optional `:description' alt text.  REPLY-AUDIENCE is a post or quote
+conversation-control symbol; `everyone' and nil omit the rule, and replies
+ignore it.  CALLBACK receives a plist containing the created tweet ID and the
+raw GraphQL envelope.  ERRBACK receives upload or create failures.  PROGRESS
+and OWNER are forwarded to media upload and the create request.  Create and
+upload mutations are never retried automatically."
   (unless (functionp callback)
     (error "Compose callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
@@ -653,15 +732,12 @@ retried automatically."
                                          (format "%s" target-id)))
               (error "%s requires a numeric target tweet ID"
                      (capitalize (symbol-name kind)))))
-          (unless (and (listp attachments) (<= (length attachments) 4))
-            (error "Compose attachments must contain at most four files"))
-          (dolist (file attachments)
-            (unless (and (stringp file) (file-regular-p file)
-                         (file-readable-p file))
-              (error "Image file is not readable: %s" file)))
+          (chirp-backend--validate-attachments attachments)
           (chirp-backend--upload-compose-media
            attachments
            (lambda (media-ids)
+             (when (functionp progress)
+               (funcall progress (list :phase 'publish)))
              (let* ((note-tweet-p
                      (> (chirp-backend--tweet-weighted-length text)
                         chirp-backend--standard-tweet-weight-limit))
@@ -683,8 +759,471 @@ retried automatically."
                                      (plist-get
                                       (chirp-backend--operation operation-key)
                                       :name)))))
-                :errback error-fn)))
-           error-fn))
+                :errback error-fn
+                :owner owner)))
+           error-fn
+           :progress progress
+           :owner owner))
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(defun chirp-backend--video-attachment-p (attachment)
+  "Return non-nil when ATTACHMENT is an MP4 or restored video."
+  (or (equal (and (listp attachment) (plist-get attachment :type)) "video")
+      (let ((path (if (stringp attachment)
+                      attachment
+                    (plist-get attachment :path))))
+        (and (stringp path)
+             (equal (downcase (or (file-name-extension path) "")) "mp4")))))
+
+(defun chirp-backend--validate-attachments (attachments)
+  "Signal an error when ATTACHMENTS cannot be sent together."
+  (unless (and (listp attachments) (<= (length attachments) 4))
+    (error "Compose attachments must contain at most four files"))
+  (when (and (cl-some #'chirp-backend--video-attachment-p attachments)
+             (> (length attachments) 1))
+    (error "A video cannot be mixed with other attachments"))
+  (dolist (attachment attachments)
+    (let* ((spec (chirp-backend--attachment-spec attachment))
+           (description (plist-get spec :description)))
+      (when (and (stringp description)
+                 (> (length (string-trim description))
+                    chirp-x--media-alt-text-limit))
+        (error "Alt text cannot exceed %d characters"
+               chirp-x--media-alt-text-limit)))))
+
+(defun chirp-backend--validate-compose-item (item)
+  "Signal an error when ITEM is not a sendable compose item."
+  (let ((text (plist-get item :text))
+        (attachments (plist-get item :attachments)))
+    (unless (and (stringp text) (not (string-blank-p text)))
+      (error "Compose text cannot be empty"))
+    (chirp-backend--validate-attachments attachments)))
+
+(defun chirp-backend--validate-unsent (kind target-id items existing-id)
+  "Validate KIND, TARGET-ID, ITEMS, and optional EXISTING-ID."
+  (unless (memq kind '(post reply quote))
+    (error "Compose kind is invalid: %S" kind))
+  (when (memq kind '(reply quote))
+    (unless (and target-id
+                 (string-match-p "\\`[0-9]+\\'" (format "%s" target-id)))
+      (error "%s requires a numeric target tweet ID"
+             (capitalize (symbol-name kind)))))
+  (unless (and (listp items) items (cl-every #'listp items))
+    (error "Unsent items cannot be empty"))
+  (dolist (item items)
+    (chirp-backend--validate-compose-item item))
+  (when existing-id
+    (unless (string-match-p "\\`[0-9]+\\'" (format "%s" existing-id))
+      (error "Unsent post ID is invalid"))))
+
+(defun chirp-backend--unsent-media-ids (item)
+  "Return ITEM's uploaded media IDs as a JSON array."
+  (vconcat (or (plist-get item :media-ids) '())))
+
+(defun chirp-backend--unsent-thread-tweet (item)
+  "Return one thread_tweets entry for uploaded ITEM."
+  `(("status" . ,(plist-get item :text))
+    ("media_ids" . ,(chirp-backend--unsent-media-ids item))))
+
+(defun chirp-backend--post-tweet-request (kind target-id items)
+  "Build a draft or scheduled post_tweet_request for KIND.
+
+TARGET-ID is the reply or quote tweet.  ITEMS are uploaded compose items."
+  (let* ((root (car items))
+         (target (and target-id (format "%s" target-id)))
+         (request
+          `(("status" . ,(plist-get root :text))
+            ("media_ids" . ,(chirp-backend--unsent-media-ids root))
+            ("exclude_reply_user_ids" . [])
+            ("auto_populate_reply_metadata"
+             . ,(if (eq kind 'reply) t :json-false))
+            ("thread_tweets"
+             . ,(vconcat (mapcar #'chirp-backend--unsent-thread-tweet
+                                 (cdr items)))))))
+    (pcase kind
+      ('reply
+       (push `("in_reply_to_status_id" . ,target) request))
+      ('quote
+       (push `("attachment_url"
+               . ,(format "https://x.com/i/status/%s" target))
+             request)))
+    request))
+
+(cl-defun chirp-backend--upload-unsent-items
+    (items callback errback &key done progress owner)
+  "Upload ITEMS sequentially and call CALLBACK with media IDs filled in.
+
+ERRBACK receives the first failure.  DONE carries recursive state.
+PROGRESS and OWNER are forwarded to each item upload."
+  (if (null items)
+      (funcall callback (nreverse done))
+    (let ((item (car items)))
+      (chirp-backend--upload-compose-media
+       (or (plist-get item :attachments) '())
+       (lambda (media-ids)
+         (chirp-backend--upload-unsent-items
+          (cdr items) callback errback
+          :done (cons (list :text (plist-get item :text)
+                            :media-ids media-ids)
+                      done)
+          :progress progress
+          :owner owner))
+       errback
+       :progress progress
+       :owner owner))))
+
+(defun chirp-backend--unsent-id (payload)
+  "Return a draft or scheduled identifier from PAYLOAD, or nil."
+  (cl-loop for path in '(("data" "tweet" "rest_id")
+                         ("data" "create_draft_tweet" "tweet" "rest_id")
+                         ("data" "create_scheduled_tweet" "tweet" "rest_id")
+                         ("data" "edit_draft_tweet" "tweet" "rest_id")
+                         ("data" "edit_scheduled_tweet" "tweet" "rest_id"))
+           for identifier = (chirp-get-in payload path)
+           when (and identifier
+                     (not (string-empty-p (format "%s" identifier))))
+           return (format "%s" identifier)))
+
+(cl-defun chirp-backend--submit-unsent
+    (kind target-id items existing-id execute-at callback errback
+          &key progress owner)
+  "Upload ITEMS and create or edit one X unsent post.
+
+KIND and TARGET-ID describe the root item.  EXISTING-ID selects edit
+operations.  EXECUTE-AT is a Unix timestamp in seconds, or nil for a
+draft.  PROGRESS and OWNER are forwarded to upload and the GraphQL write."
+  (chirp-backend--validate-unsent kind target-id items existing-id)
+  (when execute-at
+    (unless (and (integerp execute-at) (> execute-at 0))
+      (error "Schedule time is invalid")))
+  (let ((existing (and existing-id (format "%s" existing-id))))
+    (chirp-backend--upload-unsent-items
+     items
+     (lambda (uploaded)
+       (when (functionp progress)
+         (funcall progress (list :phase 'publish)))
+       (let* ((scheduled-p (not (null execute-at)))
+              (operation-key
+               (cond
+                ((and scheduled-p existing) 'edit-scheduled-tweet)
+                (scheduled-p 'create-scheduled-tweet)
+                (existing 'edit-draft-tweet)
+                (t 'create-draft-tweet)))
+              (variables
+               (append
+                `(("post_tweet_request"
+                   . ,(chirp-backend--post-tweet-request
+                       kind (and target-id (format "%s" target-id))
+                       uploaded)))
+                (when existing
+                  (if scheduled-p
+                      `(("scheduled_tweet_id" . ,existing))
+                    `(("draft_tweet_id" . ,existing))))
+                (when scheduled-p
+                  `(("execute_at" . ,execute-at))))))
+         (chirp-x-graphql-request
+          (chirp-backend--operation operation-key)
+          variables
+          (lambda (payload)
+            (if-let* ((identifier
+                       (or (chirp-backend--unsent-id payload) existing)))
+                (funcall callback (list :id identifier) payload)
+              (funcall
+               errback
+               (format "X did not return a %s ID (%s)"
+                       (if scheduled-p "scheduled tweet" "draft")
+                       (plist-get (chirp-backend--operation operation-key)
+                                  :name)))))
+          :errback errback
+          :owner owner)))
+     errback
+     :progress progress
+     :owner owner)))
+
+(cl-defun chirp-backend-save-draft
+    (&key kind target-id items draft-id callback errback progress owner)
+  "Save ITEMS as an X server draft.
+
+KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
+quotes.  ITEMS are plists with `:text' and optional `:attachments'.
+DRAFT-ID selects EditDraftTweet when non-nil.  CALLBACK receives a plist
+containing the draft ID and the raw GraphQL envelope.  ERRBACK receives
+upload or save failures.  PROGRESS and OWNER are forwarded to upload and
+the save request.  Save mutations are never retried automatically."
+  (unless (functionp callback)
+    (error "Draft callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "Draft error callback is not callable"))
+    (condition-case err
+        (chirp-backend--submit-unsent
+         kind target-id items draft-id nil callback error-fn
+         :progress progress :owner owner)
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(cl-defun chirp-backend-schedule
+    (&key kind target-id items scheduled-id execute-at callback errback
+          progress owner)
+  "Schedule ITEMS for publication at EXECUTE-AT.
+
+EXECUTE-AT is a Unix timestamp in seconds.  SCHEDULED-ID selects
+EditScheduledTweet when non-nil.  KIND, TARGET-ID, ITEMS, CALLBACK, and
+ERRBACK match `chirp-backend-save-draft'."
+  (unless (functionp callback)
+    (error "Schedule callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "Schedule error callback is not callable"))
+    (condition-case err
+        (progn
+          (unless execute-at
+            (error "Schedule time is invalid"))
+          (chirp-backend--submit-unsent
+           kind target-id items scheduled-id execute-at callback error-fn
+           :progress progress :owner owner))
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(defun chirp-backend--json-list (value)
+  "Return VALUE as a list when it is a JSON array."
+  (cond
+   ((vectorp value) (append value nil))
+   ((listp value) value)
+   (t nil)))
+
+(defun chirp-backend--unix-seconds (value)
+  "Return VALUE as a Unix timestamp in seconds, or nil.
+
+X stores some scheduled times in milliseconds.  Values larger than a
+Unix second in year 5138 are treated as milliseconds."
+  (let ((number
+         (cond
+          ((integerp value) value)
+          ((floatp value) (truncate value))
+          ((and (stringp value) (string-match-p "\\`[0-9]+\\'" value))
+           (string-to-number value)))))
+    (cond
+     ((null number) nil)
+     ((> number 100000000000) (/ number 1000))
+     (t number))))
+
+(defun chirp-backend--quote-status-id (url)
+  "Return the tweet ID embedded in quote URL, or nil."
+  (and (stringp url)
+       (string-match "/status/\\([0-9]+\\)" url)
+       (match-string 1 url)))
+
+(defun chirp-backend--media-id-list (value)
+  "Return VALUE as a list of numeric media ID strings."
+  (delq nil
+        (mapcar #'chirp-backend--media-id
+                (if (and (stringp value)
+                         (string-match-p "\\`[0-9]+\\'" value))
+                    (list value)
+                  (chirp-backend--json-list value)))))
+
+(defun chirp-backend--unsent-media-count (request)
+  "Return the number of media IDs stored on REQUEST."
+  (let ((count (length (chirp-backend--media-id-list
+                        (chirp-get request "media_ids")))))
+    (dolist (item (chirp-backend--json-list
+                   (chirp-get request "thread_tweets"))
+                  count)
+      (setq count
+            (+ count (length (chirp-backend--media-id-list
+                              (chirp-get item "media_ids"))))))))
+
+(defun chirp-backend--unsent-media-entity (entity)
+  "Normalize one FetchDraftTweets media ENTITY, or return nil."
+  (let* ((info (or (chirp-get entity "media_info") entity))
+         (media-id
+          (or (chirp-backend--media-id
+               (chirp-get entity "media_id" "id" "id_str"))
+              (let ((key (chirp-get entity "media_key")))
+                (and (stringp key)
+                     (string-match "\\([0-9]+\\)\\'" key)
+                     (chirp-backend--media-id (match-string 1 key))))))
+         (url (chirp-first-nonblank
+               (chirp-get info "original_img_url")
+               (chirp-get-in info '("preview_image" "original_img_url")))))
+    (when media-id
+      (list :media-id media-id
+            :type (pcase (chirp-get info "__typename")
+                    ("ApiVideo" "video")
+                    ("ApiGif" "animated_gif")
+                    (_ "photo"))
+            :preview-url url
+            :width (chirp-get info "original_img_width")
+            :height (chirp-get info "original_img_height")))))
+
+(defun chirp-backend--unsent-media-lookup (entry)
+  "Return a media-id table built from ENTRY's media_entities."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (entity (chirp-backend--json-list
+                     (chirp-get entry "media_entities")))
+      (when-let* ((media (chirp-backend--unsent-media-entity entity)))
+        (puthash (plist-get media :media-id) media table)))
+    table))
+
+(defun chirp-backend--unsent-attachments (media-ids lookup)
+  "Return compose attachments for MEDIA-IDS using LOOKUP."
+  (mapcar
+   (lambda (media-id)
+     (let ((media (gethash media-id lookup)))
+       (append (list :media-id media-id)
+               (when (plist-get media :type)
+                 (list :type (plist-get media :type)))
+               (when (plist-get media :preview-url)
+                 (list :preview-url (plist-get media :preview-url)))
+               (when (plist-get media :width)
+                 (list :width (plist-get media :width)))
+               (when (plist-get media :height)
+                 (list :height (plist-get media :height))))))
+   (chirp-backend--media-id-list media-ids)))
+
+(defun chirp-backend--unsent-items (request entry)
+  "Return compose items for REQUEST using media on ENTRY."
+  (let ((lookup (chirp-backend--unsent-media-lookup entry)))
+    (cons (list :text (or (chirp-get request "status") "")
+                :attachments
+                (chirp-backend--unsent-attachments
+                 (chirp-get request "media_ids") lookup))
+          (mapcar
+           (lambda (item)
+             (list :text (or (chirp-get item "status") "")
+                   :attachments
+                   (chirp-backend--unsent-attachments
+                    (chirp-get item "media_ids") lookup)))
+           (chirp-backend--json-list
+            (chirp-get request "thread_tweets"))))))
+
+(defun chirp-backend--unsent-request (entry)
+  "Return the stored create request on unsent ENTRY."
+  (or (chirp-get entry "tweet_create_request")
+      (chirp-get entry "post_tweet_request")
+      entry))
+
+(defun chirp-backend--normalize-unsent-entry (kind entry)
+  "Normalize unsent ENTRY of KIND into a plist, or return nil."
+  (when-let* ((request (chirp-backend--unsent-request entry))
+              (id (chirp-first-nonblank
+                   (format "%s" (or (chirp-get entry "rest_id")
+                                    (chirp-get entry "id")
+                                    "")))))
+    (when (string-match-p "\\`[0-9]+\\'" id)
+      (let* ((reply-id (chirp-first-nonblank
+                        (chirp-get request "in_reply_to_status_id")))
+             (quote-url (chirp-first-nonblank
+                         (chirp-get request "attachment_url")))
+             (quote-id (chirp-backend--quote-status-id quote-url))
+             (execute-at
+              (chirp-backend--unix-seconds
+               (or (chirp-get entry "execute_at" "scheduled_at")
+                   (chirp-get (chirp-get entry "scheduling_info")
+                              "execute_at" "scheduled_at"))))
+             (items (chirp-backend--unsent-items request entry)))
+        (list :id id
+              :kind kind
+              :compose-kind (cond
+                             (reply-id 'reply)
+                             (quote-id 'quote)
+                             (t 'post))
+              :target-id (or reply-id quote-id)
+              :target-url quote-url
+              :items items
+              :texts (mapcar (lambda (item)
+                               (plist-get item :text))
+                             items)
+              :media-count (chirp-backend--unsent-media-count request)
+              :execute-at execute-at)))))
+
+(defun chirp-backend--unsent-raw-entries (kind payload)
+  "Return raw unsent objects of KIND from PAYLOAD."
+  (pcase kind
+    ('scheduled
+     (let ((list (chirp-get-in
+                  payload '("data" "viewer" "scheduled_tweet_list"))))
+       (or (chirp-backend--json-list list)
+           (chirp-backend--json-list (chirp-get list "response_data"))
+           (chirp-backend--json-list (chirp-get list "items")))))
+    ('draft
+     (chirp-backend--json-list
+      (chirp-get-in
+       payload '("data" "viewer" "draft_list" "response_data"))))
+    (_ (error "Unsent kind is invalid: %S" kind))))
+
+(defun chirp-backend-fetch-unsent (kind callback &optional errback)
+  "Fetch unsent posts of KIND and call CALLBACK with normalized entries.
+
+KIND is `draft' or `scheduled'.  CALLBACK receives the entry list and the
+raw GraphQL envelope.  ERRBACK receives request failures."
+  (unless (functionp callback)
+    (error "Unsent fetch callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "Unsent fetch error callback is not callable"))
+    (condition-case err
+        (let ((operation
+               (pcase kind
+                 ('draft 'fetch-draft-tweets)
+                 ('scheduled 'fetch-scheduled-tweets)
+                 (_ (error "Unsent kind is invalid: %S" kind))))
+              (variables
+               (pcase kind
+                 ('scheduled '(("ascending" . t)))
+                 (_ '(("ascending" . :json-false))))))
+          (chirp-x-graphql-request
+           (chirp-backend--operation operation)
+           variables
+           (lambda (payload)
+             (funcall
+              callback
+              (delq nil
+                    (mapcar (lambda (entry)
+                              (chirp-backend--normalize-unsent-entry
+                               kind entry))
+                            (chirp-backend--unsent-raw-entries kind payload)))
+              payload))
+           :errback error-fn))
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(defun chirp-backend-delete-unsent (kind id callback &optional errback)
+  "Delete unsent post ID of KIND and call CALLBACK.
+
+KIND is `draft' or `scheduled'.  CALLBACK receives the raw GraphQL
+envelope.  ERRBACK receives request failures.  Deletes are never retried
+automatically."
+  (unless (functionp callback)
+    (error "Unsent delete callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "Unsent delete error callback is not callable"))
+    (condition-case err
+        (progn
+          (unless (and (stringp id)
+                       (string-match-p "\\`[0-9]+\\'" id))
+            (error "Unsent post ID is invalid"))
+          (let ((operation
+                 (pcase kind
+                   ('draft 'delete-draft-tweet)
+                   ('scheduled 'delete-scheduled-tweet)
+                   (_ (error "Unsent kind is invalid: %S" kind))))
+                (key (if (eq kind 'scheduled)
+                         "scheduled_tweet_id"
+                       "draft_tweet_id")))
+            (chirp-x-graphql-request
+             (chirp-backend--operation operation)
+             `((,key . ,id))
+             (lambda (payload)
+               (funcall callback payload nil))
+             :errback error-fn)))
       (error
        (funcall error-fn (error-message-string err))
        nil))))
