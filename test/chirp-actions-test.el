@@ -20,12 +20,15 @@
       (setq-local chirp-compose-source-buffer source)
       (setq-local chirp-compose-items (list (list :attachments nil)))
       (setq-local chirp-compose-temp-attachments nil)
-      (setq-local chirp-compose-sending nil)
+      (setq-local chirp-compose-draft-id nil)
+      (setq-local chirp-compose-scheduled-id nil)
+      (setq-local chirp-compose-execute-at nil)
       (setq-local chirp-compose-unknown-outcome nil)
       (setq-local chirp-compose-reply-audience 'everyone)
       (erase-buffer)
       (insert body)
       (appkit-compose-setup
+       :app (chirp-app)
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
        :parts-function #'chirp-compose--parts
@@ -57,12 +60,41 @@ Return a list of (compose source foreign)."
           (setq-local chirp-compose-items
                       (list (list :attachments '("/tmp/photo.png"))))
           (appkit-compose-refresh)
-          (should (string-match-p "Audience: Everyone" (buffer-string)))
-          (should (string-match-p "Media: 1/4" (buffer-string))))
+          (should (string-match-p "Audience: Everyone"
+                                  (appkit-compose-display-string)))
+          (should (string-match-p "Length: 5/280"
+                                  (appkit-compose-display-string)))
+          (should (string-match-p "Media: 1/4"
+                                  (appkit-compose-display-string))))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
         (kill-buffer source)))))
+
+(ert-deftest chirp-compose-attach-video-uses-the-video-slot ()
+  "An MP4 should occupy the single video slot and refuse extra media."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (let ((video (make-temp-file "chirp-compose-video-" nil ".mp4"))
+          (photo (make-temp-file "chirp-compose-photo-" nil ".png")))
+      (unwind-protect
+          (progn
+            (write-region "mp4" nil video nil 'silent)
+            (write-region "png" nil photo nil 'silent)
+            (with-current-buffer compose
+              (chirp-compose-attach-image video)
+              (should (string-match-p "Media: 1 video"
+                                      (appkit-compose-display-string)))
+              (should (chirp-compose--video-attachment-p
+                       (car (chirp-compose--item-attachments))))
+              (should-error (chirp-compose-attach-image photo)
+                            :type 'user-error)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))
+        (delete-file video)
+        (delete-file photo)))))
 
 (ert-deftest chirp-compose-reply-omits-reply-audience-field ()
   "Reply drafts should not expose a reply-audience status field."
@@ -73,7 +105,8 @@ Return a list of (compose source foreign)."
           (setq-local chirp-compose-kind 'reply)
           (setq-local chirp-compose-reply-audience nil)
           (appkit-compose-refresh)
-          (should-not (string-match-p "Audience:" (buffer-string)))
+          (should-not (string-match-p "Audience:"
+                                      (appkit-compose-display-string)))
           (should-not (plist-member (chirp-compose--draft) :reply-audience)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
@@ -88,8 +121,8 @@ Return a list of (compose source foreign)."
         (with-current-buffer compose
           (chirp-compose-add-post)
           (should (= (length chirp-compose-items) 2))
-          (should (string-match-p "Posts: 2" (buffer-string)))
-          (should (string-match-p "Post 1/2" (buffer-string)))
+          (should (string-match-p "Posts: 2" (appkit-compose-display-string)))
+          (should (string-match-p "Post 1/2" (appkit-compose-display-string)))
           (insert "second")
           (let ((items (plist-get (chirp-compose--draft) :items)))
             (should (equal (mapcar (lambda (item) (plist-get item :text))
@@ -122,6 +155,94 @@ Return a list of (compose source foreign)."
       (when (buffer-live-p source)
         (kill-buffer source)))))
 
+(ert-deftest chirp-compose-save-keeps-buffer-and-draft-id ()
+  "Saving should keep the compose buffer and remember the X draft ID."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (let (requests)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-save-draft)
+                     (lambda (&rest draft)
+                       (push draft requests)
+                       (funcall (plist-get draft :callback)
+                                (list :id "2087") nil))))
+            (with-current-buffer compose
+              (chirp-compose-save)
+              (should (buffer-live-p compose))
+              (should-not (appkit-compose-submitting-p))
+              (should (equal chirp-compose-draft-id "2087"))
+              (should-not buffer-read-only)
+              (chirp-compose-save))
+            (setq requests (nreverse requests))
+            (should (= (length requests) 2))
+            (should (eq (plist-get (car requests) :kind) 'post))
+            (should (equal (plist-get (car (plist-get (car requests) :items))
+                                      :text)
+                           "hello"))
+            (should-not (plist-get (car requests) :draft-id))
+            (should (equal (plist-get (cadr requests) :draft-id) "2087")))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-save-posts-a-thread-as-one-draft ()
+  "A multi-part save should send every item in one draft request."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "first")))
+    (let (captured)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-save-draft)
+                     (lambda (&rest draft)
+                       (setq captured draft)
+                       (funcall (plist-get draft :callback)
+                                (list :id "1") nil))))
+            (with-current-buffer compose
+              (chirp-compose-add-post)
+              (insert "second")
+              (chirp-compose-save))
+            (let ((items (plist-get captured :items)))
+              (should (= (length items) 2))
+              (should (equal (plist-get (car items) :text) "first"))
+              (should (equal (plist-get (cadr items) :text) "second")))
+            (should (buffer-live-p compose)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-schedule-closes-after-success ()
+  "Scheduling should submit one request and close the compose buffer."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "later")))
+    (let (captured)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-backend-schedule)
+                     (lambda (&rest draft)
+                       (setq captured draft)
+                       (funcall (plist-get draft :callback)
+                                (list :id "9") nil))))
+            (with-current-buffer compose
+              (chirp-compose-schedule 1786700000))
+            (should (eq (plist-get captured :kind) 'post))
+            (should (equal (plist-get captured :execute-at) 1786700000))
+            (should (equal (plist-get (car (plist-get captured :items)) :text)
+                           "later"))
+            (should-not (buffer-live-p compose)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-read-schedule-time-parses-local-time ()
+  "The schedule prompt should parse a local time as Unix seconds."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "2026-12-01 09:30"))
+            ((symbol-function 'current-time)
+             (lambda () (encode-time 0 0 0 1 1 2026))))
+    (should (equal (chirp-compose--read-schedule-time)
+                   (time-convert (encode-time 0 30 9 1 12 2026) 'integer)))))
+
 (ert-deftest chirp-compose-send-posts-a-thread-in-order ()
   "Sending a multi-part draft should create the root then reply to it."
   (pcase-let ((`(,compose . ,source)
@@ -151,6 +272,95 @@ Return a list of (compose source foreign)."
         (when (buffer-live-p source)
           (kill-buffer source))))))
 
+(ert-deftest chirp-compose-length-field-marks-long-form ()
+  "Weighted length over 280 should be labeled as long-form."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer (make-string 141 ?你))))
+    (unwind-protect
+        (with-current-buffer compose
+          (appkit-compose-refresh)
+          (should (string-match-p "Length: 282 long"
+                                  (appkit-compose-display-string))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-describe-image-updates-attachment ()
+  "Editing alt text should update the current attachment and status row."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (let ((path (expand-file-name "/tmp/photo.png")))
+      (unwind-protect
+          (with-current-buffer compose
+            (chirp-compose--set-current-item
+             (list :attachments (list (list :path path))))
+            (cl-letf (((symbol-function 'read-string)
+                       (lambda (_prompt &optional _initial)
+                         "a black cat")))
+              (chirp-compose-describe-image path))
+            (should (string-match-p "Alt: a black cat"
+                                    (appkit-compose-display-string)))
+            (should (equal (chirp-compose--attachment-description
+                            (car (chirp-compose--item-attachments)))
+                           "a black cat")))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
+(ert-deftest chirp-compose-describe-image-keeps-media-id ()
+  "Alt text edits should not drop a restored X media ID."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (unwind-protect
+        (with-current-buffer compose
+          (setq-local chirp-compose-items
+                      (list (list :attachments
+                                  (list (list :media-id "2087"
+                                              :preview-url
+                                              "https://pbs.twimg.com/media/x.jpg")))))
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (_prompt &optional _initial)
+                       "restored cat")))
+            (chirp-compose-describe-image "2087"))
+          (let ((attachment (car (chirp-compose--item-attachments))))
+            (should (equal (plist-get attachment :media-id) "2087"))
+            (should (equal (plist-get attachment :preview-url)
+                           "https://pbs.twimg.com/media/x.jpg"))
+            (should (equal (plist-get attachment :description)
+                           "restored cat"))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-send-deletes-the-x-draft ()
+  "Publishing a restored draft should delete that X draft afterwards."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (let (deleted)
+      (unwind-protect
+          (progn
+            (with-current-buffer compose
+              (setq-local chirp-compose-draft-id "2087"))
+            (cl-letf (((symbol-function 'chirp-backend-compose)
+                       (lambda (&rest draft)
+                         (funcall (plist-get draft :callback)
+                                  (list :id "1") nil)))
+                      ((symbol-function 'chirp-backend-delete-unsent)
+                       (lambda (kind id callback &optional _errback)
+                         (setq deleted (list kind id))
+                         (funcall callback nil nil))))
+              (with-current-buffer compose
+                (chirp-compose-send)))
+            (should (equal deleted '(draft "2087")))
+            (should-not (buffer-live-p compose)))
+        (when (buffer-live-p compose)
+          (kill-buffer compose))
+        (when (buffer-live-p source)
+          (kill-buffer source))))))
+
 (ert-deftest chirp-compose-set-reply-audience-updates-draft ()
   "Choosing a reply audience should update the draft and status field."
   (pcase-let ((`(,compose . ,source)
@@ -159,7 +369,8 @@ Return a list of (compose source foreign)."
         (with-current-buffer compose
           (chirp-compose-set-reply-audience 'community)
           (should (eq chirp-compose-reply-audience 'community))
-          (should (string-match-p "Audience: People you follow" (buffer-string)))
+          (should (string-match-p "Audience: People you follow"
+                                  (appkit-compose-display-string)))
           (should (eq (plist-get (chirp-compose--draft) :reply-audience)
                       'community)))
       (when (buffer-live-p compose)
@@ -229,7 +440,7 @@ Return a list of (compose source foreign)."
                          (setq captured-draft draft))))
               (with-current-buffer compose
                 (chirp-compose-send)
-                (should chirp-compose-sending)
+                (should (appkit-compose-submitting-p))
                 (should buffer-read-only))
               (should (buffer-live-p compose))
               (should (eq (plist-get captured-draft :kind) 'post))
@@ -312,10 +523,10 @@ Return a list of (compose source foreign)."
                          (setq reported message))))
               (with-current-buffer compose
                 (chirp-compose-send)
-                (should chirp-compose-sending)
+                (should (appkit-compose-submitting-p))
                 (funcall error-callback "upload failed")
                 (should (buffer-live-p compose))
-                (should-not chirp-compose-sending)
+                (should-not (appkit-compose-submitting-p))
                 (should-not chirp-compose-unknown-outcome)
                 (should-not buffer-read-only)
                 (should (member temp-file chirp-compose-temp-attachments))
@@ -332,8 +543,7 @@ Return a list of (compose source foreign)."
   "Stopping during media processing should keep the draft and warn."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "stopped photo post")))
-    (let ((chirp--app nil)
-          (temp-file (make-temp-file "chirp-compose-test-" nil ".png"))
+    (let ((temp-file (make-temp-file "chirp-compose-test-" nil ".png"))
           (request-count 0)
           reported)
       (unwind-protect
@@ -362,7 +572,7 @@ Return a list of (compose source foreign)."
               (chirp-stop)
               (should (buffer-live-p compose))
               (with-current-buffer compose
-                (should-not chirp-compose-sending)
+                (should-not (appkit-compose-submitting-p))
                 (should chirp-compose-unknown-outcome)
                 (should (member temp-file chirp-compose-temp-attachments)))
               (should (file-exists-p temp-file))
@@ -440,15 +650,44 @@ Return a list of (compose source foreign)."
         (when (buffer-live-p source)
           (kill-buffer source))))))
 
-(ert-deftest chirp-compose-cancel-rejects-in-flight-send ()
-  "Cancel should refuse while a draft is already sending."
+(ert-deftest chirp-compose-upload-progress-updates-status ()
+  "Upload progress events should appear in the compose status strip."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "video post")))
+    (unwind-protect
+        (with-current-buffer compose
+          (chirp-compose--begin-submit "Sending post...")
+          (chirp-compose--upload-progress
+           compose
+           (list :phase 'append
+                 :media-type "video/mp4"
+                 :index 2
+                 :count 4
+                 :progress 0.25))
+          (should (string-match-p "Uploading video 2/4"
+                                  (appkit-compose-display-string)))
+          (should (string-match-p "25%" (appkit-compose-display-string)))
+          (appkit-compose-finish-submit)
+          (setq-local buffer-read-only nil))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest chirp-compose-cancel-requests-in-flight-submit ()
+  "Cancel should abort an in-flight submit and keep the draft."
   (pcase-let ((`(,compose . ,source)
                (chirp-test--make-compose-buffer "in flight")))
     (unwind-protect
         (with-current-buffer compose
-          (setq-local chirp-compose-sending t)
-          (should-error (chirp-compose-cancel) :type 'user-error)
-          (should (buffer-live-p compose)))
+          (cl-letf (((symbol-function 'chirp-backend-compose)
+                     (lambda (&rest _args) 'pending)))
+            (chirp-compose-send)
+            (should (appkit-compose-submitting-p))
+            (chirp-compose-cancel)
+            (should (buffer-live-p compose))
+            (should-not (appkit-compose-submitting-p))
+            (should-not buffer-read-only)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -465,9 +704,9 @@ Return a list of (compose source foreign)."
                        (lambda (&rest _args)
                          (setq request-count (1+ request-count)))))
               (with-current-buffer compose
-                (setq-local chirp-compose-sending t)
+                (chirp-compose-send)
                 (should-error (chirp-compose-send) :type 'user-error)))
-            (should (= request-count 0)))
+            (should (= request-count 1)))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -496,7 +735,7 @@ Return a list of (compose source foreign)."
                 (should (string-prefix-p (file-name-as-directory temp-root)
                                          pasted-path))
                 (should (member pasted-path
-                                (chirp-compose--item-attachments)))
+                                (chirp-compose--attachment-paths)))
                 (should (member pasted-path chirp-compose-temp-attachments)))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
@@ -658,7 +897,6 @@ Return a list of (compose source foreign)."
               (setq-local chirp-compose-source-buffer source)
               (setq-local chirp-compose-items (list (list :attachments nil)))
               (setq-local chirp-compose-temp-attachments nil)
-              (setq-local chirp-compose-sending nil)
               (setq-local chirp-compose-unknown-outcome nil)
               (setq-local chirp-compose-reply-audience 'everyone)
               (erase-buffer)

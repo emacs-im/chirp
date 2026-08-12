@@ -103,8 +103,19 @@
   "Stop Chirp's runtime and cancel its owned asynchronous work."
   (interactive)
   (unwind-protect
-      (when (appkit-app-live-p chirp--app)
-        (appkit-stop-app chirp--app))
+      (progn
+        (dolist (buffer (buffer-list))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when (and (derived-mode-p 'appkit-compose-mode)
+                         (fboundp 'appkit-compose-submitting-p)
+                         (appkit-compose-submitting-p))
+                (ignore-errors (appkit-compose-cancel-submit))
+                (when (fboundp 'appkit-compose-finish-submit)
+                  (appkit-compose-finish-submit))
+                (setq-local buffer-read-only nil)))))
+        (when (appkit-app-live-p chirp--app)
+          (appkit-stop-app chirp--app)))
     (setq chirp--app nil)))
 
 (defcustom chirp-buffer-name "*chirp*"

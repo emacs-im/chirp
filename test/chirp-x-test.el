@@ -1235,6 +1235,61 @@
       (when (file-exists-p file)
         (delete-file file)))))
 
+(ert-deftest chirp-x-upload-media-reports-chunk-progress ()
+  "Chunked video uploads should report APPEND index and 0-1 progress."
+  (let ((file (make-temp-file "chirp-x-upload-" nil ".mp4"))
+        events
+        failure)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert (make-string (+ chirp-x--upload-chunk-size 16) ?x))
+            (write-region (point-min) (point-max) file nil 'silent))
+          (cl-letf (((symbol-function 'chirp-x-credentials)
+                     (lambda ()
+                       '(:auth-token "auth" :ct0 "csrf"
+                         :bearer-token "bearer")))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_delay _repeat function &rest args)
+                       (apply function args)
+                       'timer))
+                    ((symbol-function 'chirp-x--retrieve)
+                     (lambda (_url callback _callback-args _silent
+                              _inhibit-cookies)
+                       (cond
+                        ((string-prefix-p "command=INIT" url-request-data)
+                         (chirp-x-test--response
+                          200 "{\"media_id_string\":\"44\"}" callback))
+                        ((string-prefix-p "command=FINALIZE" url-request-data)
+                         (chirp-x-test--response
+                          200 "{\"processing_info\":{\"state\":\"succeeded\"}}"
+                          callback))
+                        (t (chirp-x-test--response 204 "" callback))))))
+            (chirp-x-upload-media
+             file #'ignore
+             :progress (lambda (event)
+                         (push event events))
+             :errback (lambda (message)
+                        (setq failure message))))
+          (setq events (nreverse events))
+          (should-not failure)
+          (should (eq (plist-get (car events) :phase) 'init))
+          (should (equal (plist-get (car events) :media-type) "video/mp4"))
+          (let ((appends (cl-remove-if-not
+                          (lambda (event)
+                            (eq (plist-get event :phase) 'append))
+                          events)))
+            (should (= (length appends) 2))
+            (should (equal (plist-get (car appends) :index) 1))
+            (should (equal (plist-get (car appends) :count) 2))
+            (should (= (plist-get (car appends) :progress) 0.0))
+            (should (equal (plist-get (cadr appends) :index) 2))
+            (should (= (plist-get (cadr appends) :progress) 0.5)))
+          (should (eq (plist-get (car (last events)) :phase) 'finalize)))
+      (when (file-exists-p file)
+        (delete-file file)))))
+
 (ert-deftest chirp-x-upload-media-does-not-retry-a-failed-init ()
   "An INIT failure should be surfaced after exactly one mutation request."
   (let ((file (make-temp-file "chirp-x-upload-" nil ".png"))
@@ -1324,11 +1379,13 @@
                         (setq failure message))))
           (setq app chirp--app)
           (should (appkit-app-live-p app))
-          (should (= (length (appkit-app-handles app)) 1))
+          (should (= (length (appkit-app-handles app)) 2))
           (setq timer
-                (plist-get
-                 (appkit-handle-object (car (appkit-app-handles app)))
-                 :timer))
+                (cl-loop for handle in (appkit-app-handles app)
+                         for object = (appkit-handle-object handle)
+                         when (and (listp object)
+                                   (timerp (plist-get object :timer)))
+                         return (plist-get object :timer)))
           (should (timerp timer))
           (chirp-stop)
           (should-not chirp--app)
@@ -1389,15 +1446,40 @@
                       (setq failure message))))
       (delete-file file))
     (should-not authenticated)
-    (should (string-match-p "Unsupported image format" failure))))
+    (should (string-match-p "Unsupported media format" failure))))
 
 (ert-deftest chirp-x-upload-gif-splits-large-media-into-one-mebibyte-segments ()
   "Large GIF payloads should be divided into consecutive APPEND segments."
-  (let* ((bytes (make-string (1+ chirp-x--upload-chunk-size) ?x))
-         (segments (chirp-x--upload-segments bytes "image/gif")))
-    (should (= (length segments) 2))
-    (should (= (length (car segments)) chirp-x--upload-chunk-size))
-    (should (= (length (cadr segments)) 1))))
+  (let ((plan (chirp-x--upload-segment-plan
+               (1+ chirp-x--upload-chunk-size) "image/gif")))
+    (should (equal plan
+                   (list (cons 0 chirp-x--upload-chunk-size)
+                         (cons chirp-x--upload-chunk-size 1))))))
+
+(ert-deftest chirp-x-upload-video-uses-tweet-video-category ()
+  "MP4 INIT should declare tweet_video and keep the file chunked."
+  (let ((file (make-temp-file "chirp-x-upload-" nil ".mp4"))
+        init-data)
+    (unwind-protect
+        (progn
+          (write-region "mp4" nil file nil 'silent)
+          (cl-letf (((symbol-function 'chirp-x-credentials)
+                     (lambda ()
+                       '(:auth-token "auth" :ct0 "csrf"
+                         :bearer-token "bearer")))
+                    ((symbol-function 'chirp-x--retrieve)
+                     (lambda (_url callback _callback-args _silent
+                                   _inhibit-cookies)
+                       (when (and (stringp url-request-data)
+                                  (string-prefix-p "command=INIT"
+                                                   url-request-data))
+                         (setq init-data url-request-data))
+                       (chirp-x-test--response
+                        200 "{\"media_id_string\":\"1\"}" callback))))
+            (chirp-x-upload-media file #'ignore :errback #'ignore))
+          (should (string-match-p "media_type=video%2Fmp4" init-data))
+          (should (string-match-p "media_category=tweet_video" init-data)))
+      (delete-file file))))
 
 (provide 'chirp-x-test)
 

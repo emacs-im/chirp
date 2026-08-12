@@ -878,6 +878,40 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (vectorp
              (chirp-get variables "semantic_annotation_ids")))))
 
+(ert-deftest chirp-backend-compose-uploads-alt-text-after-media ()
+  "Image descriptions should be written after upload and before CreateTweet."
+  (let ((file (make-temp-file "chirp-backend-alt-" nil ".png"))
+        uploaded
+        described)
+    (unwind-protect
+        (progn
+          (write-region "png" nil file nil 'silent)
+          (cl-letf (((symbol-function 'chirp-x-upload-media)
+                     (lambda (path callback &rest _options)
+                       (should (equal path file))
+                       (setq uploaded t)
+                       (funcall callback "media-1")))
+                    ((symbol-function 'chirp-x-upload-media-alt-text)
+                     (lambda (media-id text callback &rest _options)
+                       (should (equal media-id "media-1"))
+                       (should (equal text "a cat"))
+                       (setq described t)
+                       (funcall callback nil)))
+                    ((symbol-function 'chirp-x-graphql-request)
+                     (lambda (_operation _variables callback &rest _options)
+                       (funcall
+                        callback
+                        (chirp-backend-test--payload-at-path
+                         '("data" "create_tweet" "tweet_results" "result")
+                         '(("rest_id" . "123")))))))
+            (chirp-backend-compose
+             :kind 'post :text "hello"
+             :attachments (list (list :path file :description "a cat"))
+             :callback #'ignore))
+          (should uploaded)
+          (should described))
+      (delete-file file))))
+
 (ert-deftest chirp-backend-compose-includes-reply-audience-for-posts ()
   "Post and quote drafts should send conversation_control for a reply audience."
   (dolist (kind '(post quote))
@@ -1033,6 +1067,153 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                   (setq failure message))))
     (should-not success)
     (should (string-match-p "did not return a created tweet ID" failure))))
+
+(defun chirp-backend-test--tweet-id-payload (id)
+  "Return a GraphQL payload whose tweet rest_id is ID."
+  (chirp-backend-test--payload-at-path
+   '("data" "tweet")
+   `(("rest_id" . ,id))))
+
+(ert-deftest chirp-backend-save-draft-builds-post-tweet-request ()
+  "Draft saves should use CreateDraftTweet and post_tweet_request."
+  (let (operation variables result)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (request-operation request-variables callback
+                        &rest _options)
+                 (setq operation request-operation
+                       variables request-variables)
+                 (funcall callback
+                          (chirp-backend-test--tweet-id-payload "7")))))
+      (chirp-backend-save-draft
+       :kind 'post
+       :items (list (list :text "Nice" :attachments nil)
+                    (list :text "Two Nices" :attachments nil))
+       :callback (lambda (created _envelope)
+                   (setq result created))))
+    (should (equal (plist-get operation :name) "CreateDraftTweet"))
+    (should (equal (plist-get result :id) "7"))
+    (let ((request (chirp-get variables "post_tweet_request")))
+      (should (equal (chirp-get request "status") "Nice"))
+      (should (equal (chirp-get request "auto_populate_reply_metadata")
+                     :json-false))
+      (should (vectorp (chirp-get request "media_ids")))
+      (should (vectorp (chirp-get request "exclude_reply_user_ids")))
+      (should (equal (chirp-get (aref (chirp-get request "thread_tweets") 0)
+                                "status")
+                     "Two Nices")))))
+
+(ert-deftest chirp-backend-save-draft-edits-an-existing-draft ()
+  "A second save should edit the stored draft ID."
+  (let (operation variables)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (request-operation request-variables callback
+                        &rest _options)
+                 (setq operation request-operation
+                       variables request-variables)
+                 (funcall callback '(("data" . nil))))))
+      (chirp-backend-save-draft
+       :kind 'post
+       :items (list (list :text "Nice" :attachments nil))
+       :draft-id "2087"
+       :callback #'ignore))
+    (should (equal (plist-get operation :name) "EditDraftTweet"))
+    (should (equal (chirp-get variables "draft_tweet_id") "2087"))))
+
+(ert-deftest chirp-backend-save-draft-includes-reply-and-quote-targets ()
+  "Draft replies and quotes should use the captured post_tweet_request fields."
+  (dolist (spec '((reply "in_reply_to_status_id" "99")
+                  (quote "attachment_url" "https://x.com/i/status/99")))
+    (let (variables)
+      (cl-letf (((symbol-function 'chirp-x-graphql-request)
+                 (lambda (_operation request-variables callback &rest _options)
+                   (setq variables request-variables)
+                   (funcall callback
+                            (chirp-backend-test--tweet-id-payload "1")))))
+        (chirp-backend-save-draft
+         :kind (car spec)
+         :target-id "99"
+         :items (list (list :text "hello" :attachments nil))
+         :callback #'ignore))
+      (should (equal (chirp-get-in variables
+                                   (list "post_tweet_request" (cadr spec)))
+                     (caddr spec)))
+      (when (eq (car spec) 'reply)
+        (should (eq (chirp-get-in
+                     variables
+                     '("post_tweet_request" "auto_populate_reply_metadata"))
+                    t))))))
+
+(ert-deftest chirp-backend-save-draft-uploads-media-ids ()
+  "Draft media should upload first and become media_ids arrays."
+  (let ((file (make-temp-file "chirp-backend-draft-" nil ".png"))
+        variables)
+    (unwind-protect
+        (progn
+          (write-region "png" nil file nil 'silent)
+          (cl-letf (((symbol-function 'chirp-x-upload-media)
+                     (lambda (path callback &rest _options)
+                       (should (equal path file))
+                       (funcall callback "media-1")))
+                    ((symbol-function 'chirp-x-graphql-request)
+                     (lambda (_operation request-variables callback
+                              &rest _options)
+                       (setq variables request-variables)
+                       (funcall callback
+                                (chirp-backend-test--tweet-id-payload "1")))))
+            (chirp-backend-save-draft
+             :kind 'post
+             :items (list (list :text "photo"
+                                :attachments (list file)))
+             :callback #'ignore))
+          (should (equal (chirp-get-in variables
+                                       '("post_tweet_request" "media_ids"))
+                         ["media-1"])))
+      (delete-file file))))
+
+(ert-deftest chirp-backend-save-draft-reuses-existing-media-ids ()
+  "Attachments that already have a media ID should not be uploaded again."
+  (let (variables uploaded)
+    (cl-letf (((symbol-function 'chirp-x-upload-media)
+               (lambda (&rest _args)
+                 (setq uploaded t)
+                 (error "Existing media should not be uploaded")))
+              ((symbol-function 'chirp-x-graphql-request)
+               (lambda (_operation request-variables callback &rest _options)
+                 (setq variables request-variables)
+                 (funcall callback
+                          (chirp-backend-test--tweet-id-payload "1")))))
+      (chirp-backend-save-draft
+       :kind 'post
+       :items (list (list :text "photo"
+                          :attachments
+                          (list (list :media-id "2087634413287100416"))))
+       :callback #'ignore))
+    (should-not uploaded)
+    (should (equal (chirp-get-in variables
+                                 '("post_tweet_request" "media_ids"))
+                   ["2087634413287100416"]))))
+
+(ert-deftest chirp-backend-schedule-sends-execute-at ()
+  "Scheduling should use CreateScheduledTweet and Unix seconds."
+  (let (operation variables result)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (request-operation request-variables callback
+                        &rest _options)
+                 (setq operation request-operation
+                       variables request-variables)
+                 (funcall callback
+                          (chirp-backend-test--tweet-id-payload "8")))))
+      (chirp-backend-schedule
+       :kind 'post
+       :items (list (list :text "later" :attachments nil))
+       :execute-at 1786700000
+       :callback (lambda (created _envelope)
+                   (setq result created))))
+    (should (equal (plist-get operation :name) "CreateScheduledTweet"))
+    (should (equal (plist-get result :id) "8"))
+    (should (equal (chirp-get variables "execute_at") 1786700000))
+    (should (equal (chirp-get-in variables '("post_tweet_request" "status"))
+                   "later"))))
 
 (ert-deftest chirp-backend-request-rejects-unknown-actions-without-a-process ()
   "Unknown legacy action names should fail instead of starting a process."

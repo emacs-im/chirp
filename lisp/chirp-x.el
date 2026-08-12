@@ -39,8 +39,12 @@
 (defconst chirp-x--rest-base-urls
   '((web . "https://x.com/i/api/")
     (legacy . "https://api.x.com/1.1/")
-    (upload . "https://upload.twitter.com/i/media/"))
+    (upload . "https://upload.twitter.com/i/media/")
+    (upload-legacy . "https://upload.twitter.com/1.1/"))
   "Trusted X web API roots that may receive session credentials.")
+
+(defconst chirp-x--media-alt-text-limit 1000
+  "Maximum number of characters accepted in uploaded image alt text.")
 
 (defconst chirp-x--upload-chunk-size (* 1024 1024)
   "Number of bytes in one chunked media APPEND request.")
@@ -51,8 +55,14 @@
 (defconst chirp-x--upload-gif-limit (* 15 1024 1024)
   "Maximum accepted GIF upload size in bytes.")
 
+(defconst chirp-x--upload-video-limit (* 512 1024 1024)
+  "Maximum accepted MP4 upload size in bytes.")
+
 (defconst chirp-x--upload-status-limit 20
   "Maximum number of media processing status checks.")
+
+(defconst chirp-x--upload-video-status-limit 40
+  "Maximum number of video processing status checks.")
 
 (defconst chirp-x--auth-schema-version 1
   "Schema version written to Chirp's private X auth file.")
@@ -1199,25 +1209,40 @@ URL retrieval buffer when the request starts, or nil when setup fails."
     ("png" "image/png")
     ("gif" "image/gif")
     ("webp" "image/webp")
-    (_ (error "Unsupported image format: %s" file))))
+    ("mp4" "video/mp4")
+    (_ (error "Unsupported media format: %s" file))))
 
-(defun chirp-x--file-bytes (file)
-  "Return FILE contents as an unibyte string."
+(defun chirp-x--upload-media-category (media-type)
+  "Return the X media_category for MEDIA-TYPE, or nil."
+  (pcase media-type
+    ("image/gif" "tweet_gif")
+    ("video/mp4" "tweet_video")))
+
+(defun chirp-x--upload-size-limit (media-type)
+  "Return the maximum accepted byte size for MEDIA-TYPE."
+  (pcase media-type
+    ("image/gif" chirp-x--upload-gif-limit)
+    ("video/mp4" chirp-x--upload-video-limit)
+    (_ chirp-x--upload-image-limit)))
+
+(defun chirp-x--read-file-range (file start length)
+  "Return LENGTH bytes of FILE beginning at START."
   (with-temp-buffer
     (set-buffer-multibyte nil)
-    (insert-file-contents-literally file)
+    (insert-file-contents-literally file nil start (+ start length))
     (buffer-string)))
 
-(defun chirp-x--upload-segments (bytes media-type)
-  "Split BYTES into upload segments appropriate for MEDIA-TYPE."
-  (if (and (equal media-type "image/gif")
-           (> (length bytes) chirp-x--upload-chunk-size))
-      (cl-loop for start from 0 below (length bytes)
-               by chirp-x--upload-chunk-size
-               collect (substring bytes start
-                                  (min (length bytes)
-                                       (+ start chirp-x--upload-chunk-size))))
-    (list bytes)))
+(defun chirp-x--upload-segment-plan (file-size media-type)
+  "Return (START . LENGTH) segments for FILE-SIZE and MEDIA-TYPE."
+  (let ((chunked (or (equal media-type "image/gif")
+                     (equal media-type "video/mp4"))))
+    (if (and chunked (> file-size chirp-x--upload-chunk-size))
+        (cl-loop for start from 0 below file-size
+                 by chirp-x--upload-chunk-size
+                 collect (cons start
+                               (min chirp-x--upload-chunk-size
+                                    (- file-size start))))
+      (list (cons 0 file-size)))))
 
 (defun chirp-x--multipart-data (media-id segment-index bytes)
   "Return (BODY . CONTENT-TYPE) for an APPEND of BYTES.
@@ -1288,15 +1313,26 @@ MEDIA-ID identifies the upload and SEGMENT-INDEX is its zero-based part."
               ((functionp cancel)))
     (funcall cancel)))
 
-(cl-defun chirp-x-upload-media (file callback &key errback owner)
-  "Upload image FILE to X and call CALLBACK with its media ID.
+(defun chirp-x--notify-upload-progress (progress event)
+  "Call PROGRESS with EVENT when PROGRESS is callable."
+  (when (functionp progress)
+    (funcall progress event)))
+
+(cl-defun chirp-x-upload-media (file callback &key errback owner progress)
+  "Upload media FILE to X and call CALLBACK with its media ID.
 
 JPEG, PNG, and WebP files may be at most 5 MiB; GIF files may be at most 15
-MiB.  ERRBACK receives setup, upload, cancellation, or asynchronous processing
-failures.  OWNER optionally owns the complete upload lifecycle.  No upload
-mutation is retried automatically."
+MiB; MP4 files may be at most 512 MiB.  Videos use `tweet_video' and are
+uploaded in 1 MiB chunks without loading the whole file.  ERRBACK receives
+setup, upload, cancellation, or asynchronous processing failures.  OWNER
+optionally owns the complete upload lifecycle.  PROGRESS, when callable,
+receives plists with `:phase', optional `:media-type', optional `:index'
+and `:count' for APPEND, and optional `:progress' as a 0-1 float.  No
+upload mutation is retried automatically."
   (unless (functionp callback)
     (error "X media upload callback is not callable"))
+  (when (and progress (not (functionp progress)))
+    (error "X media upload progress callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
     (unless (functionp error-fn)
       (error "X media upload error callback is not callable"))
@@ -1304,131 +1340,178 @@ mutation is retried automatically."
         (progn
           (unless (and (stringp file) (file-regular-p file)
                        (file-readable-p file))
-            (error "Image file is not readable: %s" file))
+            (error "Media file is not readable: %s" file))
           (let* ((media-type (chirp-x--upload-media-type file))
                  (file-size (file-attribute-size (file-attributes file)))
-                 (size-limit (if (equal media-type "image/gif")
-                                 chirp-x--upload-gif-limit
-                               chirp-x--upload-image-limit))
-                 (bytes (chirp-x--file-bytes file))
-                 (segments (chirp-x--upload-segments bytes media-type))
+                 (size-limit (chirp-x--upload-size-limit media-type))
+                 (segments (chirp-x--upload-segment-plan file-size media-type))
+                 (segment-count (length segments))
+                 (status-limit (if (equal media-type "video/mp4")
+                                   chirp-x--upload-video-status-limit
+                                 chirp-x--upload-status-limit))
                  (upload-url
                   (chirp-x--rest-url 'upload "upload.json" nil)))
             (unless (> file-size 0)
-              (error "Image file is empty: %s" file))
+              (error "Media file is empty: %s" file))
             (when (> file-size size-limit)
-              (error "Image file exceeds the %d MiB limit: %s"
+              (error "Media file exceeds the %d MiB limit: %s"
                      (/ size-limit 1024 1024) file))
             (let* ((upload-owner (or owner (chirp-app)))
                    (cancel-message
                     (chirp-x-unknown-write-outcome
                      "X media upload was canceled before completion"))
-                   settled-p)
+                   settled-p
+                   workflow-handle)
               (cl-labels
-                  ((fail
+                  ((notify
+                     (phase &optional extra)
+                     (chirp-x--notify-upload-progress
+                      progress
+                      (append (list :phase phase :media-type media-type)
+                              extra)))
+                   (retire-workflow
+                     ()
+                     (when (and (appkit-handle-p workflow-handle)
+                                (appkit-handle-alive-p workflow-handle))
+                       (appkit-retire-handle workflow-handle)
+                       (setq workflow-handle nil)))
+                   (fail
                      (message)
                      (unless settled-p
                        (setq settled-p t)
+                       (retire-workflow)
                        (funcall error-fn message)))
                    (succeed
                      (media-id)
                      (unless settled-p
                        (setq settled-p t)
+                       (retire-workflow)
                        (funcall callback media-id)))
+                   (ensure-active
+                     ()
+                     (cond
+                      (settled-p nil)
+                      ((chirp-x--owner-live-p upload-owner) t)
+                      (t
+                       (fail cancel-message)
+                       nil)))
                    (check-status
                      (media-id attempt)
-                     (if (>= attempt chirp-x--upload-status-limit)
-                         (fail "X media processing did not finish in time")
+                     (when (ensure-active)
+                       (if (>= attempt status-limit)
+                           (fail "X media processing did not finish in time")
+                         (notify 'status (list :progress 1.0))
+                         (chirp-x--request
+                          (chirp-x--rest-url
+                           'upload "upload.json"
+                           `(("command" . "STATUS")
+                             ("media_id" . ,media-id)))
+                          'get
+                          (lambda (payload)
+                            (handle-processing media-id payload (1+ attempt)))
+                          :errback #'fail
+                          :owner upload-owner
+                          :settle-on-cancel t
+                          :cancel-message cancel-message))))
+                   (schedule-status
+                     (media-id attempt delay)
+                     (when (ensure-active)
+                       (let (fired-p handle timer)
+                         (setq timer
+                               (run-at-time
+                                delay nil
+                                (lambda ()
+                                  (setq fired-p t)
+                                  (when (appkit-handle-p handle)
+                                    (appkit-retire-handle handle))
+                                  (unless settled-p
+                                    (if (chirp-x--owner-live-p upload-owner)
+                                        (check-status media-id attempt)
+                                      (fail cancel-message))))))
+                         (unless fired-p
+                           (setq handle
+                                 (appkit-register-handle
+                                  upload-owner
+                                  'function
+                                  (list :timer timer
+                                        :cancel (lambda ()
+                                                  (fail cancel-message)))
+                                  #'chirp-x--cancel-upload-poll))))))
+                   (handle-processing
+                     (media-id payload attempt)
+                     (when (ensure-active)
+                       (if-let* ((processing-info
+                                  (chirp-get payload "processing_info")))
+                           (pcase (chirp-get processing-info "state")
+                             ("succeeded" (succeed media-id))
+                             ("failed"
+                              (fail
+                               (chirp-x--upload-processing-error
+                                processing-info)))
+                             ((or "pending" "in_progress")
+                              (let ((delay
+                                     (chirp-get processing-info
+                                                "check_after_secs")))
+                                (schedule-status
+                                 media-id attempt
+                                 (if (numberp delay)
+                                     (min 30 (max 0.1 delay))
+                                   1))))
+                             (_ (fail
+                                 "X returned an invalid media processing state")))
+                         (succeed media-id))))
+                   (finalize
+                     (media-id)
+                     (when (ensure-active)
+                       (notify 'finalize (list :progress 1.0))
                        (chirp-x--request
-                        (chirp-x--rest-url
-                         'upload "upload.json"
-                         `(("command" . "STATUS")
-                           ("media_id" . ,media-id)))
-                        'get
+                        upload-url 'post
                         (lambda (payload)
-                          (handle-processing media-id payload (1+ attempt)))
+                          (handle-processing media-id payload 0))
+                        :data (chirp-x--urlencode
+                               `(("command" . "FINALIZE")
+                                 ("media_id" . ,media-id)))
+                        :content-type "application/x-www-form-urlencoded"
                         :errback #'fail
                         :owner upload-owner
                         :settle-on-cancel t
                         :cancel-message cancel-message)))
-                   (schedule-status
-                     (media-id attempt delay)
-                     (let (fired-p handle timer)
-                       (setq timer
-                             (run-at-time
-                              delay nil
-                              (lambda ()
-                                (setq fired-p t)
-                                (when (appkit-handle-p handle)
-                                  (appkit-retire-handle handle))
-                                (unless settled-p
-                                  (if (chirp-x--owner-live-p upload-owner)
-                                      (check-status media-id attempt)
-                                    (fail cancel-message))))))
-                       (unless fired-p
-                         (setq handle
-                               (appkit-register-handle
-                                upload-owner
-                                'function
-                                (list :timer timer
-                                      :cancel (lambda ()
-                                                (fail cancel-message)))
-                                #'chirp-x--cancel-upload-poll)))))
-                   (handle-processing
-                     (media-id payload attempt)
-                     (if-let* ((processing-info
-                                (chirp-get payload "processing_info")))
-                         (pcase (chirp-get processing-info "state")
-                           ("succeeded" (succeed media-id))
-                           ("failed"
-                            (fail
-                             (chirp-x--upload-processing-error
-                              processing-info)))
-                           ((or "pending" "in_progress")
-                            (let ((delay
-                                   (chirp-get processing-info
-                                              "check_after_secs")))
-                              (schedule-status
-                               media-id attempt
-                               (if (numberp delay)
-                                   (min 30 (max 0.1 delay))
-                                 1))))
-                           (_ (fail
-                               "X returned an invalid media processing state")))
-                       (succeed media-id)))
-                   (finalize
-                     (media-id)
-                     (chirp-x--request
-                      upload-url 'post
-                      (lambda (payload)
-                        (handle-processing media-id payload 0))
-                      :data (chirp-x--urlencode
-                             `(("command" . "FINALIZE")
-                               ("media_id" . ,media-id)))
-                      :content-type "application/x-www-form-urlencoded"
-                      :errback #'fail
-                      :owner upload-owner
-                      :settle-on-cancel t
-                      :cancel-message cancel-message))
                    (append-segment
                      (media-id remaining segment-index)
-                     (if (null remaining)
-                         (finalize media-id)
-                       (pcase-let* ((`(,body . ,content-type)
-                                     (chirp-x--multipart-data
-                                      media-id segment-index (car remaining))))
-                         (chirp-x--request
-                          upload-url 'post
-                          (lambda (_payload)
-                            (append-segment media-id (cdr remaining)
-                                            (1+ segment-index)))
-                          :data body
-                          :content-type content-type
-                          :allow-empty t
-                          :errback #'fail
-                          :owner upload-owner
-                          :settle-on-cancel t
-                          :cancel-message cancel-message)))))
+                     (when (ensure-active)
+                       (if (null remaining)
+                           (finalize media-id)
+                         (notify
+                          'append
+                          (list :index (1+ segment-index)
+                                :count segment-count
+                                :progress
+                                (/ (float segment-index)
+                                   (max 1 segment-count))))
+                         (pcase-let* ((`(,start . ,length) (car remaining))
+                                      (`(,body . ,content-type)
+                                       (chirp-x--multipart-data
+                                        media-id segment-index
+                                        (chirp-x--read-file-range
+                                         file start length))))
+                           (chirp-x--request
+                            upload-url 'post
+                            (lambda (_payload)
+                              (append-segment media-id (cdr remaining)
+                                              (1+ segment-index)))
+                            :data body
+                            :content-type content-type
+                            :allow-empty t
+                            :errback #'fail
+                            :owner upload-owner
+                            :settle-on-cancel t
+                            :cancel-message cancel-message))))))
+                (setq workflow-handle
+                      (appkit-register-handle
+                       upload-owner
+                       'function
+                       (lambda () (fail cancel-message))))
+                (notify 'init (list :progress 0.0))
                 (chirp-x--request
                  upload-url 'post
                  (lambda (payload)
@@ -1440,13 +1523,59 @@ mutation is retried automatically."
                          `(("command" . "INIT")
                            ("total_bytes" . ,(number-to-string file-size))
                            ("media_type" . ,media-type))
-                         (when (equal media-type "image/gif")
-                           '(("media_category" . "tweet_gif")))))
+                         (when-let* ((category
+                                      (chirp-x--upload-media-category
+                                       media-type)))
+                           `(("media_category" . ,category)))))
                  :content-type "application/x-www-form-urlencoded"
                  :errback #'fail
                  :owner upload-owner
                  :settle-on-cancel t
                  :cancel-message cancel-message)))))
+      (chirp-x--callback-error
+       (chirp-x--resignal-callback-error err))
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(cl-defun chirp-x-upload-media-alt-text
+    (media-id text callback &key errback owner)
+  "Attach alt TEXT to uploaded MEDIA-ID and call CALLBACK.
+
+TEXT may contain at most `chirp-x--media-alt-text-limit' characters.
+ERRBACK receives setup or write failures.  OWNER optionally owns the
+request.  The metadata write is never retried automatically."
+  (unless (functionp callback)
+    (error "X media alt-text callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "X media alt-text error callback is not callable"))
+    (condition-case err
+        (progn
+          (unless (and (stringp media-id)
+                       (not (string-empty-p media-id)))
+            (error "Media ID is invalid"))
+          (unless (and (stringp text)
+                       (not (string-empty-p (string-trim text))))
+            (error "Alt text cannot be empty"))
+          (when (> (length text) chirp-x--media-alt-text-limit)
+            (error "Alt text cannot exceed %d characters"
+                   chirp-x--media-alt-text-limit))
+          (chirp-x--request
+           (chirp-x--rest-url 'upload-legacy "media/metadata/create.json" nil)
+           'post
+           callback
+           :data (chirp-x--json-encode
+                  `(("media_id" . ,media-id)
+                    ("alt_text" . (("text" . ,text)))))
+           :content-type "application/json"
+           :allow-empty t
+           :errback error-fn
+           :owner owner
+           :settle-on-cancel t
+           :cancel-message
+           (chirp-x-unknown-write-outcome
+            "X media alt text was canceled before completion")))
       (chirp-x--callback-error
        (chirp-x--resignal-callback-error err))
       (error
