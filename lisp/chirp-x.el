@@ -1102,8 +1102,10 @@ readable error string.  OWNER optionally owns the transport lifecycle."
     (operation variables callback &key errback owner retried-p)
   "Issue one persisted GraphQL attempt for OPERATION.
 
-ERRBACK receives failures.  When RETRIED-P is non-nil, do not refresh or retry
-again after another stale-query failure."
+VARIABLES are sent to X.  CALLBACK receives a decoded response.  ERRBACK
+receives failures.  OWNER optionally owns the transport lifecycle.  When
+RETRIED-P is non-nil, do not refresh or retry again after another stale-query
+failure."
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
     (condition-case err
         (let* ((variables (or variables (make-hash-table :test #'equal)))

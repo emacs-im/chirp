@@ -206,7 +206,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
     "=https"))
 
 (defun chirp-media--curl-default-args (max-bytes max-time protocols)
-  "Return bounded curl arguments for MAX-BYTES and MAX-TIME."
+  "Return bounded curl arguments for MAX-BYTES, MAX-TIME, and PROTOCOLS."
   (append
    (list "--disable" "--silent" "--fail"
          "--proto" protocols

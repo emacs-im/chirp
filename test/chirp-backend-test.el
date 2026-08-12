@@ -243,6 +243,27 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal tweets '((:id "1"))))
     (should (equal next-cursor "cursor-next"))))
 
+(ert-deftest chirp-backend-timeline-preserves-reply-control-envelope ()
+  "Timeline adaptation should retain viewer-specific reply controls."
+  (let* ((raw
+          '(("__typename" . "TweetWithVisibilityResults")
+            ("tweet" . (("rest_id" . "123")
+                        ("legacy" . (("full_text" . "Restricted")
+                                     ("conversation_control" .
+                                      (("mode" . "ByInvitation")))))))
+            ("limitedActionResults" .
+             (("limited_actions" . ((("action" . "Reply"))))))))
+         (page
+          (chirp-backend--timeline-page
+           (chirp-backend-test--home-timeline-payload
+            (list (chirp-backend-test--timeline-entry raw)))
+           '(("data" "home" "home_timeline_urt"))
+           10
+           "the home timeline"))
+         (tweet (car (car page))))
+    (should (equal (plist-get tweet :reply-control-mode) "ByInvitation"))
+    (should (plist-get tweet :reply-limited-p))))
+
 (ert-deftest chirp-backend-feed-selects-the-following-operation ()
   "Following feeds should use the chronological X timeline operation."
   (let (operation)
@@ -747,7 +768,10 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal (plist-get operation :name) "TweetDetail"))
     (should (equal (alist-get "focalTweetId" variables nil nil #'string=)
                    "123"))
-    (should (equal (alist-get "count" variables nil nil #'string=) 20))))
+    (should (equal (alist-get "count" variables nil nil #'string=) 20))
+    (should (alist-get "withDisallowedReplyControls"
+                       (plist-get operation :field-toggles)
+                       nil nil #'string=))))
 
 (ert-deftest chirp-backend-thread-accepts-a-retweet-wrapper-id ()
   "A retweet permalink should match its raw wrapper after normalization."

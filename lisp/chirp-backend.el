@@ -89,7 +89,7 @@
     ("responsive_web_grok_community_note_auto_translation_is_enabled" . t))
   "Feature switches documented for current tweet GraphQL operations.")
 
-(defconst chirp-backend--timeline-field-toggles
+(defconst chirp-backend--tweet-field-toggles
   '(("withPayments" . t)
     ("withAuxiliaryUserLabels" . t)
     ("withArticleRichContentState" . t)
@@ -98,7 +98,7 @@
     ("withArticleVoiceOver" . t)
     ("withGrokAnalyze" . t)
     ("withDisallowedReplyControls" . t))
-  "Field toggles documented for HomeTimeline operations.")
+  "Field toggles requested by tweet-bearing read operations.")
 
 (defconst chirp-backend--note-tweet-features
   (append
@@ -127,11 +127,11 @@
   `((home
      :query-id "wp06oo3fRGU4P1sK8rECqQ" :name "HomeTimeline"
      :features ,chirp-backend--tweet-features
-     :field-toggles ,chirp-backend--timeline-field-toggles)
+     :field-toggles ,chirp-backend--tweet-field-toggles)
     (following
      :query-id "BLQWpfVqtgBqAqwRRJcJjA" :name "HomeLatestTimeline"
      :features ,chirp-backend--tweet-features
-     :field-toggles ,chirp-backend--timeline-field-toggles)
+     :field-toggles ,chirp-backend--tweet-field-toggles)
     (user
      :query-id "1VOOyvKkiI3FMmkeDNxM9A" :name "UserByScreenName"
      :features ,chirp-backend--user-features)
@@ -143,24 +143,31 @@
                 ("responsive_web_graphql_timeline_navigation_enabled" . t)))
     (user-tweets
      :query-id "q6xj5bs0hapm9309hexA_g" :name "UserTweets"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (user-highlights
      :query-id "70Yf8aSyhGOXaKRLJdVA2A" :name "UserHighlightsTweets"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (user-media
      :query-id "1H9ibIdchWO0_vz3wJLDTA" :name "UserMedia"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (likes
      :query-id "lIDpu_NWL7_VhimGGt0o6A" :name "Likes"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (search
      :query-id "VhUd6vHVmLBcw0uX-6jMLA" :name "SearchTimeline" :method post
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (bookmarks
      :query-id "2neUNDqrrFzbLui8yallcQ" :name "Bookmarks"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (notifications
      :query-id "-S_pMlnJKTY3uUdlVKpK9w" :name "NotificationsTimeline"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (dm-inbox-initial
      :query-id "8ryvCvaARbYYM1zXie8Q9g" :name "GetInitialXChatPageQuery")
@@ -178,17 +185,17 @@
      :name "SendMessageCreateMutation" :method post)
     (list
      :query-id "RlZzktZY_9wJynoepm8ZsA" :name "ListLatestTweetsTimeline"
+     :field-toggles ,chirp-backend--tweet-field-toggles
      :features ,chirp-backend--tweet-features)
     (thread
      :query-id "XMOz5h24KAZ86qKffKTLdQ" :name "TweetDetail"
      :features ,chirp-backend--tweet-features
-     :field-toggles (("withArticleRichContentState" . t)))
+     :field-toggles ,chirp-backend--tweet-field-toggles)
     (article
      :query-id "GZsN2Pc4knAoit6pXa4HSA" :name "TweetResultByRestId"
      :features ,(cons '("articles_preview_enabled" . t)
                      chirp-backend--tweet-features)
-     :field-toggles (("withArticleRichContentState" . t)
-                     ("withArticlePlainText" . t)))
+     :field-toggles ,chirp-backend--tweet-field-toggles)
     (create-tweet
      :query-id "IID9x6WsdMnTlXnzXGq8ng" :name "CreateTweet" :method post
      :features ,chirp-backend--tweet-features)
@@ -988,12 +995,19 @@ oldest-first order and a pagination envelope."
     limit))
 
 (defun chirp-backend--timeline-tweet (result promoted-p)
-  "Return the raw tweet in RESULT, marked when PROMOTED-P is non-nil."
+  "Return raw RESULT, preserving visibility metadata.
+
+When PROMOTED-P is non-nil, mark the inner tweet as promoted."
   (let ((tweet (or (chirp-get result "tweet") result)))
-    (when (and promoted-p (chirp-object-p tweet))
-      (setq tweet (copy-tree tweet))
-      (push '("isPromoted" . t) tweet))
-    tweet))
+    (if (not promoted-p)
+        result
+      (let ((marked (copy-tree tweet)))
+        (push '("isPromoted" . t) marked)
+        (if (chirp-get result "tweet")
+            (let ((copy (copy-tree result)))
+              (setcdr (assoc-string "tweet" copy t) marked)
+              copy)
+          marked)))))
 
 (defun chirp-backend--timeline-entry-tweets (entry)
   "Return raw tweets carried directly or inside module ENTRY."

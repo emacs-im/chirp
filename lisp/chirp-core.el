@@ -1408,31 +1408,65 @@ Return non-nil when BUFFER currently projects a primary feed."
            (chirp-get-in object '("legacy" "followers_count"))
            (chirp-get-in object '("legacy" "friends_count")))))
 
+(defun chirp--tweet-result (object)
+  "Return the inner tweet from visibility wrapper OBJECT."
+  (or (chirp-get object "tweet") object))
+
+(defun chirp--tweet-reply-control-mode (object)
+  "Return the reply-control mode carried by tweet OBJECT, or nil."
+  (let* ((tweet (chirp--tweet-result object))
+         (legacy (chirp-get tweet "legacy"))
+         (control (or (chirp-get legacy "conversation_control"
+                                   "conversationControl")
+                      (chirp-get tweet "conversation_control"
+                                "conversationControl")))
+         (mode (and (chirp-object-p control)
+                    (chirp-first-nonblank
+                     (chirp-get control "mode" "type")))))
+    (and mode (format "%s" mode))))
+
+(defun chirp--tweet-reply-limited-p (object)
+  "Return non-nil when OBJECT explicitly limits the viewer's reply action."
+  (let ((actions (or (chirp-get-in object
+                                  '("limitedActionResults" "limited_actions"))
+                     (chirp-get-in object
+                                   '("limited_action_results" "limited_actions")))))
+    (or (and (listp actions)
+             (cl-some (lambda (action)
+                        (or (equal action "Reply")
+                            (equal (chirp-get action "action") "Reply")))
+                      actions))
+        (equal (chirp-get (chirp-get object "legacy") "limited_actions")
+               "limited_replies"))))
+
 (defun chirp-tweet-like-p (object)
   "Return non-nil when OBJECT resembles a tweet payload."
-  (let* ((legacy (chirp-get object "legacy"))
-         (metrics (chirp-get object "metrics"))
+  (let* ((tweet (chirp--tweet-result object))
+         (legacy (chirp-get tweet "legacy"))
+         (metrics (chirp-get tweet "metrics"))
          (id (chirp-first-nonblank
-              (chirp-get object "rest_id" "id_str" "id")
+              (chirp-get tweet "rest_id" "id_str" "id")
               (chirp-get legacy "id_str")))
          (text (chirp-first-nonblank
-                (chirp-get object "full_text" "text")
+                (chirp-get tweet "full_text" "text")
                 (chirp-get legacy "full_text" "text")
-                (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
-                (chirp-get-in object '("note_tweet" "text"))))
+                (chirp-get-in tweet '("note_tweet" "note_tweet_results"
+                                      "result" "text"))
+                (chirp-get-in tweet '("note_tweet" "text"))))
          (stats (chirp-coalesce
-                 (chirp-get object "favorite_count" "retweet_count" "reply_count"
-                            "quote_count" "bookmark_count" "view_count")
+                 (chirp-get tweet "favorite_count" "retweet_count"
+                            "reply_count" "quote_count" "bookmark_count"
+                            "view_count")
                  (and metrics
                       (chirp-get metrics "likes" "retweets" "replies"
                                  "quotes" "bookmarks" "views"))
                  (and legacy
                       (chirp-get legacy "favorite_count" "retweet_count"
                                  "reply_count" "quote_count")))))
-    (and (chirp-object-p object)
+    (and (chirp-object-p tweet)
          id
-         (or text stats (chirp-get object "conversationId" "conversation_id"))
-         (not (chirp-user-like-p object)))))
+         (or text stats (chirp-get tweet "conversationId" "conversation_id"))
+         (not (chirp-user-like-p tweet)))))
 
 (defun chirp-find-first-object (value predicate)
   "Return the first object inside VALUE that satisfies PREDICATE."
@@ -1818,7 +1852,8 @@ Return non-nil when BUFFER currently projects a primary feed."
 
 (defun chirp-normalize-tweet (object)
   "Normalize OBJECT into a tweet plist."
-  (let* ((wrapper (or (chirp-get object "tweet") object))
+  (let* ((result object)
+         (wrapper (chirp--tweet-result result))
          (wrapper-legacy (chirp-get wrapper "legacy"))
          (raw-retweet (chirp-get-in
                        wrapper-legacy '("retweeted_status_result" "result")))
@@ -1934,6 +1969,13 @@ Return non-nil when BUFFER currently projects a primary feed."
                        (chirp-get object "isPromoted" "is_promoted" "promoted")
                        (chirp-get-in wrapper '("itemContent" "promotedMetadata"))
                        (chirp-get wrapper "promotedMetadata"))))
+         (reply-control-mode
+          (chirp--tweet-reply-control-mode object))
+         (reply-limited-p
+          (or (chirp--tweet-reply-limited-p result)
+              (chirp--tweet-reply-limited-p object)
+              (equal (chirp-get legacy "limited_actions")
+                     "limited_replies")))
          (state-overrides (and id (gethash id (chirp--tweet-state-table)))))
     (when (or id (not (string-empty-p text)))
       (list :kind 'tweet
@@ -1951,6 +1993,8 @@ Return non-nil when BUFFER currently projects a primary feed."
             :timeline-context timeline-context
             :reply-to-id reply-to-id
             :reply-to-handle reply-to-handle
+            :reply-control-mode reply-control-mode
+            :reply-limited-p reply-limited-p
             :retweeted-by retweeted-by
             :author-name (plist-get author-user :name)
             :author-handle author-handle

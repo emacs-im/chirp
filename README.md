@@ -4,7 +4,7 @@
 
 ## What you can do
 
-Use Chirp to follow timelines, search and inspect posts, read direct messages, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
+Use Chirp to follow timelines, search and inspect posts, see X reply-audience restrictions, read direct messages, move from a post to its thread, author, profile lists, or media, and perform common post, reply, quote, like, bookmark, and follow actions without leaving Emacs. Optional desktop notifications surface account activity, and translation is available on demand.
 
 Home, Following, search, bookmarks, notifications, user-handle completion, accessible lists and their timelines, threads with full article expansion, profile lookup, profile posts/replies/highlights/media, follower/following account lists, translation, the authenticated account's Likes view, compose, image upload, all current write actions, and XChat direct messages use direct X web APIs. `M-x chirp-direct-messages` requires one user-confirmed XChat unlock before opening the inbox; conversations then load the key history they need, project only signature-verified plaintext, and provide a plain-text composer backed by the official XDK. Direct-message reads never send read acknowledgments, and sends are never retried or inserted optimistically. Verified image attachments use Appkit's media cache and inline renderer when X provides a trusted media URL; unsupported attachments retain explicit summaries.
 
