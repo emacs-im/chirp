@@ -87,7 +87,7 @@ M-x chirp-profile-following-users
 - `M-x chirp-dm-cancel-unlock`: cancel an active recovery; because a realm may already have processed the attempt, Chirp reports cancellation as an uncertain outcome and never retries automatically
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
-- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, open a direct-message conversation from its inbox row, or open large media when point is on a thumbnail
+- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, open a direct-message conversation from its inbox row, or open large media when point is on a thumbnail. Opening a reply shows its ancestor chain above the focus tweet with a connecting prefix, then nests later replies from that focus. Leading @handles that X prepends to a reply are hidden, as on the web
 - `Mouse-1` on a tweet's reply, repost/retweet, like, or bookmark metric opens or toggles that action for the clicked tweet
 - In an XChat conversation, `RET` on the timeline moves to the trailing composer; `RET` in the composer sends plain text, `C-u RET` inserts a newline, and `C-c C-c` explicitly sends
 - In an XChat composer, `M-p` and `M-n` navigate sent-input history; Evil users enter Insert state normally with `i`
@@ -129,7 +129,7 @@ Clipboard image paste uses `wl-paste` on Wayland and `pngpaste` on macOS when av
 
 ## Thread Reply Filtering
 
-Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text, expanded links, the author's display name, and the author's `@handle` ignores case and never filters the thread's focus tweet. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
+Chirp hides likely spam replies using a conservative default list collected from repeated public reply spam, prioritizing Chinese templates before English ones. Matching configured literal phrases against reply text, expanded links, the author's display name, and the author's `@handle` ignores case and never filters the thread's focus tweet or its ancestor chain. A nested list requires every fragment to occur, which catches split templates without filtering on either broad fragment alone; set the option to nil to disable filtering.
 
 Press `S` on a reply to edit and save a literal phrase, or select the useful portion first so it becomes the initial input. Use `C-u S` to start from the author's display name. Chirp stores accepted entries under `user-emacs-directory` (`~/.emacs.d/chirp/spam-rules.txt` in the usual setup), one UTF-8 literal per line, de-duplicates them without regard to case, and immediately refreshes the current view. Blank lines and lines beginning with `#` are ignored. Nicknames, handles, reply text, and expanded links all use this same combined rule set.
 

@@ -34,11 +34,12 @@
           (push (cons position display) result))))
     (nreverse result)))
 
-(defun chirp-test--discussion-row (tweet &optional focus-p parent-key depth)
+(defun chirp-test--discussion-row (tweet &optional focus-p parent-key depth role)
   "Return a discussion row for TWEET in render tests."
   (list :key (list 'tweet (plist-get tweet :id))
         :parent-key parent-key
         :depth (or depth 0)
+        :role (or role (and focus-p 'focus) 'tree)
         :focus-p focus-p
         :tweet tweet))
 
@@ -1074,7 +1075,7 @@
                  (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
           (chirp-render-insert-discussion-entry
-           (chirp-test--discussion-row tweet))))
+           (chirp-test--discussion-row tweet nil '(tweet "parent") 2))))
       (goto-char (point-min))
       (search-forward "replying to ")
       (should (eq (get-text-property (match-beginning 0) 'face)
