@@ -569,10 +569,11 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
            return (format "%s" identifier)))
 
 (defun chirp-backend--compose-variables
-    (kind text target-id media-ids note-tweet-p)
+    (kind text target-id media-ids note-tweet-p &optional reply-audience)
   "Build X create variables for KIND, TEXT, TARGET-ID, and MEDIA-IDS.
 
-When NOTE-TWEET-P is non-nil, include the long-form-only variables."
+When NOTE-TWEET-P is non-nil, include the long-form-only variables.
+REPLY-AUDIENCE is a post or quote conversation-control symbol, or nil."
   (let ((variables
          `(("tweet_text" . ,text)
            ("media" .
@@ -598,6 +599,17 @@ When NOTE-TWEET-P is non-nil, include the long-form-only variables."
              variables)))
     (when note-tweet-p
       (push '("disallowed_reply_options" . nil) variables))
+    (unless (or (null reply-audience)
+                (eq reply-audience 'everyone)
+                (eq kind 'reply))
+      (push `("conversation_control" .
+              (("mode" . ,(pcase reply-audience
+                            ('community "Community")
+                            ('verified "Verified")
+                            ('byinvitation "ByInvitation")
+                            (_ (error "Reply audience is invalid: %S"
+                                      reply-audience))))))
+            variables))
     variables))
 
 (defun chirp-backend--upload-compose-media
@@ -615,13 +627,15 @@ ERRBACK receives the first failure.  MEDIA-IDS carries recursive state."
      :errback errback)))
 
 (cl-defun chirp-backend-compose
-    (&key kind text target-id attachments callback errback)
+    (&key kind text target-id attachments reply-audience callback errback)
   "Publish a KIND draft containing TEXT and ATTACHMENTS through X.
 
 KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
-quotes.  CALLBACK receives a plist containing the created tweet ID and the raw
-GraphQL envelope.  ERRBACK receives upload or create failures.  Create and
-upload mutations are never retried automatically."
+quotes.  REPLY-AUDIENCE is a post or quote conversation-control symbol;
+`everyone' and nil omit the rule, and replies ignore it.  CALLBACK receives a
+plist containing the created tweet ID and the raw GraphQL envelope.  ERRBACK
+receives upload or create failures.  Create and upload mutations are never
+retried automatically."
   (unless (functionp callback)
     (error "Compose callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
@@ -656,7 +670,7 @@ upload mutations are never retried automatically."
                     (variables
                      (chirp-backend--compose-variables
                       kind text (and target-id (format "%s" target-id))
-                      media-ids note-tweet-p)))
+                      media-ids note-tweet-p reply-audience)))
                (chirp-x-graphql-request
                 (chirp-backend--operation operation-key)
                 variables

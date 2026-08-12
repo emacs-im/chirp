@@ -19,7 +19,7 @@ _Avoid_: Timeline cache, response list
 ## Publishing
 
 **Compose draft**:
-A not-yet-published post authored in Chirp, with text and optional reply or quote target and media attachments.
+A not-yet-published post authored in Chirp, with one or more ordered items, optional reply or quote target, reply audience, and media attachments. One draft may contain several items; publishing turns each item into its own post.
 _Avoid_: Post (when still local), request, payload
 
 **Reply target**:
