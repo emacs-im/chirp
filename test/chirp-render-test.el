@@ -317,6 +317,32 @@
     (should (string-match-p "Quoted body text" (plist-get quoted :text)))
     (should-not (plist-get tweet :urls))))
 
+(ert-deftest chirp-normalize-tweet-hides-leading-reply-mentions ()
+  "Reply-chain @handles should not appear in the visible tweet text."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "1")
+                  ("text" . "@alice @bob hello there")
+                  ("inReplyToStatusId" . "0")
+                  ("inReplyToScreenName" . "alice")))))
+    (should (equal (plist-get tweet :text) "hello there"))
+    (should (equal (plist-get tweet :raw-text) "@alice @bob hello there"))))
+
+(ert-deftest chirp-normalize-tweet-uses-display-text-range ()
+  "X display_text_range should win over stripping every leading mention."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "1")
+                  ("full_text" . "@alice @bob check this")
+                  ("display_text_range" . (7 22))
+                  ("inReplyToScreenName" . "alice")))))
+    (should (equal (plist-get tweet :text) "@bob check this"))))
+
+(ert-deftest chirp-normalize-tweet-keeps-leading-mention-on-original-posts ()
+  "An original post may start with an @mention that the author typed."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "1")
+                  ("text" . "@alice hello")))))
+    (should (equal (plist-get tweet :text) "@alice hello"))))
+
 (ert-deftest chirp-normalize-tweet-preserves-related-timeline-context-only ()
   "Known timeline context should normalize without interning arbitrary values."
   (let ((related
