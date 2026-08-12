@@ -44,6 +44,7 @@ history remains available in Git.
 - Photo media now prefers X's `media_url_https` over the tweet short link, and invalid HTML responses no longer become persistent image-cache entries.
 - Structured X view metrics and detail-only bookmark counts now render their numeric values, while unavailable metric counts show only their icon rather than `-`.
 - Home and Following now use the documented current HomeTimeline and HomeLatestTimeline operations and feature/field-toggle set, restoring public view counts when X returns them.
+- Definitive stale read query IDs now refresh the public registry and retry once; writes and explicit query-ID overrides remain non-retrying.
 - X GraphQL identities now prefer numeric `rest_id` values over opaque global IDs when routing profile and tweet requests.
 - Direct GraphQL retweets now render the original author and content while preserving the retweeter context.
 - Mention completion no longer moves point back to the `@` character.

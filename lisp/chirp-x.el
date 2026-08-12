@@ -1098,21 +1098,13 @@ readable error string.  OWNER optionally owns the transport lifecycle."
        (funcall error-fn (error-message-string err))
        nil))))
 
-(cl-defun chirp-x-graphql-request
-    (operation variables callback &key errback owner)
-  "Request persisted X GraphQL OPERATION with VARIABLES asynchronously.
+(cl-defun chirp-x--graphql-request-attempt
+    (operation variables callback &key errback owner retried-p)
+  "Issue one persisted GraphQL attempt for OPERATION.
 
-OPERATION is a plist containing `:query-id', `:name', and optional `:method',
-`:features', and `:field-toggles'.  Nil VARIABLES represents an empty object.
-CALLBACK receives decoded JSON as an alist.  ERRBACK receives one readable
-error string.  A definitive stale read starts a background ID refresh without
-replaying the request.  OWNER optionally owns the transport lifecycle.  Return
-the URL retrieval buffer when the request starts, or nil when setup fails."
-  (unless (functionp callback)
-    (error "X GraphQL callback is not callable"))
+ERRBACK receives failures.  When RETRIED-P is non-nil, do not refresh or retry
+again after another stale-query failure."
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
-    (unless (functionp error-fn)
-      (error "X GraphQL error callback is not callable"))
     (condition-case err
         (let* ((variables (or variables (make-hash-table :test #'equal)))
                (operation-name
@@ -1134,15 +1126,37 @@ the URL retrieval buffer when the request starts, or nil when setup fails."
                          (and (eq method 'get)
                               (not override-p)
                               (chirp-x--stale-query-error-p message))))
-                    (when stale-p
-                      (chirp-x--refresh-query-ids nil))
-                    (funcall
-                     error-fn
-                     (if stale-p
-                         (concat message
-                                 ". Chirp is refreshing read query IDs; "
-                                 "retry shortly")
-                       message))))))
+                    (cond
+                     ((and stale-p (not retried-p))
+                      (chirp-x--refresh-query-ids
+                       (lambda (result)
+                         (if-let* ((refresh-error (plist-get result :error)))
+                             (funcall
+                              error-fn
+                              (format "%s. Query ID refresh failed: %s"
+                                      message refresh-error))
+                           (let ((new-query-id
+                                  (chirp-x--operation-query-id
+                                   operation operation-name)))
+                             (if (equal query-id new-query-id)
+                                 (funcall
+                                  error-fn
+                                  (format
+                                   "%s. Refreshed query IDs did not change %s"
+                                   message operation-name))
+                               (chirp-x--graphql-request-attempt
+                                operation variables callback
+                                :errback error-fn
+                                :owner owner
+                                :retried-p t)))))))
+                     (stale-p
+                      (funcall
+                       error-fn
+                       (concat message
+                               ". Query ID remained invalid after one "
+                               "refresh retry")))
+                     (t
+                      (funcall error-fn message)))))))
           (chirp-x--request
            request-url method callback
            :data (and (eq method 'post)
@@ -1156,6 +1170,25 @@ the URL retrieval buffer when the request starts, or nil when setup fails."
       (error
        (funcall error-fn (error-message-string err))
        nil))))
+
+(cl-defun chirp-x-graphql-request
+    (operation variables callback &key errback owner)
+  "Request persisted X GraphQL OPERATION with VARIABLES asynchronously.
+
+OPERATION is a plist containing `:query-id', `:name', and optional `:method',
+`:features', and `:field-toggles'.  Nil VARIABLES represents an empty object.
+CALLBACK receives decoded JSON as an alist.  ERRBACK receives one readable
+error string.  A definitive stale read refreshes the public query-ID registry
+and retries the read once with the refreshed ID; writes and explicit overrides
+are never retried.  OWNER optionally owns the transport lifecycle.  Return the
+URL retrieval buffer when the request starts, or nil when setup fails."
+  (unless (functionp callback)
+    (error "X GraphQL callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "X GraphQL error callback is not callable"))
+    (chirp-x--graphql-request-attempt
+     operation variables callback :errback error-fn :owner owner)))
 
 (defun chirp-x--upload-media-type (file)
   "Return the supported X media MIME type for FILE."
