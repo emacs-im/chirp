@@ -4,3 +4,4 @@
 \#*\#
 /native/.deps/
 /native/chirp-xchat-module/target/
+.eask/

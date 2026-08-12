@@ -356,21 +356,22 @@
                (nth 0 callbacks) (list first reply)
                '(("pagination" . (("nextCursor" . "older")))))
               (appkit-sync-invalidations view)
-              (let* ((projection (appkit-view-engine view))
-                     (nodes
-                      (chirp-timeline--projection-node-table projection))
-                     (first-node (gethash '(tweet "1") nodes))
-                     (reply-node (gethash '(tweet "2") nodes)))
+              (let ((first-node
+                     (appkit-projection-node view '(tweet "1")))
+                    (reply-node
+                     (appkit-projection-node view '(tweet "2"))))
                 (with-current-buffer buffer
                   (chirp-load-more))
                 (funcall (nth 1 callbacks)
                          (list '(:kind tweet :id "3" :text "Older")) nil)
                 (appkit-sync-invalidations view)
-                (setq nodes
-                      (chirp-timeline--projection-node-table projection))
-                (should (eq first-node (gethash '(tweet "1") nodes)))
-                (should (eq reply-node (gethash '(tweet "2") nodes)))
-                (should (gethash '(tweet "3") nodes))
+                (should
+                 (eq first-node
+                     (appkit-projection-node view '(tweet "1"))))
+                (should
+                 (eq reply-node
+                     (appkit-projection-node view '(tweet "2"))))
+                (should (appkit-projection-node view '(tweet "3")))
                 (with-current-buffer buffer
                   (should (string-match-p "replying to @alice above"
                                           (buffer-string))))))))
@@ -536,15 +537,15 @@
               (let ((printer (symbol-function 'chirp-timeline--print-row)))
                 (cl-letf (((symbol-function 'chirp-timeline--print-row)
                            (lambda (row)
-                             (push (chirp-timeline--row-key row) printed)
+                             (push (appkit-projection-row-key row) printed)
                              (funcall printer row))))
                   (chirp-media--invalidate-resource
                    "https://example.com/one.jpg")
                   (should
                    (equal
-                    (appkit-invalidations-entry-keys
+                    (appkit-invalidations-resource-keys
                      (appkit-view-invalidations view))
-                    '((tweet "1"))))
+                    '("https://example.com/one.jpg")))
                   (appkit-sync-invalidations view)))
               (should (equal printed '((tweet "1")))))))
       (chirp-stop)
@@ -919,7 +920,7 @@
                   ((symbol-function 'chirp-render-insert-tweet-list)
                    (lambda (_tweets)
                      (insert "tweet\n")))
-                 ((symbol-function 'chirp-display-buffer)
+                  ((symbol-function 'chirp-display-buffer)
                    (lambda (target)
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
@@ -1089,7 +1090,7 @@
                   ((symbol-function 'chirp-render-insert-tweet-list)
                    (lambda (_tweets)
                      (insert "tweet\n")))
-                 ((symbol-function 'chirp-display-buffer)
+                  ((symbol-function 'chirp-display-buffer)
                    (lambda (target)
                      (setq displayed target)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)

@@ -10,7 +10,7 @@ Home, Following, search, bookmarks, notifications, user-handle completion, acces
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer, Appkit 0.2.1 or newer, Plz 0.8 or newer with `curl`, Transient 0.4.3 or newer, and browser-session 0.1.0 or newer with its external helper. Direct X views and actions require an authenticated X web session.
+Chirp requires GNU Emacs 29.1 or newer, Appkit 0.2.3 or newer, Plz 0.8 or newer with `curl`, Transient 0.4.3 or newer, and browser-session 0.1.0 or newer with its external helper. Direct X views and actions require an authenticated X web session.
 
 ### Sign in to X
 
@@ -217,6 +217,14 @@ customize the short in-memory backend cache:
 - Direct timeline pagination passes X's bottom cursor to the next GraphQL request without re-fetching the loaded prefix.
 - Post, reply, quote, media INIT/APPEND/FINALIZE, and other write mutations are never retried automatically because a lost response can leave the remote outcome unknown. Authenticated POST retrievals disable `url.el` transport replay, mutation responses are bounded before copying or JSON parsing, and GraphQL errors or failures after dispatch preserve the unknown-outcome warning. Read-only media STATUS checks use bounded polling.
 - Automated tests cover request shaping and response adaptation without sending live X writes. Write smoke tests require explicit opt-in, verify created artifacts, and delete created posts in reverse order.
+
+## Development
+
+Eask owns Chirp's package activation, local Appkit and browser-session dependencies, byte compilation, and ERT load paths:
+
+```sh
+eask run script test-local
+```
 
 ## Opt-in write smoke
 

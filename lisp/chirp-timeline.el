@@ -10,10 +10,9 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'appkit-ewoc)
+(require 'appkit-projection)
 (require 'appkit-invalidation)
 (require 'appkit-position)
-(require 'appkit-transaction)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -44,11 +43,6 @@
   phase
   settled-p)
 
-(cl-defstruct (chirp-timeline--projection
-               (:constructor chirp-timeline--projection-create))
-  "EWOC projection state owned by one primary timeline view."
-  ewoc
-  node-table)
 
 (define-derived-mode chirp-timeline--mode chirp-view-mode "Chirp-Timeline"
   "Major mode for Appkit-owned primary timeline buffers."
@@ -98,28 +92,23 @@
               ((eq (plist-get state :type) 'timeline)))
     view))
 
-(defun chirp-timeline--row-key (row)
-  "Return the stable tweet key for projected ROW."
-  (plist-get row :key))
+(defun chirp-timeline--row-key (tweet)
+  "Return the stable projection key for TWEET."
+  (when-let* ((id (plist-get tweet :id)))
+    (list 'tweet id)))
 
 (defun chirp-timeline--project-rows (tweets)
-  "Project normalized TWEETS into keyed EWOC rows."
-  (let (previous rows)
-    (dolist (tweet tweets (nreverse rows))
-      (let ((id (plist-get tweet :id)))
-        (unless id
-          (error "Timeline tweet has no stable id"))
-        (push (list :key (list 'tweet id)
-                    :tweet tweet
-                    :previous previous)
-              rows))
-      (setq previous tweet))))
+  "Project normalized TWEETS into keyed Appkit rows."
+  (appkit-projection-project
+   tweets #'chirp-timeline--row-key
+   :context-function (lambda (previous _tweet) previous)
+   :dependencies-function #'chirp-media-resource-keys-for-tweet))
 
 (defun chirp-timeline--print-row (row)
   "Insert one projected timeline ROW at point."
   (chirp-render-insert-tweet-row
-   (plist-get row :tweet)
-   (plist-get row :previous)))
+   (appkit-projection-row-payload row)
+   (appkit-projection-row-context row)))
 
 (defun chirp-timeline--frame-text (state)
   "Return header text representing timeline STATE."
@@ -160,41 +149,16 @@
     (setq-local chirp--rerender-function nil)
     (add-hook 'kill-buffer-hook #'chirp-timeline--remember-position nil t)
     (chirp--apply-buffer-name buffer chirp--view-title)
-    (appkit-with-content-update view
-      (erase-buffer)
-      (setf (appkit-view-engine view)
-            (chirp-timeline--projection-create
-             :ewoc (ewoc-create #'chirp-timeline--print-row)
-             :node-table (make-hash-table :test #'equal))))
+    (appkit-projection-ensure
+     view
+     :printer #'chirp-timeline--print-row
+     :anchor-property 'chirp-entry-id)
     (appkit-view-enqueue-event
      view (list :position (or (plist-get state :position) 'first)))
     (appkit-invalidate view :structure t :part 'frame :position t)
     (appkit-sync-invalidations view)))
 
-(defun chirp-timeline--index-resources (view rows)
-  "Index resource dependencies from ROWS in VIEW."
-  (let ((index (appkit-view-resource-index view)))
-    (clrhash index)
-    (dolist (row rows)
-      (let ((key (chirp-timeline--row-key row)))
-        (dolist (resource
-                 (chirp-media-resource-keys-for-tweet
-                  (plist-get row :tweet)))
-          (puthash resource
-                   (cl-adjoin key (gethash resource index) :test #'equal)
-                   index))))))
 
-(defun chirp-timeline--force-keys (view invalidations rows)
-  "Return row keys forced in VIEW by INVALIDATIONS over ROWS."
-  (let ((resources (appkit-invalidations-resource-keys invalidations)))
-    (delete-dups
-     (append
-      (appkit-invalidations-entry-keys invalidations)
-      (if (memq 'all resources)
-          (mapcar #'chirp-timeline--row-key rows)
-        (cl-loop for resource in resources
-                 append (gethash resource
-                                 (appkit-view-resource-index view))))))))
 
 (defun chirp-timeline--position-intent (events)
   "Return the effective semantic position intent from EVENTS."
@@ -206,25 +170,6 @@
                when position return position)
       'preserve))
 
-(defun chirp-timeline--restore-position (intent snapshot)
-  "Restore semantic position INTENT, using SNAPSHOT when needed."
-  (pcase intent
-    ('first
-     (goto-char (point-min))
-     (when-let* ((position
-                  (text-property-any
-                   (point-min) (point-max) 'chirp-entry-start t)))
-       (goto-char position)))
-    ((pred appkit-position-snapshot-p)
-     (appkit-position-restore intent))
-    ('preserve
-     (when snapshot
-       (appkit-position-restore snapshot)))
-    (key
-     (when-let* ((position
-                  (appkit-position-find-property-value
-                   (point-min) (point-max) 'chirp-entry-id key)))
-       (goto-char position)))))
 
 (defun chirp-timeline--sync (view invalidations)
   "Synchronize VIEW from coalesced INVALIDATIONS."
@@ -232,31 +177,27 @@
          (events (appkit-view-pending-events-snapshot view))
          (event-count (length events))
          (position-intent (chirp-timeline--position-intent events))
-         (projection (appkit-view-engine view))
-         (ewoc (chirp-timeline--projection-ewoc projection))
-         (rows (chirp-timeline--project-rows (plist-get state :items)))
+         (resources (appkit-invalidations-resource-keys invalidations))
+         (all-resources-p (memq 'all resources))
          (reconcile-p
           (or (appkit-invalidations-structure-p invalidations)
               (appkit-invalidations-entry-keys invalidations)
-              (appkit-invalidations-resource-keys invalidations)))
-         (snapshot
-          (cond
-           ((appkit-position-snapshot-p position-intent)
-            position-intent)
-           ((not (eq position-intent 'first))
-            (appkit-position-capture
-             :anchor-property 'chirp-entry-id
-             :preserve-window-start t)))))
-    (appkit-with-content-update view
-      (ewoc-set-hf ewoc (or (chirp-timeline--frame-text state) "") "")
-      (when reconcile-p
-        (setf (chirp-timeline--projection-node-table projection)
-              (appkit-ewoc-reconcile
-               ewoc rows #'chirp-timeline--row-key
-               :force-keys
-               (chirp-timeline--force-keys view invalidations rows))))
-      (chirp-timeline--restore-position position-intent snapshot))
-    (chirp-timeline--index-resources view rows)
+              resources))
+         (rows
+          (and reconcile-p
+               (chirp-timeline--project-rows (plist-get state :items))))
+         (force-keys
+          (append
+           (appkit-invalidations-entry-keys invalidations)
+           (and all-resources-p
+                (mapcar #'appkit-projection-row-key rows)))))
+    (appkit-projection-sync
+     view rows
+     :header (or (chirp-timeline--frame-text state) "")
+     :force-keys force-keys
+     :changed-dependencies (and (not all-resources-p) resources)
+     :position position-intent
+     :reconcile-p reconcile-p)
     (appkit-view-acknowledge-events view event-count)))
 
 (defun chirp-timeline--generation-current-p (view state generation)

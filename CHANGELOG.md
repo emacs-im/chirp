@@ -28,6 +28,7 @@ history remains available in Git.
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
+- Chirp now requires Appkit 0.2.3 or newer for read-only stable-key projections.
 
 ### Fixed
 
