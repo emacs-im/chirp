@@ -22,9 +22,12 @@
       (setq-local chirp-compose-temp-attachments nil)
       (setq-local chirp-compose-sending nil)
       (erase-buffer)
-      (setq-local chirp-compose-body-start-marker (copy-marker (point-min)))
       (insert body)
-      (setq-local chirp-compose-body-end-marker (copy-marker (point-max) t)))
+      (appkit-compose-setup
+       :context-function #'chirp-compose--header-string
+       :status-fields-function #'chirp-compose--status-fields
+       :attachments-function #'chirp-compose--attachments-section
+       :footer-function #'chirp-compose--footer-string))
     (cons compose source)))
 
 (defun chirp-test--open-compose-from-foreign-current-buffer (kind &optional tweet)
@@ -42,6 +45,20 @@ Return a list of (compose source foreign)."
       (chirp-compose-open kind tweet)
       (setq compose (current-buffer)))
     (list compose source foreign)))
+
+(ert-deftest chirp-compose-status-fields-show-media-count ()
+  "Compose status fields should reflect the current media count."
+  (pcase-let ((`(,compose . ,source)
+               (chirp-test--make-compose-buffer "hello")))
+    (unwind-protect
+        (with-current-buffer compose
+          (setq-local chirp-compose-attachments '("/tmp/photo.png"))
+          (appkit-compose-refresh)
+          (should (string-match-p "Media: 1/4" (buffer-string))))
+      (when (buffer-live-p compose)
+        (kill-buffer compose))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
 
 (ert-deftest chirp-compose-prefetches-mention-handles-without-blocking-capf ()
   "The installed compose hook should prefetch and cache mention candidates."
@@ -62,7 +79,7 @@ Return a list of (compose source foreign)."
                                   (:handle "emacslife"))
                                 nil))))
             (with-current-buffer compose
-              (goto-char (marker-position chirp-compose-body-end-marker))
+              (goto-char (appkit-compose-body-end-position))
               (let ((point-before (point)))
                 (run-hooks 'post-command-hook)
                 (let ((completion
@@ -86,7 +103,7 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "mail emacs@example")))
     (unwind-protect
         (with-current-buffer compose
-          (goto-char (marker-position chirp-compose-body-end-marker))
+          (goto-char (appkit-compose-body-end-position))
           (should-not (chirp-compose-mention-completion-at-point)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
@@ -304,12 +321,16 @@ Return a list of (compose source foreign)."
           (setq-local chirp-compose-kind 'post)
           (setq-local chirp-compose-attachments nil)
           (setq-local chirp-compose-temp-attachments nil)
-          (chirp-compose--refresh-display)
-          (goto-char (marker-position chirp-compose-body-start-marker))
+          (appkit-compose-setup
+           :context-function #'chirp-compose--header-string
+           :status-fields-function #'chirp-compose--status-fields
+           :attachments-function #'chirp-compose--attachments-section
+           :footer-function #'chirp-compose--footer-string)
+          (goto-char (appkit-compose-body-start-position))
           (insert "abc")
-          (should (equal (chirp-compose--current-body) "abc"))
+          (should (equal (appkit-compose-body) "abc"))
           (delete-char -1)
-          (should (equal (chirp-compose--current-body) "ab")))
+          (should (equal (appkit-compose-body) "ab")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -329,12 +350,12 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello")))
     (unwind-protect
         (with-current-buffer compose
-          (chirp-compose--refresh-display)
-          (goto-char (marker-position chirp-compose-body-end-marker))
+          (appkit-compose-refresh)
+          (goto-char (appkit-compose-body-end-position))
           (insert "!")
-          (should (equal (chirp-compose--current-body) "hello!"))
+          (should (equal (appkit-compose-body) "hello!"))
           (delete-char -1)
-          (should (equal (chirp-compose--current-body) "hello")))
+          (should (equal (appkit-compose-body) "hello")))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -408,7 +429,7 @@ Return a list of (compose source foreign)."
                        (lambda (&rest draft)
                          (setq captured-draft draft))))
               (with-current-buffer compose
-                (goto-char (marker-position chirp-compose-body-start-marker))
+                (goto-char (appkit-compose-body-start-position))
                 (insert "hello quote")
                 (chirp-compose-send)))
             (should (eq (plist-get captured-draft :kind) 'quote))
@@ -443,9 +464,12 @@ Return a list of (compose source foreign)."
               (setq-local chirp-compose-temp-attachments nil)
               (setq-local chirp-compose-sending nil)
               (erase-buffer)
-              (setq-local chirp-compose-body-start-marker (copy-marker (point-min)))
               (insert "hello world")
-              (setq-local chirp-compose-body-end-marker (copy-marker (point-max) t)))
+              (appkit-compose-setup
+               :context-function #'chirp-compose--header-string
+               :status-fields-function #'chirp-compose--status-fields
+               :attachments-function #'chirp-compose--attachments-section
+               :footer-function #'chirp-compose--footer-string))
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest _draft)
                          nil)))

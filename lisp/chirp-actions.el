@@ -12,6 +12,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'transient)
+(require 'appkit-compose)
 (require 'chirp-core)
 (require 'chirp-backend)
 
@@ -58,11 +59,6 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose-temp-attachments nil
   "Temporary attachment paths owned by the current compose buffer.")
 
-(defvar-local chirp-compose-body-start-marker nil
-  "Marker at the start of the editable compose body.")
-
-(defvar-local chirp-compose-body-end-marker nil
-  "Marker at the end of the editable compose body.")
 
 (defvar-local chirp-compose-sending nil
   "Non-nil while the current compose buffer is sending a draft.")
@@ -88,10 +84,8 @@ cancelled, the attachment is removed, or the send completes."
     map)
   "Keymap for `chirp-compose-mode'.")
 
-(define-derived-mode chirp-compose-mode text-mode "Chirp-Compose"
+(define-derived-mode chirp-compose-mode appkit-compose-mode "Chirp-Compose"
   "Major mode for composing Chirp posts."
-  (setq-local header-line-format nil)
-  (setq-local require-final-newline nil)
   (setq-local completion-ignore-case t)
   (setq-local chirp-compose--mention-cache nil)
   (setq-local chirp-compose--mention-pending nil)
@@ -104,10 +98,8 @@ cancelled, the attachment is removed, or the send completes."
 
 (defun chirp-compose--mention-bounds ()
   "Return handle bounds at point when composing an @mention."
-  (let ((body-start (and (markerp chirp-compose-body-start-marker)
-                         (marker-position chirp-compose-body-start-marker)))
-        (body-end (and (markerp chirp-compose-body-end-marker)
-                       (marker-position chirp-compose-body-end-marker))))
+  (let ((body-start (appkit-compose-body-start-position))
+        (body-end (appkit-compose-body-end-position)))
     (when (and body-start body-end
                (<= body-start (point) body-end))
       (save-restriction
@@ -465,65 +457,28 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
      (propertize context 'face 'shadow)
      (when chirp-compose-target-url
        (concat "\n"
-               (propertize chirp-compose-target-url 'face 'link)))
-     "\n\n")))
+               (propertize chirp-compose-target-url 'face 'link))))))
+
+(defun chirp-compose--status-fields ()
+  "Return current Chirp compose status fields."
+  (list (list :label "Media"
+              :value (format "%d/4" (length chirp-compose-attachments)))))
+
+(defun chirp-compose--attachments-section ()
+  "Return the Appkit attachment section for the current draft."
+  (list :title "Images"
+        :items
+        (mapcar (lambda (path)
+                  (list :label (abbreviate-file-name path)
+                        :object path))
+                chirp-compose-attachments)
+        :empty-label "  No images attached."))
 
 (defun chirp-compose--footer-string ()
   "Return the read-only footer shown after the compose body."
-  (let ((attachments
-         (if chirp-compose-attachments
-             (mapconcat
-              (lambda (path)
-                (format "  %s" (abbreviate-file-name path)))
-              chirp-compose-attachments
-              "\n")
-           (propertize "  No images attached." 'face 'shadow))))
-    (concat
-     "\n\n"
-     (propertize "Images" 'face 'bold)
-     "\n"
-     attachments
-     "\n\n"
-     (propertize
-      "C-c C-a attach   C-c C-v paste   C-c C-d remove   C-c C-c send   C-c C-k cancel"
-      'face 'shadow))))
-
-(defun chirp-compose--locked-string (text)
-  "Return TEXT propertized as read-only compose chrome."
-  (propertize text
-              'read-only t
-              'rear-nonsticky '(read-only field)
-              'field 'chirp-compose-info))
-
-(defun chirp-compose--current-body ()
-  "Return the current editable compose body."
-  (if (and (markerp chirp-compose-body-start-marker)
-           (markerp chirp-compose-body-end-marker))
-      (buffer-substring-no-properties
-       (marker-position chirp-compose-body-start-marker)
-       (marker-position chirp-compose-body-end-marker))
-    ""))
-
-(defun chirp-compose--refresh-display ()
-  "Refresh compose overlays for the current buffer."
-  (let* ((body (chirp-compose--current-body))
-         (modified (buffer-modified-p))
-         (body-end nil)
-         (point-offset (if (and (markerp chirp-compose-body-start-marker)
-                                (>= (point) (marker-position chirp-compose-body-start-marker)))
-                           (- (point) (marker-position chirp-compose-body-start-marker))
-                         0))
-         (inhibit-read-only t))
-    (erase-buffer)
-    (insert (chirp-compose--locked-string (chirp-compose--header-string)))
-    (setq-local chirp-compose-body-start-marker (copy-marker (point)))
-    (insert body)
-    (setq body-end (point))
-    (insert (chirp-compose--locked-string (chirp-compose--footer-string)))
-    (setq-local chirp-compose-body-end-marker (copy-marker body-end t))
-    (goto-char (+ (marker-position chirp-compose-body-start-marker)
-                  (min point-offset (length body))))
-    (set-buffer-modified-p modified)))
+  (propertize
+   "C-c C-a attach   C-c C-v paste   C-c C-d remove   C-c C-c send   C-c C-k cancel"
+   'face 'shadow))
 
 (defun chirp-compose--ensure-attachment-room ()
   "Signal a user error when the current draft already has four images."
@@ -659,7 +614,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     (when temporary
       (setq-local chirp-compose-temp-attachments
                   (append chirp-compose-temp-attachments (list file))))
-    (chirp-compose--refresh-display)
+    (appkit-compose-refresh)
     (set-buffer-modified-p t)
     file))
 
@@ -715,13 +670,13 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
     (setq-local chirp-compose-attachments
                 (delete removed chirp-compose-attachments))
     (chirp-compose--drop-temp-attachment removed)
-    (chirp-compose--refresh-display)
+    (appkit-compose-refresh)
     (set-buffer-modified-p t)
     (message "Removed %s" (file-name-nondirectory removed))))
 
 (defun chirp-compose--body-text ()
   "Return the current compose body."
-  (let ((text (string-trim (chirp-compose--current-body))))
+  (let ((text (string-trim (appkit-compose-body))))
     (if (string-empty-p text)
         (user-error "Text cannot be empty")
       text)))
@@ -860,9 +815,13 @@ When TWEET is non-nil, use it as the reply or quote target."
       (setq-local chirp-compose-sending nil)
       (rename-buffer (chirp-compose--buffer-name) t)
       (add-hook 'kill-buffer-hook #'chirp-compose--cleanup-temp-attachments nil t)
-      (chirp-compose--refresh-display)
+      (appkit-compose-setup
+       :context-function #'chirp-compose--header-string
+       :status-fields-function #'chirp-compose--status-fields
+       :attachments-function #'chirp-compose--attachments-section
+       :footer-function #'chirp-compose--footer-string)
       (set-buffer-modified-p nil)
-      (goto-char (marker-position chirp-compose-body-start-marker)))))
+      (goto-char (appkit-compose-body-start-position)))))
 
 (defun chirp-compose-post ()
   "Open a compose buffer for a new post."
