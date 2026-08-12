@@ -107,6 +107,14 @@
   '((t :inherit shadow))
   "Face used for home/following social context lines."
   :group 'chirp)
+(defconst chirp-render--reply-control-labels
+  '(("byinvitation" . "Accounts %s mentioned can reply")
+    ("community" . "Accounts %s follows or mentioned can reply")
+    ("followers" . "Accounts following or mentioned by %s can reply")
+    ("mynetwork" . "Accounts %s follows, who they follow, or mentioned can reply")
+    ("subscribers" . "Accounts subscribed to or mentioned by %s can reply")
+    ("verified" . "Verified accounts or accounts mentioned by %s can reply"))
+  "Known X reply-control modes and their display templates.")
 
 (defface chirp-thread-divider-face
   '((t :inherit shadow))
@@ -428,6 +436,39 @@ When ACTIVE is non-nil, emphasize the metric."
   (let ((start (point)))
     (insert (chirp-render--metric-string label value active))
     (cons start (point))))
+
+(defun chirp-render--reply-control-key (mode)
+  "Return a comparison key for X reply-control MODE."
+  (and (stringp mode)
+       (replace-regexp-in-string "[_-]" "" (downcase mode))))
+
+(defun chirp-render--reply-control-label (tweet)
+  "Return the reply-control label for normalized TWEET, or nil."
+  (let* ((mode (plist-get tweet :reply-control-mode))
+         (key (chirp-render--reply-control-key mode))
+         (template (and key
+                        (cdr (assoc-string
+                              key chirp-render--reply-control-labels t))))
+         (handle (plist-get tweet :author-handle)))
+    (cond
+     ((and template handle)
+      (format template (concat "@" (string-remove-prefix "@" handle))))
+     ((and mode
+           (not (string-empty-p mode))
+           (not (member key '("all" "everyone"))))
+      "Only some accounts can reply.")
+     ((plist-get tweet :reply-limited-p)
+      "You cannot reply to this conversation"))))
+
+(defun chirp-render--insert-reply-control
+    (tweet &optional prefix prefix-face)
+  "Insert the reply-control label for TWEET when one is available.
+
+PREFIX and PREFIX-FACE control indentation."
+  (when-let* ((label (chirp-render--reply-control-label tweet)))
+    (insert (or (chirp-render--prefix-string prefix prefix-face) ""))
+    (insert (propertize label 'face 'chirp-social-context-face))
+    (insert "\n")))
 
 (defun chirp-render--insert-filled-text (text &optional prefix prefix-face)
   "Insert TEXT and let Emacs wrap it visually in the current window.
@@ -919,7 +960,10 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
 
 (cl-defun chirp-render--insert-tweet-heading
     (tweet &key prefix prefix-face avatar-p (time-p t) (newline-p t))
-  "Insert TWEET's author heading with optional PREFIX and avatar."
+  "Insert TWEET's author heading.
+
+PREFIX and PREFIX-FACE control indentation.  AVATAR-P controls the avatar;
+TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
   (let ((author (or (plist-get tweet :author-name) "Unknown"))
         (handle (plist-get tweet :author-handle))
         (created-at (plist-get tweet :created-at)))
@@ -941,7 +985,10 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
 
 (cl-defun chirp-render--insert-tweet-context
     (tweet &key prefix prefix-face show-reply-context reply-parent)
-  "Insert social and parent context for TWEET."
+  "Insert social and parent context for TWEET.
+
+PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT controls the
+related-reply line, and REPLY-PARENT supplies the preceding tweet."
   (when reply-parent
     (chirp-render--insert-list-reply-context
      tweet reply-parent prefix prefix-face))
@@ -968,12 +1015,12 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
     (tweet &key prefix prefix-face reply-context-prefix show-reply-context
            article-mode
            (trailing-newlines 1))
-  "Insert TWEET content and actions using PREFIX.
+  "Insert TWEET content and actions.
 
-SHOW-REPLY-CONTEXT controls the inline reply target.  REPLY-CONTEXT-PREFIX
-overrides PREFIX for that context line.  ARTICLE-MODE selects full article
-rendering when it is `full'.  TRAILING-NEWLINES controls the number of
-additional newlines after the metrics row."
+PREFIX and PREFIX-FACE control indentation.  REPLY-CONTEXT-PREFIX overrides
+PREFIX for the reply context.  SHOW-REPLY-CONTEXT controls the inline reply
+target.  ARTICLE-MODE selects full article rendering when it is `full'.
+TRAILING-NEWLINES controls the additional newlines after the metrics row."
   (let* ((article-mode
           (if (or (eq article-mode 'full)
                   (chirp--tweet-expanded-p tweet))
@@ -1011,12 +1058,13 @@ additional newlines after the metrics row."
     (chirp-render-insert-media-strip
      (plist-get tweet :media) prefix prefix-face)
     (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
+    (chirp-render--insert-reply-control tweet prefix prefix-face)
     (setq meta-start (point))
-    (chirp-render--insert-prefix prefix prefix-face)
-    (push (cons 'reply
-                (chirp-render--insert-metric
-                 'reply (plist-get tweet :reply-count)))
-          action-regions)
+    (let ((reply-region
+           (chirp-render--insert-metric
+            'reply (plist-get tweet :reply-count))))
+      (unless (plist-get tweet :reply-limited-p)
+        (push (cons 'reply reply-region) action-regions)))
     (insert "   ")
     (push (cons 'retweet
                 (chirp-render--insert-metric

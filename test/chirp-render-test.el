@@ -198,6 +198,22 @@
     (should (= (plist-get tweet :bookmark-count) 16))
     (should (= (plist-get tweet :view-count) 10286969))))
 
+(ert-deftest chirp-normalize-tweet-preserves-reply-control-envelope ()
+  "Tweet visibility wrappers should retain reply-control metadata."
+  (let* ((raw
+          '(("__typename" . "TweetWithVisibilityResults")
+            ("tweet" . (("rest_id" . "123")
+                        ("legacy" . (("full_text" . "Restricted")
+                                     ("conversation_control" .
+                                      (("mode" . "ByInvitation")))))))
+            ("limitedActionResults" .
+             (("limited_actions" . ((("action" . "Reply"))))))))
+         (tweet (chirp-normalize-tweet raw)))
+    (should (chirp-tweet-like-p raw))
+    (should (equal (plist-get tweet :reply-control-mode) "ByInvitation"))
+    (should (plist-get tweet :reply-limited-p))))
+
+
 (ert-deftest chirp-normalize-tweet-strips-short-urls-and-keeps-article-fields ()
   "Short links should be removed from display text while article data survives."
   (let ((tweet (chirp-test--sample-article-tweet)))
@@ -242,6 +258,7 @@
                                   (("mediaId" . "media-2")
                                    ("caption" . "Detail"))))))))))))
                   ("media_entities" .
+
                    ((("media_id" . "media-1")
                      ("media_info" .
                       (("original_img_url" .
@@ -910,6 +927,61 @@
             (should-not (get-text-property position 'keymap))
             (should-not (get-text-property position 'mouse-face))))
         (should buffer-read-only)))))
+
+(ert-deftest chirp-render-insert-tweet-renders-reply-control ()
+  "Restricted reply audiences should be visible above tweet metrics."
+  (let ((tweet '(:kind tweet
+                 :id "reply-control-1"
+                 :text "Restricted replies"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :reply-control-mode "ByInvitation"
+                 :reply-count 1
+                 :retweet-count 2
+                 :like-count 3
+                 :quote-count 4
+                 :bookmark-count 5
+                 :view-count 6)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (let ((inhibit-read-only t))
+        (chirp-render-insert-tweet tweet))
+      (should (string-match-p
+               "Accounts @alice mentioned can reply"
+               (buffer-string))))))
+
+(ert-deftest chirp-render-insert-tweet-omits-limited-reply-action ()
+  "A viewer-limited reply should remain visible but not be actionable."
+  (let ((tweet '(:kind tweet
+                 :id "reply-control-2"
+                 :text "No reply action"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :reply-limited-p t
+                 :reply-count 1
+                 :retweet-count 2
+                 :like-count 3
+                 :quote-count 4
+                 :bookmark-count 5
+                 :view-count 6)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (let ((inhibit-read-only t))
+        (chirp-render-insert-tweet tweet))
+      (should (string-match-p
+               "You cannot reply to this conversation"
+               (buffer-string)))
+      (let (actions)
+        (goto-char (point-min))
+        (while (< (point) (point-max))
+          (when-let* ((action (get-text-property
+                               (point) 'chirp-tweet-action)))
+            (push action actions))
+          (goto-char
+           (or (next-single-property-change
+                (point) 'chirp-tweet-action nil (point-max))
+               (point-max))))
+        (should-not (memq 'reply actions))))))
 
 (ert-deftest chirp-render-metric-string-omits-missing-count-placeholder ()
   "Metrics with unavailable counts should retain only their action icon."
