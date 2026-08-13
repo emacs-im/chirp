@@ -1410,7 +1410,7 @@
         (should (< media-position quote-position))))))
 
 (ert-deftest chirp-render-insert-discussion-entry-labels-related-tweet ()
-  "Thread replies should visibly distinguish related timeline items."
+  "Related context should precede the original author heading."
   (let ((tweet
          (chirp-normalize-tweet
           '(("id" . "related-1")
@@ -1426,14 +1426,33 @@
           (chirp-render-insert-discussion-entry
            (chirp-test--discussion-row tweet))))
       (goto-char (point-min))
-      (search-forward "Alice @alice")
-      (let ((heading-position (match-beginning 0)))
-        (search-forward "Related tweet")
-        (let ((label-position (match-beginning 0)))
-          (should (chirp-test--face-member-p
-                   'chirp-thread-related-context
-                   (get-text-property label-position 'face)))
-          (should (< heading-position label-position)))))))
+      (search-forward "Related tweet")
+      (let ((label-position (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-thread-related-context
+                 (get-text-property label-position 'face)))
+        (search-forward "Alice @alice")
+        (should (< label-position (match-beginning 0)))))))
+
+(ert-deftest chirp-render-insert-discussion-entry-puts-retweeter-before-author ()
+  "Retweet attribution should remain actionable above the original author."
+  (let ((tweet (chirp-test--sample-retweeted-tweet)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet))))
+      (goto-char (point-min))
+      (search-forward "retweeted by dotey")
+      (let ((context-position (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-social-context-face
+                 (get-text-property context-position 'face)))
+        (should (functionp (appkit-ui-action-at context-position)))
+        (search-forward "Alice @alice")
+        (should (< context-position (match-beginning 0)))))))
 
 (ert-deftest chirp-render-insert-discussion-entry-highlights-reply-handle ()
   "Thread reply context should highlight only the target handle."

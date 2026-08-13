@@ -41,9 +41,11 @@ history remains available in Git.
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.13 or newer for gapless inline image slices, inline action spans, compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, and point-safe line metrics.
+- Chirp now requires Appkit 0.2.16 or newer for gapless inline image slices, inline action spans, compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, point-safe line metrics, and pre-heading discussion context.
 
 ### Fixed
+
+- Thread related/retweet attribution now uses Appkit's pre-heading context slot, preserving Chirp's context, author, and body order in discussion rows.
 
 - Cached video and animated-GIF thumbnails now carry Appkit's play marker, so timeline previews remain visibly distinguishable from photos.
 - Async image and video preview redraws no longer move point via `window-font-height`, which could scramble Home and thread rows after you switched away.
