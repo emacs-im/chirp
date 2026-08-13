@@ -1914,6 +1914,41 @@ Return non-nil when BUFFER currently projects a primary feed."
         (equal (chirp-get (chirp-get object "legacy") "limited_actions")
                "limited_replies"))))
 
+(defun chirp--tweet-edit-metadata (object)
+  "Return normalized edit-history metadata carried by tweet OBJECT."
+  (let* ((tweet (chirp--tweet-result object))
+         (control (chirp-get tweet "edit_control" "editControl"))
+         (initial-control
+          (and (chirp-object-p control)
+               (chirp-get control
+                          "edit_control_initial"
+                          "editControlInitial")))
+         (raw-ids
+          (or (and (chirp-object-p initial-control)
+                   (chirp-get initial-control
+                              "edit_tweet_ids"
+                              "editTweetIds"))
+              (and (chirp-object-p control)
+                   (chirp-get control
+                              "edit_tweet_ids"
+                              "editTweetIds"))))
+         (ids
+          (delete-dups
+           (cl-loop for id in raw-ids
+                    when (and (stringp id)
+                              (not (string-blank-p id)))
+                    collect id)))
+         (initial-id
+          (or (and (chirp-object-p control)
+                   (chirp-first-nonblank
+                    (chirp-get control
+                               "initial_tweet_id"
+                               "initialTweetId")))
+              (car ids))))
+    (list :edit-history-ids ids
+          :edit-history-initial-id initial-id
+          :edited-p (> (length ids) 1))))
+
 (defun chirp-tweet-like-p (object)
   "Return non-nil when OBJECT resembles a tweet payload."
   (let* ((tweet (chirp--tweet-result object))
@@ -2603,6 +2638,7 @@ over the card's `t.co` permalink."
               (chirp--tweet-reply-limited-p object)
               (equal (chirp-get legacy "limited_actions")
                      "limited_replies")))
+         (edit-metadata (chirp--tweet-edit-metadata object))
          (state-overrides (and id (gethash id (chirp--tweet-state-table)))))
     (when (or id (not (string-empty-p display-text)))
       (list :kind 'tweet
@@ -2626,6 +2662,11 @@ over the card's `t.co` permalink."
             :reply-to-handle reply-to-handle
             :reply-control-mode reply-control-mode
             :reply-limited-p reply-limited-p
+            :edit-history-ids
+            (plist-get edit-metadata :edit-history-ids)
+            :edit-history-initial-id
+            (plist-get edit-metadata :edit-history-initial-id)
+            :edited-p (plist-get edit-metadata :edited-p)
             :retweeted-by retweeted-by
             :retweeted-by-name retweeted-by-name
             :author-name (plist-get author-user :name)

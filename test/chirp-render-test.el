@@ -218,6 +218,42 @@
     (should (equal (plist-get tweet :reply-control-mode) "ByInvitation"))
     (should (plist-get tweet :reply-limited-p))))
 
+(ert-deftest chirp-normalize-tweet-preserves-edit-history-metadata ()
+  "Edited tweets should expose stable version IDs from both X shapes."
+  (let ((latest
+         (chirp-normalize-tweet
+          '(("rest_id" . "200")
+            ("legacy" . (("full_text" . "Latest")))
+            ("edit_control" .
+             (("edit_control_initial" .
+               (("edit_tweet_ids" . ("100" "200"))))
+              ("initial_tweet_id" . "100"))))))
+        (initial
+         (chirp-normalize-tweet
+          '(("rest_id" . "100")
+            ("legacy" . (("full_text" . "Initial")))
+            ("edit_control" .
+             (("edit_tweet_ids" . ("100" "200")))))))
+        (single-version
+         (chirp-normalize-tweet
+          '(("rest_id" . "300")
+            ("legacy" . (("full_text" . "Original")))
+            ("edit_control" .
+             (("edit_tweet_ids" . ("300")))))))
+        (unedited
+         (chirp-normalize-tweet
+          '(("rest_id" . "400")
+            ("legacy" . (("full_text" . "No metadata")))))))
+    (dolist (tweet (list latest initial))
+      (should (equal (plist-get tweet :edit-history-ids)
+                     '("100" "200")))
+      (should (equal (plist-get tweet :edit-history-initial-id) "100"))
+      (should (plist-get tweet :edited-p)))
+    (should (equal (plist-get single-version :edit-history-ids)
+                   '("300")))
+    (should-not (plist-get single-version :edited-p))
+    (should-not (plist-get unedited :edit-history-ids))
+    (should-not (plist-get unedited :edited-p))))
 
 (ert-deftest chirp-normalize-tweet-strips-short-urls-and-keeps-article-fields ()
   "Short links should be removed from display text while article data survives."
@@ -780,6 +816,70 @@
         (chirp-open-at-point)))
     (should (equal opened-profile "dotey"))
     (should-not opened-thread)))
+
+(ert-deftest chirp-render-shows-edit-history-action-only-for-edited-tweets ()
+  "Only a tweet with multiple X versions should expose edit history."
+  (let ((edited
+         '(:kind tweet :id "200" :text "Latest"
+           :author-name "Alice" :edit-history-ids ("100" "200")
+           :edit-history-initial-id "100" :edited-p t))
+        (original
+         '(:kind tweet :id "300" :text "Original"
+           :author-name "Alice"))
+        opened)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-edit-history-open)
+                 (lambda (tweet) (setq opened tweet))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet edited)
+          (chirp-render-insert-tweet original))
+        (goto-char (point-min))
+        (search-forward "Edited · 2 versions")
+        (let ((edited-start (match-beginning 0))
+              (edited-end (match-end 0)))
+          (goto-char edited-start)
+          (chirp-open-at-point)
+          (should (eq opened edited))
+          (goto-char edited-end)
+          (should-not (search-forward "Edited" nil t)))))))
+
+(ert-deftest chirp-render-edit-history-stale-row-has-no-write-actions ()
+  "A stale version should retain read actions but expose no mutation action."
+  (let ((tweet
+         '(:kind tweet :id "100" :text "Visit example.com"
+           :author-name "Alice" :author-handle "alice"
+           :created-at "Thu Aug 13 08:35:37 +0000 2026"
+           :text-entities
+           ((:kind url :start 6 :end 17 :url "https://example.com"))
+           :reply-count 1 :retweet-count 2 :like-count 3
+           :quote-count 4 :bookmark-count 5 :view-count 6))
+        opened-url)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'browse-url)
+                 (lambda (url &rest _args) (setq opened-url url))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-edit-history-row
+           (list :key '(edit-version "100")
+                 :tweet tweet :latest-p nil
+                 :section "Version history")))
+        (goto-char (point-min))
+        (search-forward "example.com")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-url "https://example.com"))
+        (dolist (label '("Replies" "RT" "Likes" "Quotes" "Bookmarks"))
+          (goto-char (point-min))
+          (search-forward label)
+          (should-not (appkit-ui-action-at (match-beginning 0))))
+        (goto-char (point-min))
+        (should (search-forward "Version history" nil t))
+        (should-not (search-forward "Edited" nil t))))))
 
 (ert-deftest chirp-normalize-tweet-extracts-mentions-and-hashtags ()
   "Tweet entities should keep mentions and hashtags for inline actions."

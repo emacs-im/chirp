@@ -9,6 +9,8 @@ history remains available in Git.
 
 - Tweet timestamps now use localized X-style forms: list rows and replies show compact relative or calendar text at the live right edge, while a thread's focused tweet shows its exact time and date. The new `chirp-language` option defaults to Simplified Chinese.
 
+- Edited posts now link to a read-only Appkit projection of X's complete edit history, grouped into the latest post and older versions with exact timestamps. Historical snapshots retain read navigation but omit every tweet mutation action.
+
 - Added the optional Rust XChat module backed by pinned official `chat-xdk` and Juicebox SDK sources. It loads lazily, belongs to the Appkit session, performs one explicit PIN recovery call without Chirp-level retries, preserves remaining guesses and distinct failure states, cancels in-flight Tokio work, destroys opaque SDK state on `chirp-stop`, and returns only signature-verified plaintext rather than PIN or key material.
 - `M-x chirp-login` captures an X browser session through browser-session, using Chirp's fixed persistent isolated profile root, validates only `auth_token` and `ct0`, and atomically writes Chirp's private provider auth file. `M-x chirp-forget-browser-session` deletes that file without signing out of the browser.
 - Home, Following, search, bookmarks, notifications, user typeahead, accessible lists and their timelines, threads with full article expansion, core profile views, follower/following lists, translation, Likes, compose, image upload, and all current mutations now use authenticated direct X web API requests without `twitter-cli` or Python.
