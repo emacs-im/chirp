@@ -6,8 +6,10 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'face-remap)
 (require 'chirp-core)
 (require 'chirp-media)
+(require 'chirp-timeline)
 
 (ert-deftest chirp-media-prefetch-video-thumbnail-tries-remote-extraction-without-preview ()
   "Video/GIF thumbnail prefetch should try remote extraction before full download."
@@ -766,19 +768,35 @@ rerender and creates a CPU loop."
         (chirp--on-text-scale-change)
         (should (equal rerender-args '(nil 0)))))))
 
-(ert-deftest chirp-render-into-buffer-preserves-text-scale ()
-  "A cached redraw must not re-enter the major mode and drop text scale."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (text-scale-increase 2)
-    (let ((amount text-scale-mode-amount))
-      (should (> amount 0))
-      (chirp-render-into-buffer
-       (current-buffer) "scale" #'ignore
-       (lambda () (insert "hello\n")))
-      (should (eq major-mode 'chirp-view-mode))
-      (should (equal amount text-scale-mode-amount))
-      (should (bound-and-true-p text-scale-mode)))))
+(ert-deftest chirp-projection-text-scale-requests-sync ()
+  "Text scale should invalidate an Appkit projection instead of refetching."
+  (let (view)
+    (unwind-protect
+        (let ((state (list :type 'collection
+                           :query (list :kind 'bookmarks)
+                           :items nil
+                           :title "Bookmarks"
+                           :refresh #'ignore
+                           :status (list :phase 'idle :message nil)
+                           :expanded-tweet-ids (make-hash-table :test #'equal))))
+          (setq view (chirp-open-projection-view
+                      :id (list 'collection 'scale-test)
+                      :title "Bookmarks"
+                      :state state
+                      :sync-function #'chirp-timeline--sync
+                      :printer #'chirp-timeline--print-row))
+          (with-current-buffer (appkit-view-buffer view)
+            (text-scale-increase 2)
+            (let ((amount text-scale-mode-amount)
+                  requested)
+              (cl-letf (((symbol-function 'appkit-request-sync)
+                         (lambda (live &rest _args)
+                           (setq requested live))))
+                (chirp--on-text-scale-change))
+              (should (eq requested view))
+              (should (equal amount text-scale-mode-amount))
+              (should (bound-and-true-p text-scale-mode)))))
+      (chirp-stop))))
 
 (provide 'chirp-media-test)
 

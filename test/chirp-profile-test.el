@@ -32,9 +32,10 @@
                    (lambda (_handle _callback &optional _errback _max-results _cursor)
                      (setq posts-called t)))
                   ((symbol-function 'chirp-display-buffer) #'ignore))
-          (chirp-profile-open "alice" buffer)
+          (setq buffer (chirp-profile-open "alice"))
           (should (functionp user-callback))
           (should posts-called))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -58,11 +59,12 @@
                   ((symbol-function 'chirp-render-insert-user-list) #'ignore)
                   ((symbol-function 'chirp-display-buffer) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore))
-          (chirp-profile-open-followers "alice" buffer)
+          (setq buffer (chirp-profile-open-followers "alice"))
           (should (functionp followers-callback))
           (funcall followers-callback (list '(:kind user :handle "bob")) nil)
           (with-current-buffer buffer
             (should-not chirp--entry-wrap-navigation)))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -92,7 +94,7 @@
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile-open "alice" buffer)
+          (setq buffer (chirp-profile-open "alice"))
           (funcall user-callback
                    '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4)
                    nil)
@@ -108,6 +110,7 @@
             (should (equal chirp-profile--available-modes '(posts replies highlights media likes)))
             (should (eq chirp--timeline-load-more-function #'chirp-profile-load-more))
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -138,7 +141,7 @@
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile-open "alice" buffer)
+          (setq buffer (chirp-profile-open "alice"))
           (with-current-buffer buffer
             (should (equal chirp--status-text "Loading profile...")))
           (funcall user-callback
@@ -152,6 +155,7 @@
                    '(("pagination" . (("nextCursor" . "cursor-next")))))
           (with-current-buffer buffer
             (should-not chirp--status-text)))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -180,10 +184,11 @@
                   ((symbol-function 'chirp-display-buffer) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile--render
-           buffer "@alice" #'ignore user first-page 'posts '(posts)
-           :timeline-ready t
-           :next-cursor "cursor-prev")
+          (setq buffer
+                (chirp-profile--render
+                 buffer "@alice" #'ignore user first-page 'posts '(posts)
+                 :timeline-ready t
+                 :next-cursor "cursor-prev"))
           (with-current-buffer buffer
             (chirp-profile-load-more)
             (funcall callback
@@ -192,6 +197,7 @@
             (should (string-match-p "first" (buffer-string)))
             (should (string-match-p "second" (buffer-string)))
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -217,11 +223,12 @@
                   ((symbol-function 'chirp-display-buffer) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile--render
-           buffer "@alice · Replies" #'ignore user first-page 'replies
-           '(posts replies highlights media)
-           :timeline-ready t
-           :next-cursor "cursor-prev")
+          (setq buffer
+                (chirp-profile--render
+                 buffer "@alice · Replies" #'ignore user first-page 'replies
+                 '(posts replies highlights media)
+                 :timeline-ready t
+                 :next-cursor "cursor-prev"))
           (with-current-buffer buffer
             (chirp-profile-load-more)
             (funcall callback
@@ -230,6 +237,7 @@
             (should (string-match-p "first reply" (buffer-string)))
             (should (string-match-p "second reply" (buffer-string)))
             (should (equal chirp--timeline-next-cursor "cursor-next"))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -258,7 +266,7 @@
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile-open "alice" buffer)
+          (setq buffer (chirp-profile-open "alice"))
           (funcall user-callback
                    '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4)
                    nil)
@@ -273,6 +281,7 @@
             (should (search-forward "Highlights" nil t))
             (should (search-forward "Media" nil t))
             (should (search-forward "Likes" nil t))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -302,7 +311,7 @@
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-profile-open "lucius_chen" buffer)
+          (setq buffer (chirp-profile-open "lucius_chen"))
           (funcall user-callback
                    '(:kind user :handle "lucius_chen" :name "Lucius" :bio "" :posts 12 :following 3 :followers 4)
                    nil)
@@ -312,6 +321,7 @@
           (funcall whoami-callback '(:kind user :handle "Lucius_Chen") nil)
           (with-current-buffer buffer
             (should (equal chirp-profile--available-modes '(posts replies highlights media likes)))))
+      (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

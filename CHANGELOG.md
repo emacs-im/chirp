@@ -61,7 +61,7 @@ history remains available in Git.
 - Website cards such as GitHub summaries now render from X's `card` payload instead of a later Open Graph fetch that GitHub pages exceed.
 - Inline photos, video stills, compose previews, and website-card images use Appkit's two-step media API: cache `:height Nch` previews, then display through `appkit-media-insert-image-slices` or `appkit-media-image-slice-rows`. Tweet media grids no longer slice images locally.
 - Avatars size to the current text line (`chirp-avatar-size` 28 is one line). `text-scale-mode` rebuilds avatars and card prefixes from cached data instead of leaving pixel chrome behind.
-- Cached thread and profile redraws no longer re-enter `chirp-view-mode`, so `text-scale-mode` is not reset back to the default size.
+- Thread, profile, bookmarks, likes, lists, and search now use Appkit projections. Cached redraws request a view sync instead of erasing the buffer, so `text-scale-mode` and row identity survive.
 - Tweet text decodes HTML entities with Emacs's `xml-substitute-special` while walking X's original indices, so "Scala & Java" displays correctly without a second index map.
 - Videos carried only in X unified cards now expose their native thumbnail and bitrate variants for display and external playback.
 - Photo media now prefers X's `media_url_https` over the tweet short link, and invalid HTML responses no longer become persistent image-cache entries.

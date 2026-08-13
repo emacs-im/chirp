@@ -15,6 +15,8 @@
                           (file-name-directory (or load-file-name
                                                    default-directory)))
         nil t))
+(declare-function chirp-test--make-compose-buffer
+                  "chirp-actions-test" (body))
 
 (defun chirp-unsent-test--payload-at-path (path value)
   "Return a JSON-style payload containing VALUE at PATH."

@@ -728,7 +728,7 @@ When called interactively, prompt for AUDIENCE."
        (plist-get attachment :media-id)))
 
 (defun chirp-compose--attachment-choice (attachment)
-  "Return the completing-read identity for ATTACHMENT."
+  "Return the `completing-read' identity for ATTACHMENT."
   (or (chirp-compose--attachment-path attachment)
       (chirp-compose--attachment-media-id attachment)
       (and (stringp attachment) attachment)))
@@ -1212,7 +1212,8 @@ When UNKNOWN-P is non-nil, mark the draft as having an unknown outcome."
 
 (defun chirp-compose--close-after-send
     (compose-buffer source-buffer temp-attachments success-message)
-  "Delete TEMP-ATTACHMENTS, close COMPOSE-BUFFER, and show SUCCESS-MESSAGE."
+  "Delete TEMP-ATTACHMENTS and close COMPOSE-BUFFER to SOURCE-BUFFER.
+Show SUCCESS-MESSAGE after refreshing that source view."
   (chirp-backend-clear-cache)
   (chirp-compose--cleanup-files temp-attachments)
   (when (buffer-live-p compose-buffer)
@@ -1223,7 +1224,9 @@ When UNKNOWN-P is non-nil, mark the draft as having an unknown outcome."
 
 (defun chirp-compose--delete-unsent-after-send
     (kind id compose-buffer source-buffer temp-attachments success-message)
-  "Delete unsent KIND ID after a successful send, then close compose."
+  "Delete unsent KIND ID after publishing from COMPOSE-BUFFER.
+Then close to SOURCE-BUFFER, delete TEMP-ATTACHMENTS, and show
+SUCCESS-MESSAGE."
   (chirp-backend-delete-unsent
    kind id
    (lambda (_payload _envelope)
@@ -1274,7 +1277,9 @@ SUCCESS-MESSAGE is shown after the source view is refreshed."
 (defun chirp-compose--send-next
     (compose-buffer source-buffer draft items index previous-id
                     temp-attachments success-message)
-  "Send ITEMS of DRAFT from INDEX, replying to PREVIOUS-ID after the first."
+  "Send DRAFT's ITEMS from INDEX for COMPOSE-BUFFER and SOURCE-BUFFER.
+After the first item, reply to PREVIOUS-ID.  TEMP-ATTACHMENTS are owned by
+the submit chain, and SUCCESS-MESSAGE is shown when it finishes."
   (cond
    ((chirp-compose--submit-aborted-p compose-buffer)
     (chirp-compose--fail-send

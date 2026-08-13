@@ -814,10 +814,7 @@ Use FALLBACK-EXT when URL has no recognizable extension."
 
 (defun chirp-media--legacy-buffer-p (buffer)
   "Return non-nil when BUFFER needs callback-driven media redraws."
-  (and (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (not (and (appkit-current-view)
-                   (chirp--appkit-timeline-state))))))
+  (not (chirp--live-projection-view buffer)))
 
 (defun chirp-media--link-card-rerender-callback (buffer)
   "Return a callback that rerenders legacy BUFFER after link-card fetch."

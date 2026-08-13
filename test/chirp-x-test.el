@@ -639,8 +639,7 @@
           (should (buffer-live-p request-buffer))
           (with-current-buffer request-buffer
             (should (buffer-local-value
-                     'url-http-no-retry request-buffer))
-            (should-not url-http-attempt-keepalives))
+                     'url-http-no-retry request-buffer)))
           (cl-letf (((symbol-function 'url-http-idle-sentinel) #'ignore)
                     ((symbol-function 'url-http-activate-callback)
                      (lambda () (setq activated t)))

@@ -13,6 +13,7 @@
 (require 'chirp-thread)
 
 (declare-function evil-mode "evil" (&optional arg))
+(declare-function evil-goto-first-line "evil-commands" ())
 (declare-function evil-normal-state "evil-states" ())
 (defvar evil-mode)
 
@@ -550,13 +551,11 @@
           (chirp-render-insert-tweet tweet))
         (setq-local
          chirp--rerender-function
-         (let ((buffer (current-buffer)))
-           (lambda ()
-             (cl-incf rerender-count)
-             (chirp-render-into-buffer
-              buffer "Test" nil
-              (lambda ()
-                (chirp-render-insert-tweet tweet))))))
+         (lambda ()
+           (cl-incf rerender-count)
+           (let ((inhibit-read-only t))
+             (erase-buffer)
+             (chirp-render-insert-tweet tweet))))
         (goto-char (point-min))
         (search-forward "Read this")
         (goto-char (match-beginning 0))
