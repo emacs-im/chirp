@@ -23,6 +23,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-media-image)
+(require 'appkit-media-video)
 (require 'appkit-media-resource)
 (require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
@@ -1258,9 +1259,12 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
                               (let ((thumbnail-file (chirp-media--video-thumbnail-file media)))
                                 (and (file-exists-p thumbnail-file)
                                      thumbnail-file)))
-                        (chirp-media-video-thumbnail-file media))))
-      (appkit-media-preview-image-from-file
-       file chirp-media-thumbnail-size chirp-media-thumbnail-size)))))
+                        (chirp-media-video-thumbnail-file media)))
+                (image (appkit-media-preview-image-from-file
+                        file chirp-media-thumbnail-size
+                        chirp-media-thumbnail-size)))
+      (or (appkit-media-video-preview-display-image image 'chirp)
+          image)))))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."

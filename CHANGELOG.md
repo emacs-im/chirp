@@ -45,6 +45,7 @@ history remains available in Git.
 
 ### Fixed
 
+- Cached video and animated-GIF thumbnails now carry Appkit's play marker, so timeline previews remain visibly distinguishable from photos.
 - Async image and video preview redraws no longer move point via `window-font-height`, which could scramble Home and thread rows after you switched away.
 - Compose is now a chatbuf: committed posts render as draft rows, the trailing composer holds the current post, and undo no longer rewrites generated chrome.
 - An empty post compose now shows only the header line and composer. Reply/quote context, media rows, and the Posts count appear when they have something to show.
