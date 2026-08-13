@@ -13,10 +13,27 @@
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
 (declare-function chirp-profile-open "chirp-profile"
                   (handle &optional buffer))
+(declare-function chirp-profile-followers "chirp-profile"
+                  (handle &optional buffer))
+(declare-function chirp-profile-following-users "chirp-profile"
+                  (handle &optional buffer))
+(declare-function chirp-timeline-open-search "chirp-timeline"
+                  (query &optional buffer))
+(declare-function chirp-media-open "chirp-media"
+                  (media-list index &optional title buffer))
+(declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
+(declare-function chirp-reply-at-point "chirp-actions" ())
+(declare-function chirp-toggle-retweet-at-point "chirp-actions" ())
+(declare-function chirp-toggle-like-at-point "chirp-actions" ())
+(declare-function chirp-toggle-bookmark-at-point "chirp-actions" ())
+(declare-function chirp-quote-at-point "chirp-actions" ())
+(declare-function chirp-thread-open "chirp-thread"
+                  (tweet-or-url &optional focus-id buffer))
 
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-discussion)
+(require 'appkit-media-image)
 (require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-media)
@@ -44,7 +61,12 @@
 
 (defface chirp-link-face
   '((t :inherit link))
-  "Face used for expanded links."
+  "Face used for links and inline @mentions, #hashtags, and $cashtags."
+  :group 'chirp)
+
+(defface chirp-hashtag-face
+  '((t :inherit chirp-link-face))
+  "Face used for hashtags and cashtags."
   :group 'chirp)
 
 (defface chirp-article-title-face
@@ -71,12 +93,12 @@
   '((t :inherit fringe
        :foreground unspecified
        :extend t))
-  "Face layered beneath quoted-tweet blocks."
+  "Face layered beneath Appkit card blocks."
   :group 'chirp)
 
 (defface chirp-quoted-tweet-border-face
   '((t :inherit shadow))
-  "Face used for the display-only border of quoted-tweet cards."
+  "Face used for the display-only border of Appkit cards."
   :group 'chirp)
 
 
@@ -219,6 +241,33 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
      (when-let* ((handle (plist-get entry :handle)))
        (list 'user handle)))))
 
+(cl-defun chirp-render--add-action (start end action &key help-echo properties face)
+  "Make START..END an Appkit action that calls ACTION.
+
+HELP-ECHO describes that action.  PROPERTIES are extra text properties
+stored on the same span.  FACE is appended when non-nil."
+  (when (and (functionp action)
+             (< start end))
+    (when properties
+      (add-text-properties start end properties))
+    (appkit-ui-add-action start end action :help-echo help-echo :face face)))
+
+(cl-defun chirp-render--add-fallback-action (start end action &key help-echo)
+  "Add ACTION on START..END only where no Appkit action exists yet.
+
+Nested author, entity, media, and metric spans keep the actions they
+already installed."
+  (when (and (functionp action)
+             (< start end))
+    (let ((pos start))
+      (while (< pos end)
+        (let ((next (or (next-single-property-change
+                         pos appkit-ui-action-property nil end)
+                        end)))
+          (unless (get-text-property pos appkit-ui-action-property)
+            (chirp-render--add-action pos next action :help-echo help-echo))
+          (setq pos next))))))
+
 (defun chirp-render--mark-entry (start end entry)
   "Mark the region from START to END as ENTRY."
   (when (< start end)
@@ -230,99 +279,77 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
                            chirp-entry-url
                            ,(or (plist-get entry :url)
                                 (plist-get entry :profile-url))
-                           pointer hand
-                           help-echo
-                           "RET: open  m: media  A: author  o: browser"
                            rear-nonsticky t)
         (when key `(chirp-entry-id ,key)))))
     (put-text-property start (1+ start) 'chirp-entry-start t)))
 
-(defun chirp-render--mark-subentry (start end entry)
-  "Mark the region from START to END as nested ENTRY."
-  (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-subentry-item ,entry
-                           chirp-subentry-url ,(plist-get entry :url)
-                           pointer hand
-                           help-echo "RET: open quoted tweet  o: browser"))))
-
 (defun chirp-render--mark-url-region (start end url)
   "Mark the region from START to END as opening URL in a browser."
-  (when (and (< start end)
-             (stringp url)
+  (when (and (stringp url)
              (not (string-empty-p url)))
-    (add-text-properties
+    (chirp-render--add-action
      start end
-     `(chirp-subentry-url ,url
-                          mouse-face highlight
-                          pointer hand
-                          help-echo "o: browser"))))
+     (lambda ()
+       (browse-url url))
+     :help-echo (format "Open %s" url)
+     :properties `(chirp-subentry-url ,url))))
 
-(defun chirp-render--mark-author-region (start end handle)
-  "Mark the region from START to END as the avatar region for HANDLE."
-  (when (and handle
-             (< start end))
-    (add-text-properties
-     start end
-     `(chirp-author-handle ,handle
-                           chirp-author-profile-url
-                           ,(format "https://x.com/%s" handle)
-                           pointer hand
-                           help-echo "RET: open author profile  o: browser"))))
+(defun chirp-render--add-profile-action (start end handle &optional help-echo)
+  "Make START..END open HANDLE's profile.
+
+HELP-ECHO defaults to a short Open-profile description."
+  (when handle
+    (let ((clean (string-remove-prefix "@" handle)))
+      (chirp-render--add-action
+       start end
+       (lambda ()
+         (chirp-open-profile-handle clean))
+       :help-echo (or help-echo (format "Open @%s" clean))
+       :properties
+       `(chirp-author-handle ,clean
+                             chirp-author-profile-url
+                             ,(format "https://x.com/%s" clean))))))
 
 (defun chirp-render--mark-profile-list-region (start end kind handle)
   "Mark the region from START to END as profile list KIND for HANDLE."
-  (when (and handle
-             (< start end))
-    (add-text-properties
+  (when handle
+    (chirp-render--add-action
      start end
-     `(chirp-profile-list-kind ,kind
-                               chirp-profile-list-handle ,handle
-                               pointer hand
-                               help-echo
-                               ,(pcase kind
-                                  ('followers "RET: open followers")
-                                  ('following "RET: open following")
-                                  (_ "RET: open profile list"))))))
+     (lambda ()
+       (pcase kind
+         ('followers (chirp-profile-followers handle))
+         ('following (chirp-profile-following-users handle))
+         (_ (user-error "Unknown profile list at point"))))
+     :help-echo (pcase kind
+                  ('followers "Open followers")
+                  ('following "Open following")
+                  (_ "Open profile list"))
+     :properties `(chirp-profile-list-kind ,kind
+                                           chirp-profile-list-handle ,handle))))
 
 (defun chirp-render--mark-profile-view-region (start end mode)
   "Mark the region from START to END as profile subview MODE."
-  (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-profile-view-mode ,mode
-                               pointer hand
-                               help-echo "RET/TAB: switch profile view"))))
+  (chirp-render--add-action
+   start end
+   (lambda ()
+     (unless (functionp chirp--profile-switch-mode-function)
+       (user-error "This Chirp view cannot switch profile views"))
+     (funcall chirp--profile-switch-mode-function mode))
+   :help-echo "Switch profile view"
+   :properties `(chirp-profile-view-mode ,mode)))
 
 (defun chirp-render--mark-profile-action-region (start end action handle)
   "Mark the region from START to END as profile ACTION for HANDLE."
-  (when (and handle
-             (< start end))
-    (add-text-properties
+  (when handle
+    (chirp-render--add-action
      start end
-     `(chirp-profile-action ,action
-                            chirp-profile-action-handle ,handle
-                            pointer hand
-                            help-echo "RET: toggle follow"))))
-
-(defun chirp-render--mark-tweet-action-region (start end action)
-  "Mark the region from START to END as tweet ACTION."
-  (when (< start end)
-    (add-text-properties
-     start end
-     `(chirp-tweet-action ,action
-                          keymap ,chirp--tweet-action-map
-                          mouse-face highlight
-                          pointer hand
-                          help-echo
-                          ,(pcase action
-                             ('reply "Mouse-1: reply to this tweet")
-                             ('retweet "Mouse-1: toggle repost/retweet")
-                             ('like "Mouse-1: toggle like")
-                             ('bookmark "Mouse-1: toggle bookmark")
-                             (_ (error "Unknown tweet action: %S" action)))
-                          rear-nonsticky t))))
+     (lambda ()
+       (pcase action
+         ('toggle-follow (chirp-toggle-follow-user-at-point))
+         (_ (user-error "Unknown profile action at point"))))
+     :help-echo "Toggle follow"
+     :properties `(chirp-profile-action ,action
+                                        chirp-profile-action-handle ,handle))))
 
 (defun chirp-render--profile-follow-action-label (user)
   "Return the primary follow button label for USER, or nil."
@@ -429,13 +456,17 @@ When ACTIVE is non-nil, emphasize the metric."
                   (format "%s %s" prefix (chirp-format-count value)))
                 'face face)))
 
-(defun chirp-render--insert-metric (label value &optional active)
-  "Insert the metric for LABEL and VALUE, returning its buffer region.
+(cl-defun chirp-render--insert-metric (label value &key active action help-echo)
+  "Insert the metric for LABEL and VALUE.
 
-When ACTIVE is non-nil, emphasize the metric."
+When ACTIVE is non-nil, emphasize the metric.  ACTION and HELP-ECHO
+make the metric an Appkit action."
   (let ((start (point)))
     (insert (chirp-render--metric-string label value active))
-    (cons start (point))))
+    (when action
+      (chirp-render--add-action
+       start (point) action
+       :help-echo help-echo))))
 
 (defun chirp-render--reply-control-key (mode)
   "Return a comparison key for X reply-control MODE."
@@ -470,16 +501,64 @@ PREFIX and PREFIX-FACE control indentation."
     (insert (propertize label 'face 'chirp-social-context-face))
     (insert "\n")))
 
-(defun chirp-render--insert-filled-text (text &optional prefix prefix-face)
+(defun chirp-render--apply-text-entity (line-start text-offset line-len entity)
+  "Apply one text ENTITY onto the inserted line at LINE-START.
+
+TEXT-OFFSET is the character offset of this line in the original text.
+LINE-LEN is the unpropertized line length.  ENTITY uses the character
+offsets produced by `chirp--emit-visible-text'."
+  (let ((beg (plist-get entity :start))
+        (end (plist-get entity :end)))
+    (when (and (integerp beg)
+               (integerp end)
+               (< beg (+ text-offset line-len))
+               (> end text-offset))
+      (let ((from (+ line-start (max 0 (- beg text-offset))))
+            (to (+ line-start (min line-len (- end text-offset)))))
+        (when (< from to)
+          (pcase (plist-get entity :kind)
+            ('mention
+             (add-face-text-property from to 'chirp-link-face 'append)
+             (chirp-render--add-profile-action
+              from to (plist-get entity :handle)))
+            ('hashtag
+             (let ((tag (plist-get entity :tag)))
+               (chirp-render--add-action
+                from to
+                (lambda ()
+                  (chirp-timeline-open-search (concat "#" tag)))
+                :help-echo (format "Search #%s" tag)
+                :face 'chirp-hashtag-face)))
+            ('cashtag
+             (let ((tag (plist-get entity :tag)))
+               (chirp-render--add-action
+                from to
+                (lambda ()
+                  (chirp-timeline-open-search (concat "$" tag)))
+                :help-echo (format "Search $%s" tag)
+                :face 'chirp-hashtag-face)))
+            ((or 'url 'timestamp)
+             (when-let* ((url (plist-get entity :url)))
+               (add-face-text-property from to 'chirp-link-face 'append)
+               (chirp-render--mark-url-region from to url)))))))))
+
+(defun chirp-render--insert-filled-text (text &optional prefix prefix-face entities)
   "Insert TEXT and let Emacs wrap it visually in the current window.
 
-Precede each line with PREFIX using PREFIX-FACE when provided."
-  (dolist (line (split-string (chirp-clean-text text) "\n" nil))
-    (chirp-render--insert-prefix prefix prefix-face)
-    (let ((start (point)))
-      (insert line)
-      (insert "\n")
-      (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
+Precede each line with PREFIX using PREFIX-FACE when provided.  ENTITIES
+are the pre-parsed tweet-text spans from X, already mapped onto TEXT."
+  (let* ((cleaned (chirp-clean-text text))
+         (offset 0))
+    (dolist (line (split-string cleaned "\n" nil))
+      (chirp-render--insert-prefix prefix prefix-face)
+      (let ((start (point))
+            (line-len (length line)))
+        (insert line)
+        (dolist (entity entities)
+          (chirp-render--apply-text-entity start offset line-len entity))
+        (insert "\n")
+        (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
+        (setq offset (+ offset line-len 1))))))
 
 (defun chirp-render--insert-face-text (text face &optional prefix prefix-face)
   "Insert TEXT using FACE, optionally preceded by PREFIX.
@@ -512,6 +591,17 @@ Precede each line with PREFIX using PREFIX-FACE when provided."
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))
     (chirp-render--insert-face-text
      translation 'chirp-translation-face prefix prefix-face)))
+
+(defun chirp-render--trailing-urls (tweet)
+  "Return TWEET URLs that were not already inlined as text entities."
+  (let ((inline (make-hash-table :test #'equal)))
+    (dolist (entity (plist-get tweet :text-entities))
+      (when (and (eq (plist-get entity :kind) 'url)
+                 (stringp (plist-get entity :url)))
+        (puthash (plist-get entity :url) t inline)))
+    (cl-remove-if (lambda (url)
+                    (gethash url inline))
+                  (plist-get tweet :urls))))
 
 (defun chirp-render--insert-expanded-urls (urls &optional prefix prefix-face)
   "Insert URLS as separate readable lines.
@@ -606,12 +696,12 @@ Precede the action with PREFIX using PREFIX-FACE when provided."
     (chirp-render--insert-prefix prefix prefix-face)
     (let ((start (point)))
       (insert (propertize "Show more" 'face 'link))
-      (add-text-properties
+      (chirp-render--add-action
        start (point)
-       `(chirp-expand-tweet-id ,tweet-id
-                               mouse-face highlight
-                               pointer hand
-                               help-echo "RET: show full content"))
+       (lambda ()
+         (chirp--expand-tweet tweet-id))
+       :help-echo "Show full content"
+       :properties `(chirp-expand-tweet-id ,tweet-id))
       (insert "\n")
       (chirp-render--apply-wrap-prefix start (point) prefix prefix-face))))
 
@@ -623,69 +713,93 @@ Precede the action with PREFIX using PREFIX-FACE when provided."
       (concat (string-trim-right (substring cleaned 0 (max 0 (- max-length 3))))
               "..."))))
 
-(defun chirp-render--insert-link-card (card &optional prefix prefix-face)
-  "Insert one external link CARD.
+(defun chirp-render--card-parent-prefix (prefix)
+  "Return PREFIX as an Appkit card indent state, or nil."
+  (cond
+   ((appkit-ui-prefix-state-p prefix) prefix)
+   ((and (stringp prefix) (not (string-empty-p prefix)))
+    (appkit-ui-make-prefix-state prefix prefix))))
 
-Precede each line with PREFIX using PREFIX-FACE when provided."
-  (let* ((start (point))
-         (url (plist-get card :url))
-         (title (plist-get card :title))
-         (description (plist-get card :description))
-         (image-url (plist-get card :image-url))
-         (thumb (and chirp-show-tweet-media
-                     image-url
-                     (chirp-media-thumbnail-image
-                      (list :type "photo"
-                            :url image-url)))))
-    (when thumb
-      (chirp-render--insert-prefix prefix prefix-face)
-      (insert-image thumb "[link preview]")
-      (insert "\n"))
-    (when (and title
-               (not (string-empty-p title)))
-      (chirp-render--insert-face-text
-       (chirp-render--truncate-link-card-text title 180)
-       'chirp-link-card-title-face
-       prefix
-       prefix-face))
-    (when (and description
-               (not (string-empty-p description))
-               (not (string= description title)))
-      (chirp-render--insert-face-text
-       (chirp-render--truncate-link-card-text description 220)
-       'chirp-link-card-description-face
-       prefix
-       prefix-face))
-    (when (and url
-               (not (string-empty-p url)))
-      (chirp-render--insert-prefix prefix prefix-face)
-      (let ((line-start (point)))
-        (insert (propertize url 'face 'chirp-link-face))
-        (insert "\n")
-        (chirp-render--apply-wrap-prefix line-start (point) prefix prefix-face)))
-    (insert "\n")
-    (chirp-render--mark-url-region start (point) url)))
+(cl-defun chirp-render--with-card (prefix inserter &key action help-echo properties)
+  "Insert INSERTER's rows as one Appkit card nested below PREFIX.
+
+INSERTER receives the card prefix state and should apply it to each
+row, the same way disco and emacs-qq insert cards.  ACTION, HELP-ECHO,
+and PROPERTIES apply to the finished card."
+  (let* ((appkit-ui-card-indent-prefix-state
+          (chirp-render--card-parent-prefix prefix))
+         (card-prefix
+          (appkit-ui-card-prefix-state
+           :face 'chirp-quoted-tweet-border-face))
+         (start (point)))
+    (funcall inserter card-prefix)
+    (when (< start (point))
+      (add-face-text-property start (point)
+                              'chirp-quoted-tweet-block-face 'append)
+      (when properties
+        (add-text-properties start (point) properties))
+      (when action
+        (chirp-render--add-fallback-action
+         start (max start (1- (point))) action :help-echo help-echo))
+      (cons start (point)))))
+
+(defun chirp-render--insert-link-card-image (url card-prefix)
+  "Insert a sliced preview for cached card image URL using CARD-PREFIX."
+  (when-let* ((image (and chirp-show-tweet-media
+                          (chirp-media-cached-image
+                           url
+                           (* 2 chirp-media-thumbnail-size)
+                           chirp-media-thumbnail-size))))
+    (let ((start (point)))
+      (appkit-media-insert-image-slices image nil nil "[link preview]")
+      (insert "\n")
+      (appkit-ui-apply-line-prefix start (point) card-prefix))))
+
+(defun chirp-render--insert-link-card (card &optional prefix _prefix-face)
+  "Insert one external link CARD as an Appkit card.
+
+PREFIX supplies the card's outer nesting indentation."
+  (let ((url (plist-get card :url))
+        (title (chirp-first-nonblank (plist-get card :title)))
+        (description (chirp-first-nonblank (plist-get card :description)))
+        (domain (chirp-first-nonblank (plist-get card :domain)))
+        (image-url (plist-get card :image-url)))
+    (when (and description (equal description title))
+      (setq description nil))
+    (when (chirp-render--with-card
+           prefix
+           (lambda (card-prefix)
+             (when domain
+               (appkit-ui-insert-prefixed-lines
+                card-prefix domain :face 'chirp-meta-face))
+             (when title
+               (appkit-ui-insert-prefixed-lines
+                card-prefix
+                (chirp-render--truncate-link-card-text title 180)
+                :face 'chirp-link-card-title-face))
+             (when description
+               (appkit-ui-insert-prefixed-lines
+                card-prefix
+                (chirp-render--truncate-link-card-text description 220)
+                :face 'chirp-link-card-description-face))
+             (chirp-render--insert-link-card-image image-url card-prefix))
+           :action (and (stringp url)
+                        (not (string-empty-p url))
+                        (lambda ()
+                          (browse-url url)))
+           :help-echo (and url (format "Open %s" url))
+           :properties `(chirp-subentry-url ,url))
+      (insert "\n"))))
 
 (defun chirp-render--insert-link-cards (tweet &optional prefix prefix-face)
-  "Insert cached external link-card previews for TWEET.
+  "Insert website card previews for TWEET.
 
-Precede each line with PREFIX using PREFIX-FACE when provided."
+Precede each card with PREFIX using PREFIX-FACE when provided."
   (dolist (card (chirp-media-link-cards-for-tweet tweet))
     (chirp-render--insert-link-card card prefix prefix-face)))
 
 (defvar chirp-render--quoted-tweet-depth 0
   "Dynamic nesting depth while rendering quoted tweets.")
-
-(defun chirp-render--quoted-tweet-prefix-state (prefix)
-  "Return a display-only card prefix state nested below PREFIX."
-  (let* ((base (if (appkit-ui-prefix-state-p prefix)
-                   (appkit-ui-prefix-string prefix)
-                 (or prefix "")))
-         (indent (concat base "   "))
-         (face 'chirp-quoted-tweet-border-face))
-    (appkit-ui-make-prefix-state
-     (appkit-ui-card-line-prefix :face face :indent indent)
-     (appkit-ui-card-line-prefix :face face :indent indent))))
 
 
 (defun chirp-render--insert-quoted-tweet (tweet &optional prefix prefix-face)
@@ -696,17 +810,28 @@ for caller consistency; the card owns its border face.  Nested quoted tweets
 are intentionally omitted after the first card level."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet))
-              ((< chirp-render--quoted-tweet-depth 1)))
-    (let ((start (point)))
-      (let ((chirp-render--quoted-tweet-depth
-             (1+ chirp-render--quoted-tweet-depth)))
-        (chirp-render--insert-tweet quoted nil nil t nil nil))
-      (add-face-text-property start (point)
-                              'chirp-quoted-tweet-block-face 'append)
-      (appkit-ui-apply-line-prefix
-       start (point) (chirp-render--quoted-tweet-prefix-state prefix))
-      (put-text-property start (1+ start) 'chirp-entry-start nil)
-      (chirp-render--mark-subentry start (point) quoted))))
+              ((< chirp-render--quoted-tweet-depth 1))
+              (span
+               (let ((chirp-render--quoted-tweet-depth
+                      (1+ chirp-render--quoted-tweet-depth)))
+                 (chirp-render--with-card
+                  prefix
+                  (lambda (card-prefix)
+                    (let ((body-start (point)))
+                      (chirp-render--insert-tweet
+                       quoted nil nil t nil nil)
+                      (appkit-ui-apply-line-prefix
+                       body-start (point) card-prefix)))
+                  :action (lambda ()
+                            (chirp-thread-open
+                             quoted (plist-get quoted :id)))
+                  :help-echo "Open quoted tweet"
+                  :properties
+                  `(chirp-subentry-item ,quoted
+                                        chirp-subentry-url
+                                        ,(plist-get quoted :url))))))
+    (put-text-property (car span) (1+ (car span))
+                       'chirp-entry-start nil)))
 
 (defun chirp-render--insert-list-reply-context (tweet reply-parent &optional prefix prefix-face)
   "Insert a lightweight reply context line for TWEET above REPLY-PARENT.
@@ -717,23 +842,29 @@ Precede the line with PREFIX using PREFIX-FACE when provided."
                     (plist-get reply-parent :author-handle))))
     (when parent-id
       (chirp-render--insert-prefix prefix prefix-face)
-      (let ((start (point)))
+      (let ((start (point))
+            handle-start handle-end)
         (if handle
             (progn
               (insert (propertize "↳ replying to "
                                   'face 'chirp-thread-reply-context-face))
+              (setq handle-start (point))
               (insert (propertize (format "@%s" handle)
-                                  'face 'chirp-handle-face))
+                                  'face 'chirp-link-face))
+              (setq handle-end (point))
               (insert (propertize " above"
                                   'face 'chirp-thread-reply-context-face)))
           (insert (propertize "↳ reply to above"
                               'face 'chirp-thread-reply-context-face)))
         (insert "\n")
         (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
-        (add-text-properties
+        (chirp-render--add-action
          start (max start (1- (point)))
-         `(chirp-reply-parent-id ,parent-id
-                                 pointer hand))))))
+         #'chirp-open-reply-parent-at-point
+         :help-echo "Open parent tweet"
+         :properties `(chirp-reply-parent-id ,parent-id))
+        (when handle-start
+          (chirp-render--add-profile-action handle-start handle-end handle))))))
 
 (defun chirp-render--list-reply-parent (tweet previous)
   "Return PREVIOUS when TWEET looks like a reply to it."
@@ -766,97 +897,16 @@ Associate the avatar with HANDLE when provided."
             (insert-image image " ")
             (insert " "))
         (insert "  "))
-      (chirp-render--mark-author-region start (point) handle))))
+      (chirp-render--add-profile-action start (point) handle))))
 
-(defun chirp-render--rendered-thumbnail-row-metrics
-    (text minimum-height window)
-  "Return rendered metrics for TEXT using MINIMUM-HEIGHT in WINDOW, or nil."
-  (when (and window
-             (display-graphic-p (window-frame window))
-             (fboundp 'buffer-text-pixel-size))
-    (let ((remapping (and (boundp 'face-remapping-alist)
-                          (symbol-value 'face-remapping-alist))))
-      (with-temp-buffer
-        (setq-local face-remapping-alist remapping
-                    line-spacing 0
-                    truncate-lines t)
-        (insert text (propertize "x" 'face 'default))
-        (when-let* ((rendered-height
-                     (ignore-errors
-                       (cdr (buffer-text-pixel-size
-                             (current-buffer) window t))))
-                    ((numberp rendered-height))
-                    ((> rendered-height 0)))
-          (insert (propertize
-                   " " 'display
-                   `(space :height (,rendered-height) :ascent 100)))
-          (when-let* ((probe-height
-                       (ignore-errors
-                         (cdr (buffer-text-pixel-size
-                               (current-buffer) window t))))
-                      ((numberp probe-height))
-                      ((> probe-height 0)))
-            (let* ((content-ascent (- (* 2 rendered-height) probe-height))
-                   (height (max minimum-height rendered-height))
-                   (ascent (+ content-ascent
-                              (/ (- height rendered-height) 2)))
-                   (ascent-percent
-                    (max 0 (min 100 (ceiling
-                                     (* 100 (/ (float ascent) height)))))))
-              (cons height ascent-percent))))))))
-
-(defun chirp-render--thumbnail-row-metrics (&optional prefix prefix-face)
-  "Return metrics for one thumbnail row using PREFIX and PREFIX-FACE.
-
-The result is (HEIGHT . ASCENT).  HEIGHT is in pixels and ASCENT is an image
-ascent percentage, or nil when final-layout measurement is unavailable."
-  (let* ((window (get-buffer-window (current-buffer) t))
-         (frame (if window (window-frame window) (selected-frame)))
-         (minimum-height
-          (max 1 (ceiling
-                  (or (and window
-                           (fboundp 'window-font-height)
-                           (ignore-errors
-                             (window-font-height window 'default)))
-                      (frame-char-height frame)))))
-         (text (or (chirp-render--prefix-string prefix prefix-face) "")))
-    (or (chirp-render--rendered-thumbnail-row-metrics
-         text minimum-height window)
-        (cons minimum-height nil))))
-
-(defun chirp-render--thumbnail-slices (image row-metrics)
-  "Return (SLICES . WIDTH) for IMAGE using ROW-METRICS.
-
-SLICES use one-to-one integer pixel coordinates.  WIDTH is the resulting image
-width in pixels.  IMAGE is copied and never mutated.  Geometry errors are not
-caught or converted to fallback values."
-  (pcase-let* ((`(,display-width . ,display-height) (image-size image t))
-               (display-width (max 1 (ceiling display-width)))
-               (display-height (max 1 (ceiling display-height)))
-               (row-height (car row-metrics))
-               (row-count
-                (max 1 (ceiling (/ display-height (float row-height)))))
-               (source-height (* row-count row-height))
-               (target-width
-                (max 1 (round (* display-width
-                                 (/ (float source-height) display-height)))))
-               (properties (copy-sequence (cdr image))))
-    (setq properties (plist-put properties :width target-width)
-          properties (plist-put properties :height source-height)
-          properties (plist-put properties :scale 1.0))
-    (when (cdr row-metrics)
-      (setq properties (plist-put properties :ascent (cdr row-metrics))))
-    (let ((prepared (cons 'image properties)))
-      (cons
-       (cl-loop for row below row-count
-                collect
-                (propertize
-                 " "
-                 'display `((slice 0 ,(* row row-height) 1.0 ,row-height)
-                            ,prepared)
-                 'line-height t
-                 'rear-nonsticky '(display)))
-       target-width))))
+(defun chirp-render--thumbnail-width (rows)
+  "Return the reserved column width in characters for slice ROWS."
+  (let* ((display (and rows (get-text-property 0 'display (car rows))))
+         (image (and (eq (car-safe (car-safe display)) 'slice)
+                     (cadr display))))
+    (max 1 (ceiling
+            (or (car (ignore-errors (image-size image)))
+                1)))))
 
 (defun chirp-render--media-placeholder-text (media &optional compactp)
   "Return a text placeholder for MEDIA.
@@ -881,25 +931,27 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
 
 (defun chirp-render--mark-media-region (start end media media-list index)
   "Mark START..END as MEDIA at INDEX in MEDIA-LIST."
-  (add-text-properties
+  (chirp-render--add-action
    start end
-   `(chirp-media-item ,media
-                      chirp-media-index ,index
-                      chirp-media-list ,media-list
-                      pointer hand
-                      help-echo "RET: open media  D: download  o: browser")))
+   (lambda ()
+     (chirp-media-open media-list index
+                       (or chirp--view-title "Chirp Media")))
+   :help-echo "Open media"
+   :properties `(chirp-media-item ,media
+                                  chirp-media-index ,index
+                                  chirp-media-list ,media-list)))
 
-(defun chirp-render--media-grid-cell (media index row-metrics)
-  "Return sliced grid data for MEDIA at INDEX using ROW-METRICS."
+(defun chirp-render--media-grid-cell (media index)
+  "Return sliced grid data for MEDIA at INDEX."
   (if-let* ((image (or (chirp-media-thumbnail-image media)
-                       (chirp-media-thumbnail-placeholder-image media))))
-      (pcase-let ((`(,rows . ,width)
-                   (chirp-render--thumbnail-slices image row-metrics)))
-        (list :media media
-              :index index
-              :rows rows
-              :padding (propertize
-                        " " 'display `(space :width (,width)))))
+                       (chirp-media-thumbnail-placeholder-image media)))
+            (rows (appkit-media-image-slice-rows image)))
+      (list :media media
+            :index index
+            :rows rows
+            :padding (propertize
+                      " " 'display
+                      `(space :width ,(chirp-render--thumbnail-width rows))))
     (let ((placeholder (chirp-render--media-placeholder-text media t)))
       (list :media media
             :index index
@@ -910,13 +962,10 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
 (defun chirp-render--insert-media-grid
     (media-list &optional prefix prefix-face)
   "Insert sliced rows for MEDIA-LIST using PREFIX and PREFIX-FACE."
-  (let* ((row-metrics
-          (chirp-render--thumbnail-row-metrics prefix prefix-face))
-         (cells
+  (let* ((cells
           (cl-loop for media in media-list
                    for index from 0
-                   collect (chirp-render--media-grid-cell
-                            media index row-metrics)))
+                   collect (chirp-render--media-grid-cell media index)))
          (row-count
           (apply #'max (mapcar (lambda (cell)
                                  (length (plist-get cell :rows)))
@@ -976,7 +1025,7 @@ TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
       (when handle
         (insert " ")
         (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
-      (chirp-render--mark-author-region author-start (point) handle))
+      (chirp-render--add-profile-action author-start (point) handle))
     (when (and time-p created-at)
       (insert "  ")
       (insert (propertize created-at 'face 'chirp-meta-face)))
@@ -1001,16 +1050,14 @@ supplies the preceding tweet."
     (insert "\n"))
   (when-let* ((retweeted-by (plist-get tweet :retweeted-by)))
     (chirp-render--insert-prefix prefix prefix-face)
-    (insert (propertize (format "retweeted by @%s" retweeted-by)
-                        'face 'chirp-social-context-face))
+    (let ((start (point))
+          (name (or (plist-get tweet :retweeted-by-name) retweeted-by)))
+      (insert (propertize (format "retweeted by %s" name)
+                          'face 'chirp-social-context-face))
+      (chirp-render--add-profile-action
+       start (point) retweeted-by
+       (format "Open @%s" retweeted-by)))
     (insert "\n")))
-
-(defun chirp-render--mark-tweet-actions (action-regions)
-  "Apply Chirp action properties to ACTION-REGIONS."
-  (dolist (action-region action-regions)
-    (pcase-let ((`(,action ,region-start . ,region-end) action-region))
-      (chirp-render--mark-tweet-action-region
-       region-start region-end action))))
 
 (cl-defun chirp-render--insert-tweet-body
     (tweet &key prefix prefix-face reply-context-prefix show-reply-context
@@ -1027,21 +1074,24 @@ TRAILING-NEWLINES controls the additional newlines after the metrics row."
                   (chirp--tweet-expanded-p tweet))
               'full
             article-mode))
-         (meta-start nil)
-         (action-regions nil))
+         (meta-start nil))
     (when (and show-reply-context
                (plist-get tweet :reply-to-handle))
       (chirp-render--insert-prefix
        (or reply-context-prefix prefix) prefix-face)
       (insert (propertize "replying to "
                           'face 'chirp-thread-reply-context-face))
-      (insert (propertize (format "@%s"
-                                  (plist-get tweet :reply-to-handle))
-                          'face 'chirp-handle-face))
+      (let ((handle (plist-get tweet :reply-to-handle))
+            (handle-start (point)))
+        (insert (propertize (format "@%s" handle)
+                            'face 'chirp-link-face))
+        (chirp-render--add-profile-action handle-start (point) handle))
       (insert "\n"))
     (when-let* ((text (plist-get tweet :text)))
       (unless (string-empty-p text)
-        (chirp-render--insert-filled-text text prefix prefix-face)))
+        (chirp-render--insert-filled-text
+         text prefix prefix-face
+         (plist-get tweet :text-entities))))
     (chirp-render--insert-translation tweet prefix prefix-face)
     (pcase article-mode
       ('full
@@ -1055,47 +1105,47 @@ TRAILING-NEWLINES controls the additional newlines after the metrics row."
          (chirp-render--insert-show-more tweet prefix prefix-face))))
     (chirp-render--insert-link-cards tweet prefix prefix-face)
     (chirp-render--insert-expanded-urls
-     (plist-get tweet :urls) prefix prefix-face)
+     (chirp-render--trailing-urls tweet) prefix prefix-face)
     (chirp-render-insert-media-strip
      (plist-get tweet :media) prefix prefix-face)
     (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
     (chirp-render--insert-reply-control tweet prefix prefix-face)
     (setq meta-start (point))
-    (let ((reply-region
-           (chirp-render--insert-metric
-            'reply (plist-get tweet :reply-count))))
-      (unless (plist-get tweet :reply-limited-p)
-        (push (cons 'reply reply-region) action-regions)))
+    (chirp-render--insert-metric
+     'reply (plist-get tweet :reply-count)
+     :action (unless (plist-get tweet :reply-limited-p)
+               #'chirp-reply-at-point)
+     :help-echo "Reply")
     (insert "   ")
-    (push (cons 'retweet
-                (chirp-render--insert-metric
-                 'retweet
-                 (plist-get tweet :retweet-count)
-                 (plist-get tweet :retweeted-p)))
-          action-regions)
+    (chirp-render--insert-metric
+     'retweet (plist-get tweet :retweet-count)
+     :active (plist-get tweet :retweeted-p)
+     :action #'chirp-toggle-retweet-at-point
+     :help-echo "Repost")
     (insert "   ")
-    (push (cons 'like
-                (chirp-render--insert-metric
-                 'like
-                 (plist-get tweet :like-count)
-                 (plist-get tweet :liked-p)))
-          action-regions)
+    (chirp-render--insert-metric
+     'like (plist-get tweet :like-count)
+     :active (plist-get tweet :liked-p)
+     :action #'chirp-toggle-like-at-point
+     :help-echo "Like")
     (insert "   ")
-    (chirp-render--insert-metric 'quote (plist-get tweet :quote-count))
+    (chirp-render--insert-metric
+     'quote (plist-get tweet :quote-count)
+     :action #'chirp-quote-at-point
+     :help-echo "Quote")
     (insert "   ")
-    (push (cons 'bookmark
-                (chirp-render--insert-metric
-                 'bookmark
-                 (plist-get tweet :bookmark-count)
-                 (plist-get tweet :bookmarked-p)))
-          action-regions)
+    (chirp-render--insert-metric
+     'bookmark (plist-get tweet :bookmark-count)
+     :active (plist-get tweet :bookmarked-p)
+     :action #'chirp-toggle-bookmark-at-point
+     :help-echo "Bookmark")
     (insert "   ")
     (chirp-render--insert-metric 'view (plist-get tweet :view-count))
     (insert "\n")
     (dotimes (_ trailing-newlines)
       (insert "\n"))
-    (put-text-property meta-start (point) 'rear-nonsticky t)
-    action-regions))
+    (put-text-property meta-start (point) 'rear-nonsticky t)))
+
 (defun chirp-render--insert-tweet
     (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
   "Insert TWEET at point, optionally prefixed for thread rendering.
@@ -1109,13 +1159,11 @@ and REPLY-PARENT supplies the preceding parent tweet when available."
      :show-reply-context show-reply-context :reply-parent reply-parent)
     (chirp-render--insert-tweet-heading
      tweet :prefix prefix :prefix-face prefix-face :avatar-p t)
-    (let ((action-regions
-           (chirp-render--insert-tweet-body
-            tweet :prefix prefix :prefix-face prefix-face
-            :show-reply-context show-reply-context
-            :article-mode article-mode)))
-      (chirp-render--mark-entry start (point) tweet)
-      (chirp-render--mark-tweet-actions action-regions))))
+    (chirp-render--insert-tweet-body
+     tweet :prefix prefix :prefix-face prefix-face
+     :show-reply-context show-reply-context
+     :article-mode article-mode)
+    (chirp-render--mark-entry start (point) tweet)))
 
 (defun chirp-render-insert-tweet (tweet)
   "Insert TWEET at point."
@@ -1133,7 +1181,6 @@ tweet content and actions."
          (show-reply-context
           (and (eq (plist-get row :role) 'tree)
                (> (or (plist-get row :depth) 0) 1)))
-         (action-regions nil)
          (span
           (appkit-discussion-insert-entry
            (appkit-discussion-entry-create
@@ -1154,26 +1201,22 @@ tweet content and actions."
                 (chirp-render--insert-tweet-context
                  tweet :prefix nil
                  :show-reply-context show-reply-context)
-                (setq action-regions
-                      (chirp-render--insert-tweet-body
-                       tweet :prefix nil
-                       :reply-context-prefix nil
-                       :show-reply-context show-reply-context
-                       :article-mode (and focus-p 'full)
-                       :trailing-newlines 0))
+                (chirp-render--insert-tweet-body
+                 tweet :prefix nil
+                 :reply-context-prefix nil
+                 :show-reply-context show-reply-context
+                 :article-mode (and focus-p 'full)
+                 :trailing-newlines 0)
                 (appkit-ui-apply-line-prefix
                  body-start (point) body-prefix)))
             :properties
             (list 'chirp-entry-item tweet
                   'chirp-entry-id key
                   'chirp-entry-url (plist-get tweet :url)
-                  'pointer 'hand
-                  'help-echo "RET: open  m: media  A: author  o: browser"
                   'rear-nonsticky t))
            :avatar-p nil)))
     (put-text-property (car span) (1+ (car span))
                        'chirp-entry-start t)
-    (chirp-render--mark-tweet-actions action-regions)
     span))
 
 (defun chirp-render--tweet-separator-line ()
@@ -1219,11 +1262,14 @@ projections can replace it as one unit."
   (let ((start (point)))
     (chirp-render--insert-avatar (plist-get user :avatar-url)
                                  (plist-get user :handle))
-    (insert (propertize (or (plist-get user :name) "Unknown")
-                        'face 'chirp-author-face))
-    (when-let* ((handle (plist-get user :handle)))
-      (insert " ")
-      (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
+    (let ((name-start (point))
+          (handle (plist-get user :handle)))
+      (insert (propertize (or (plist-get user :name) "Unknown")
+                          'face 'chirp-author-face))
+      (when handle
+        (insert " ")
+        (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
+      (chirp-render--add-profile-action name-start (point) handle))
     (insert "\n")
     (when-let* ((bio (plist-get user :bio)))
       (unless (string-empty-p bio)
@@ -1259,8 +1305,10 @@ projections can replace it as one unit."
       (insert (propertize (format "Joined %s" joined) 'face 'chirp-meta-face))
       (insert "\n"))
     (when-let* ((url (plist-get user :profile-url)))
-      (insert (propertize url 'face 'link))
-      (insert "\n"))
+      (let ((url-start (point)))
+        (insert (propertize url 'face 'link))
+        (chirp-render--mark-url-region url-start (point) url)
+        (insert "\n")))
     (insert "\n")
     (chirp-render--mark-entry start (point) user)))
 

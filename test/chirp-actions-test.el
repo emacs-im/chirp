@@ -7,6 +7,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'transient)
+(require 'appkit-ui)
 (require 'chirp-actions)
 (require 'chirp-render)
 
@@ -1022,18 +1023,24 @@ Return a list of (compose source foreign)."
                 (chirp-render-insert-tweet first-tweet)
                 (chirp-render-insert-tweet clicked-tweet)))
             (let (positions)
-              (dolist (action '(reply retweet like bookmark))
+              (dolist (spec
+                       `((reply . ,#'chirp-reply-at-point)
+                         (retweet . ,#'chirp-toggle-retweet-at-point)
+                         (like . ,#'chirp-toggle-like-at-point)
+                         (quote . ,#'chirp-quote-at-point)
+                         (bookmark . ,#'chirp-toggle-bookmark-at-point)))
                 (goto-char (point-min))
                 (let (position)
                   (while (< (point) (point-max))
-                    (when (eq (get-text-property (point) 'chirp-tweet-action)
-                              action)
+                    (when (eq (get-text-property
+                               (point) appkit-ui-action-property)
+                              (cdr spec))
                       (setq position (point)))
                     (goto-char
                      (or (next-single-property-change
-                          (point) 'chirp-tweet-action nil (point-max))
+                          (point) appkit-ui-action-property nil (point-max))
                          (point-max))))
-                  (push (cons action position) positions)))
+                  (push (cons (car spec) position) positions)))
               (cl-letf (((symbol-function 'event-start)
                          (lambda (_event) event-position))
                         ((symbol-function 'chirp-reply-at-point)
@@ -1048,11 +1055,15 @@ Return a list of (compose source foreign)."
                          (lambda ()
                            (setq dispatched
                                  (list 'like (chirp-entry-id-at-point)))))
+                        ((symbol-function 'chirp-quote-at-point)
+                         (lambda ()
+                           (setq dispatched
+                                 (list 'quote (chirp-entry-id-at-point)))))
                         ((symbol-function 'chirp-toggle-bookmark-at-point)
                          (lambda ()
                            (setq dispatched
                                  (list 'bookmark (chirp-entry-id-at-point))))))
-                (dolist (action '(reply retweet like bookmark))
+                (dolist (action '(reply retweet like quote bookmark))
                   (setq event-position
                         (list (selected-window)
                               nil
@@ -1067,7 +1078,7 @@ Return a list of (compose source foreign)."
                   (let* ((position (posn-point event-position))
                          (keymap (get-text-property position 'keymap)))
                     (should (eq (lookup-key keymap [mouse-1])
-                                #'chirp--dispatch-mouse-action))
+                                #'appkit-ui-activate))
                     (funcall (lookup-key keymap [mouse-1]) '(mouse-1)))
                   (should (equal dispatched (list action "clicked"))))))))
       (when (buffer-live-p buffer)
