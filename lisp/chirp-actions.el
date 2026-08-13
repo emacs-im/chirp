@@ -29,6 +29,7 @@
 (declare-function chirp-me "chirp" ())
 (declare-function chirp-unsent-drafts "chirp-unsent" ())
 (declare-function chirp-unsent-scheduled "chirp-unsent" ())
+(declare-function chirp-edit-history-open-at-point "chirp-edit-history" ())
 
 (defcustom chirp-compose-temporary-directory
   (expand-file-name "compose/" (locate-user-emacs-file "chirp/"))
@@ -1707,7 +1708,8 @@ When TWEET is non-nil, use it as the reply or quote target."
     ("d" "Drafts" chirp-unsent-drafts)
     ("t" "Scheduled" chirp-unsent-scheduled)]
    ["Tweet"
-    ("R" "Retweet" chirp-toggle-retweet-at-point)]
+    ("R" "Retweet" chirp-toggle-retweet-at-point)
+    ("H" "Edit history" chirp-edit-history-open-at-point)]
    ["People"
     ("+" "Follow" chirp-follow-user-at-point)
     ("-" "Unfollow" chirp-unfollow-user-at-point)]

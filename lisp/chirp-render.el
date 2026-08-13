@@ -29,6 +29,8 @@
 (declare-function chirp-quote-at-point "chirp-actions" ())
 (declare-function chirp-thread-open "chirp-thread"
                   (tweet-or-url &optional focus-id buffer))
+(declare-function chirp-edit-history-open "chirp-edit-history"
+                  (tweet-or-id))
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -803,13 +805,13 @@ Precede each card with PREFIX using PREFIX-FACE when provided."
 (defvar chirp-render--quoted-tweet-depth 0
   "Dynamic nesting depth while rendering quoted tweets.")
 
-
-(defun chirp-render--insert-quoted-tweet (tweet &optional prefix prefix-face)
+(defun chirp-render--insert-quoted-tweet
+    (tweet &optional prefix prefix-face write-actions-p)
   "Insert a normal tweet presentation inside TWEET's card.
 
 PREFIX supplies the card's outer nesting indentation.  PREFIX-FACE is accepted
-for caller consistency; the card owns its border face.  Nested quoted tweets
-are intentionally omitted after the first card level."
+for caller consistency; the card owns its border face.  WRITE-ACTIONS-P
+controls mutation actions.  Nested quoted tweets are omitted after one level."
   (ignore prefix-face)
   (when-let* ((quoted (plist-get tweet :quoted-tweet))
               ((< chirp-render--quoted-tweet-depth 1))
@@ -821,7 +823,8 @@ are intentionally omitted after the first card level."
                   (lambda (card-prefix)
                     (let ((body-start (point)))
                       (chirp-render--insert-tweet
-                       quoted nil nil t nil nil)
+                       quoted :show-reply-context t
+                       :write-actions-p write-actions-p)
                       (appkit-ui-apply-line-prefix
                        body-start (point) card-prefix)))
                   :action (lambda ()
@@ -1010,11 +1013,13 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
     (insert "\n\n")))
 
 (cl-defun chirp-render--insert-tweet-heading
-    (tweet &key prefix prefix-face avatar-p (time-p t) (newline-p t))
+    (tweet &key prefix prefix-face avatar-p (time-p t) (time-format 'compact)
+           (newline-p t))
   "Insert TWEET's author heading.
 
 PREFIX and PREFIX-FACE control indentation.  AVATAR-P controls the avatar;
-TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
+TIME-P controls the timestamp, and TIME-FORMAT is `compact' or `full'.
+NEWLINE-P controls the trailing newline."
   (let ((author (or (plist-get tweet :author-name) "Unknown"))
         (handle (plist-get tweet :author-handle))
         (created-at (plist-get tweet :created-at)))
@@ -1029,13 +1034,38 @@ TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
         (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
       (chirp-render--add-profile-action author-start (point) handle))
     (when (and time-p created-at)
-      (when-let* ((time (chirp-time--format-compact created-at))
+      (when-let* ((time
+                   (pcase time-format
+                     ('compact (chirp-time--format-compact created-at))
+                     ('full (chirp-time--format-full created-at))
+                     (_ (error "Invalid Chirp tweet time format: %S"
+                               time-format))))
                   ((not (string-empty-p time))))
         (appkit-chat-ins-insert-right-aligned-text
          time (chirp--view-width)
          :face 'chirp-meta-face
          :right-edge-margin 0)))
     (when newline-p
+      (insert "\n"))))
+
+(defun chirp-render--insert-edit-history-context
+    (tweet &optional prefix prefix-face)
+  "Insert TWEET's edit-history action.
+
+PREFIX and PREFIX-FACE control indentation."
+  (when (plist-get tweet :edited-p)
+    (let* ((ids (plist-get tweet :edit-history-ids))
+           (count (length ids))
+           (start (point)))
+      (chirp-render--insert-prefix prefix prefix-face)
+      (insert (format "Edited · %d version%s"
+                      count
+                      (if (= count 1) "" "s")))
+      (chirp-render--add-action
+       start (point)
+       (lambda () (chirp-edit-history-open tweet))
+       :help-echo "Open edit history"
+       :face 'chirp-social-context-face)
       (insert "\n"))))
 
 (cl-defun chirp-render--insert-tweet-context
@@ -1049,6 +1079,7 @@ block ends in a newline."
     (when reply-parent
       (chirp-render--insert-list-reply-context
        tweet reply-parent prefix prefix-face))
+    (chirp-render--insert-edit-history-context tweet prefix prefix-face)
     (when (eq (plist-get tweet :timeline-context) 'related)
       (chirp-render--insert-prefix prefix prefix-face)
       (insert (propertize "Related tweet"
@@ -1071,14 +1102,15 @@ block ends in a newline."
 
 (cl-defun chirp-render--insert-tweet-body
     (tweet &key prefix prefix-face reply-context-prefix show-reply-context
-           article-mode
+           article-mode (write-actions-p t)
            (trailing-newlines 1))
   "Insert TWEET content and actions.
 
 PREFIX and PREFIX-FACE control indentation.  REPLY-CONTEXT-PREFIX overrides
 PREFIX for the reply context.  SHOW-REPLY-CONTEXT controls the inline reply
 target.  ARTICLE-MODE selects full article rendering when it is `full'.
-TRAILING-NEWLINES controls the additional newlines after the metrics row."
+WRITE-ACTIONS-P controls mutation actions.  TRAILING-NEWLINES controls the
+additional newlines after the metrics row."
   (let* ((article-mode
           (if (or (eq article-mode 'full)
                   (chirp--tweet-expanded-p tweet))
@@ -1118,36 +1150,38 @@ TRAILING-NEWLINES controls the additional newlines after the metrics row."
      (chirp-render--trailing-urls tweet) prefix prefix-face)
     (chirp-render-insert-media-strip
      (plist-get tweet :media) prefix prefix-face)
-    (chirp-render--insert-quoted-tweet tweet prefix prefix-face)
+    (chirp-render--insert-quoted-tweet
+     tweet prefix prefix-face write-actions-p)
     (chirp-render--insert-reply-control tweet prefix prefix-face)
     (setq meta-start (point))
     (chirp-render--insert-metric
      'reply (plist-get tweet :reply-count)
-     :action (unless (plist-get tweet :reply-limited-p)
-               #'chirp-reply-at-point)
+     :action (and write-actions-p
+                  (not (plist-get tweet :reply-limited-p))
+                  #'chirp-reply-at-point)
      :help-echo "Reply")
     (insert "   ")
     (chirp-render--insert-metric
      'retweet (plist-get tweet :retweet-count)
      :active (plist-get tweet :retweeted-p)
-     :action #'chirp-toggle-retweet-at-point
+     :action (and write-actions-p #'chirp-toggle-retweet-at-point)
      :help-echo "Repost")
     (insert "   ")
     (chirp-render--insert-metric
      'like (plist-get tweet :like-count)
      :active (plist-get tweet :liked-p)
-     :action #'chirp-toggle-like-at-point
+     :action (and write-actions-p #'chirp-toggle-like-at-point)
      :help-echo "Like")
     (insert "   ")
     (chirp-render--insert-metric
      'quote (plist-get tweet :quote-count)
-     :action #'chirp-quote-at-point
+     :action (and write-actions-p #'chirp-quote-at-point)
      :help-echo "Quote")
     (insert "   ")
     (chirp-render--insert-metric
      'bookmark (plist-get tweet :bookmark-count)
      :active (plist-get tweet :bookmarked-p)
-     :action #'chirp-toggle-bookmark-at-point
+     :action (and write-actions-p #'chirp-toggle-bookmark-at-point)
      :help-echo "Bookmark")
     (insert "   ")
     (chirp-render--insert-metric 'view (plist-get tweet :view-count))
@@ -1156,27 +1190,55 @@ TRAILING-NEWLINES controls the additional newlines after the metrics row."
       (insert "\n"))
     (put-text-property meta-start (point) 'rear-nonsticky t)))
 
-(defun chirp-render--insert-tweet
-    (tweet &optional prefix prefix-face show-reply-context article-mode reply-parent)
+(cl-defun chirp-render--insert-tweet
+    (tweet &key prefix prefix-face show-reply-context article-mode reply-parent
+           (write-actions-p t) (time-format 'compact))
   "Insert TWEET at point, optionally prefixed for thread rendering.
 
-Use PREFIX and PREFIX-FACE for indentation.  When SHOW-REPLY-CONTEXT is
-non-nil, show the reply target.  ARTICLE-MODE controls full article rendering,
-and REPLY-PARENT supplies the preceding parent tweet when available."
+PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT controls the
+reply target.  ARTICLE-MODE controls full article rendering, and REPLY-PARENT
+supplies the preceding parent tweet.  WRITE-ACTIONS-P controls mutation
+actions, while TIME-FORMAT selects `compact' or `full' timestamps."
   (let ((start (point)))
     (chirp-render--insert-tweet-context
      tweet :prefix prefix :prefix-face prefix-face :reply-parent reply-parent)
     (chirp-render--insert-tweet-heading
-     tweet :prefix prefix :prefix-face prefix-face :avatar-p t)
+     tweet :prefix prefix :prefix-face prefix-face :avatar-p t
+     :time-format time-format)
     (chirp-render--insert-tweet-body
      tweet :prefix prefix :prefix-face prefix-face
      :show-reply-context show-reply-context
-     :article-mode article-mode)
+     :article-mode article-mode
+     :write-actions-p write-actions-p)
     (chirp-render--mark-entry start (point) tweet)))
 
 (defun chirp-render-insert-tweet (tweet)
   "Insert TWEET at point."
   (chirp-render--insert-tweet tweet))
+
+(defun chirp-render-insert-edit-history-row (row)
+  "Insert one normalized edit-history ROW."
+  (let* ((latest-p (plist-get row :latest-p))
+         (key (plist-get row :key))
+         (tweet (copy-sequence (plist-get row :tweet)))
+         (start (point)))
+    (when-let* ((section (plist-get row :section)))
+      (insert (propertize section 'face 'chirp-author-face))
+      (insert "\n\n"))
+    (setq tweet (plist-put tweet :edited-p nil))
+    (unless latest-p
+      (setq tweet (plist-put tweet :kind 'edit-history-version)))
+    (chirp-render--insert-tweet
+     tweet
+     :article-mode 'full
+     :write-actions-p latest-p
+     :time-format 'full)
+    (add-text-properties
+     start (point)
+     `(chirp-entry-id ,key
+                      chirp-entry-item ,tweet
+                      rear-nonsticky t))
+    (cons start (point))))
 
 (defun chirp-render-insert-discussion-entry (row)
   "Insert normalized discussion ROW and return its buffer span.
@@ -1257,11 +1319,8 @@ projections can replace it as one unit."
   (if-let* ((reply-parent (chirp-render--list-reply-parent tweet previous)))
       (chirp-render--insert-tweet
        tweet
-       chirp-render-list-reply-prefix
-       nil
-       nil
-       nil
-       reply-parent)
+       :prefix chirp-render-list-reply-prefix
+       :reply-parent reply-parent)
     (chirp-render-insert-tweet tweet)))
 
 (defun chirp-render-insert-tweet-list (tweets)

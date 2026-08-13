@@ -93,6 +93,22 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
   (chirp-backend-test--timeline-payload
    '("data" "threaded_conversation_with_injections_v2") entries))
 
+(defun chirp-backend-test--edit-history-entry (entry-id tweet)
+  "Return edit-history ENTRY-ID carrying raw TWEET."
+  `(("entryId" . ,entry-id)
+    ("content" .
+     (("items" .
+       ((("item" .
+          (("itemContent" .
+            (("tweet_results" . (("result" . ,tweet))))))))))))))
+
+(defun chirp-backend-test--edit-history-payload (entries)
+  "Return a minimal TweetEditHistory payload containing ENTRIES."
+  (chirp-backend-test--timeline-payload
+   '("data" "tweet_result_by_rest_id" "result"
+     "edit_history_timeline" "timeline")
+   entries))
+
 (ert-deftest chirp-stop-discards-session-owned-backend-state ()
   "Restarting Chirp should use new completed and in-flight cache tables."
   (let ((chirp--app nil))
@@ -801,6 +817,86 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
          (setq failure message))))
     (should-not failure)
     (should (equal (plist-get (car result) :id) "200"))))
+
+(ert-deftest chirp-backend-edit-history-normalizes-versions-and-caches-read ()
+  "Edit history should preserve version order and reuse one fresh X read."
+  (let* ((chirp-backend-read-cache-ttl 15)
+         (latest
+          '(("rest_id" . "200")
+            ("legacy" .
+             (("full_text" . "latest")
+              ("created_at" . "LATEST-TIME")))))
+         (stale
+          '(("rest_id" . "100")
+            ("legacy" .
+             (("full_text" . "stale")
+              ("created_at" . "STALE-TIME")))))
+         (payload
+          (chirp-backend-test--edit-history-payload
+           (list
+            (chirp-backend-test--edit-history-entry
+             "latestTweet" latest)
+            (chirp-backend-test--edit-history-entry
+             "staleTweets"
+             `(("__typename" . "TweetWithVisibilityResults")
+               ("tweet" . ,stale))))))
+         (request-count 0)
+         operation variables versions failure)
+    (unwind-protect
+        (progn
+          (chirp-backend-clear-cache)
+          (cl-letf
+              (((symbol-function 'chirp-x-graphql-request)
+                (lambda (request-operation request-variables callback
+                         &rest _options)
+                  (setq request-count (1+ request-count)
+                        operation request-operation
+                        variables request-variables)
+                  (funcall callback payload))))
+            (chirp-backend-edit-history
+             "200"
+             (lambda (items _envelope)
+               (setq versions items))
+             (lambda (message) (setq failure message)))
+            (chirp-backend-edit-history "200" #'ignore)
+            (should (= request-count 1))
+            (chirp-backend-invalidate-edit-history "200")
+            (chirp-backend-edit-history "200" #'ignore)
+            (should (= request-count 2)))
+          (should-not failure)
+          (should
+           (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                          versions)
+                  '("200" "100")))
+          (should (equal (plist-get operation :name) "TweetEditHistory"))
+          (should
+           (equal (alist-get "tweetId" variables nil nil #'string=)
+                  "200"))
+          (should
+           (alist-get "withQuickPromoteEligibilityTweetFields"
+                      variables nil nil #'string=))
+          (should
+           (alist-get "responsive_web_grok_analyze_post_followups_enabled"
+                      (plist-get operation :features) nil nil #'string=))
+          (should
+           (eq
+            (alist-get "longform_notetweets_inline_media_enabled"
+                       (plist-get operation :features) nil nil #'string=)
+            :json-false))
+          (should-not (plist-member operation :field-toggles)))
+      (chirp-backend-clear-cache))))
+
+(ert-deftest chirp-backend-edit-history-rejects-missing-timeline ()
+  "Edit history should report a response without its required timeline."
+  (let ((chirp-backend-read-cache-ttl 0)
+        failure)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (_operation _variables callback &rest _options)
+                 (funcall callback '(("data" . nil))))))
+      (chirp-backend-edit-history
+       "200" #'ignore
+       (lambda (message) (setq failure message))))
+    (should (equal failure "X did not return tweet edit history"))))
 
 (ert-deftest chirp-backend-article-uses-direct-rich-content-operation ()
   "Article enrichment should request and normalize direct X article data."

@@ -100,6 +100,21 @@
     ("withDisallowedReplyControls" . t))
   "Field toggles requested by tweet-bearing read operations.")
 
+(defconst chirp-backend--edit-history-features
+  (append
+   chirp-backend--tweet-features
+   '(("responsive_web_grok_analyze_post_followups_enabled" . t)
+     ("longform_notetweets_inline_media_enabled" . :json-false)
+     ("post_ctas_fetch_enabled" . :json-false)
+     ("premium_content_api_read_enabled" . :json-false)
+     ("responsive_web_enhance_cards_enabled" . :json-false)
+     ("responsive_web_grok_analyze_button_fetch_trends_enabled" . :json-false)
+     ("rweb_conversational_replies_downvote_enabled" . :json-false)
+     ("rweb_tipjar_consumption_enabled" . :json-false)
+     ("rweb_video_screen_enabled" . :json-false)
+     ("verified_phone_label_enabled" . :json-false)))
+  "Feature switches used by X's TweetEditHistory operation.")
+
 (defconst chirp-backend--note-tweet-features
   (append
    '(("longform_notetweets_creation_enabled" . t)
@@ -196,6 +211,9 @@
      :features ,(cons '("articles_preview_enabled" . t)
                      chirp-backend--tweet-features)
      :field-toggles ,chirp-backend--tweet-field-toggles)
+    (edit-history
+     :query-id "1izbuOcH_QpuMcyCxOXkAg" :name "TweetEditHistory"
+     :features ,chirp-backend--edit-history-features)
     (create-tweet
      :query-id "IID9x6WsdMnTlXnzXGq8ng" :name "CreateTweet" :method post
      :features ,chirp-backend--tweet-features)
@@ -306,6 +324,10 @@ When zero or negative, the in-memory read cache is disabled."
   "Return the cache key for TWEET-ID article fetches."
   (list :article (format "%s" tweet-id)))
 
+(defun chirp-backend--edit-history-cache-key (tweet-id)
+  "Return the cache key for TWEET-ID edit history."
+  (list :edit-history (format "%s" tweet-id)))
+
 (defun chirp-backend--user-cache-key (handle)
   "Return the cache key for HANDLE profile metadata."
   (list :user (chirp-backend--normalize-handle handle)))
@@ -347,6 +369,11 @@ When zero or negative, the in-memory read cache is disabled."
   "Drop cached article data for TWEET-ID."
   (let ((key (chirp-backend--article-cache-key tweet-id)))
     (remhash key (chirp-backend--read-cache))))
+
+(defun chirp-backend-invalidate-edit-history (tweet-id)
+  "Drop cached edit history for TWEET-ID."
+  (remhash (chirp-backend--edit-history-cache-key tweet-id)
+           (chirp-backend--read-cache)))
 
 (defun chirp-backend-invalidate-user (handle)
   "Drop cached profile metadata and posts for HANDLE."
@@ -1627,6 +1654,26 @@ Chirp pagination envelope."
                           `(("pagination" . (("nextCursor" . ,cursor)))))))
       (cons (cl-subseq tweets 0 (min limit (length tweets))) envelope))))
 
+(defun chirp-backend--edit-history-tweets (payload)
+  "Return normalized tweet versions from edit-history PAYLOAD."
+  (let* ((timeline
+          (chirp-get-in
+           payload
+           '("data" "tweet_result_by_rest_id" "result"
+             "edit_history_timeline" "timeline")))
+         (instructions
+          (and (chirp-object-p timeline)
+               (chirp-get timeline "instructions"))))
+    (unless (and timeline (listp instructions))
+      (error "X did not return tweet edit history"))
+    (let* ((entries (chirp-backend--timeline-entries instructions))
+           (raw-tweets
+            (cl-mapcan #'chirp-backend--timeline-entry-tweets entries))
+           (tweets (chirp-collect-top-level-tweets raw-tweets)))
+      (unless tweets
+        (error "X returned tweet edit history Chirp could not parse"))
+      tweets)))
+
 (cl-defun chirp-backend--request-timeline
     (operation-key variables paths limit callback &key errback label owner)
   "Request OPERATION-KEY and adapt its timeline at PATHS.
@@ -2073,6 +2120,29 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
        (funcall (or errback #'ignore)
                 "X returned tweet detail Chirp could not parse.")))
    errback))
+
+(defun chirp-backend-edit-history (tweet-id callback &optional errback)
+  "Fetch TWEET-ID edit history and call CALLBACK, or ERRBACK on failure."
+  (let ((tweet-id (format "%s" tweet-id)))
+    (chirp-backend--cached-read
+     (chirp-backend--edit-history-cache-key tweet-id)
+     (lambda (success error)
+       (if (not (string-match-p "\\`[0-9]+\\'" tweet-id))
+           (funcall error "Tweet edit history requires a numeric tweet ID")
+         (chirp-x-graphql-request
+          (chirp-backend--operation 'edit-history)
+          `(("tweetId" . ,tweet-id)
+            ("withQuickPromoteEligibilityTweetFields" . t))
+          (lambda (payload)
+            (condition-case err
+                (funcall success
+                         (chirp-backend--edit-history-tweets payload)
+                         nil)
+              (error
+               (funcall error (error-message-string err)))))
+          :errback error)))
+     callback
+     errback)))
 
 (defun chirp-backend-article (tweet-id callback &optional errback)
   "Fetch article content for TWEET-ID and call CALLBACK, or ERRBACK on failure."
