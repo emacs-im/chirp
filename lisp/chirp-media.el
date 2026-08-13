@@ -19,10 +19,12 @@
 (require 'warnings)
 (require 'plz)
 (require 'appkit-core)
+(require 'appkit-evil)
 (require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
+(require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
 (require 'chirp-core)
 
@@ -39,7 +41,10 @@
   :group 'chirp)
 
 (defcustom chirp-avatar-size 28
-  "Maximum pixel size for avatars."
+  "Baseline avatar size relative to one text line.
+
+28 means exactly one default-face line at the current text scale.
+Larger values grow the avatar relative to that line."
   :type 'integer
   :group 'chirp)
 
@@ -299,7 +304,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
   "Keymap for `chirp-media-view-mode'.")
 
 (define-derived-mode chirp-media-view-mode special-mode "Chirp-Media"
-  "Major mode for large media in Chirp.")
+  "Major mode for large media in Chirp."
+  (appkit-evil-normalize-keymaps))
 
 (defvar chirp-media-image-mode-map
   (let ((map (make-sparse-keymap)))
@@ -315,7 +321,32 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 
 (define-derived-mode chirp-media-image-mode image-mode "Chirp-Image"
   "Image mode used for Chirp photo viewing."
-  (setq-local header-line-format nil))
+  (setq-local header-line-format nil)
+  (appkit-evil-normalize-keymaps))
+
+(defun chirp-media--setup-evil ()
+  "Install optional Evil bindings for Chirp media views."
+  (when appkit-evil-enable-integration
+    (when (and (featurep 'evil)
+               (fboundp 'evil-set-initial-state))
+      (evil-set-initial-state 'chirp-media-view-mode 'normal)
+      (evil-set-initial-state 'chirp-media-image-mode 'normal))
+    (appkit-evil-define-readonly-keys 'chirp-media-view-mode-map)
+    (appkit-evil-define-keys '(normal motion) 'chirp-media-view-mode-map
+      (kbd "g j") #'chirp-media-next
+      (kbd "g k") #'chirp-media-previous
+      (kbd "D") #'chirp-media-download-at-point
+      (kbd "v") #'chirp-media-play
+      (kbd "o") #'chirp-media-browse)
+    (appkit-evil-define-readonly-keys 'chirp-media-image-mode-map)
+    (appkit-evil-define-keys '(normal motion) 'chirp-media-image-mode-map
+      (kbd "g j") #'chirp-media-next
+      (kbd "g k") #'chirp-media-previous
+      (kbd "D") #'chirp-media-download-at-point
+      (kbd "v") #'chirp-media-play
+      (kbd "o") #'chirp-media-browse)))
+
+(chirp-media--setup-evil)
 
 (defun chirp-media-video-like-p (media)
   "Return non-nil when MEDIA is video-like."
@@ -879,10 +910,15 @@ Use FALLBACK-EXT when URL has no recognizable extension."
         (push url urls)))))
 
 (defun chirp-media-link-cards-for-tweet (tweet)
-  "Return cached link-card previews for TWEET."
-  (delq nil
-        (mapcar #'chirp-media-link-card
-                (chirp-media-link-card-urls tweet))))
+  "Return link-card previews for TWEET.
+
+Prefer the website card X already attached to the tweet.  Fall back to
+cached Open Graph fetches for tweets that have no card payload."
+  (if-let* ((card (plist-get tweet :link-card)))
+      (list card)
+    (delq nil
+          (mapcar #'chirp-media-link-card
+                  (chirp-media-link-card-urls tweet)))))
 
 (defun chirp-media--item-resource-keys (media)
   "Return cache resource keys represented by MEDIA."
@@ -899,10 +935,10 @@ Use FALLBACK-EXT when URL has no recognizable extension."
             (mapcan #'chirp-media--item-resource-keys
                     (append (plist-get tweet :media)
                             (chirp-tweet-article-images tweet)))))))
-    (dolist (url (chirp-media-link-card-urls tweet))
-      (push url keys)
-      (when-let* ((card (chirp-media-link-card url))
-                  (image-url (plist-get card :image-url)))
+    (dolist (card (chirp-media-link-cards-for-tweet tweet))
+      (when-let* ((url (plist-get card :url)))
+        (push url keys))
+      (when-let* ((image-url (plist-get card :image-url)))
         (push image-url keys)))
     (when-let* ((quoted (plist-get tweet :quoted-tweet)))
       (setq keys
@@ -1060,8 +1096,12 @@ When FALLBACK is non-nil, call it if remote extraction fails."
       (chirp-media-prefetch-media media buffer))
     (dolist (media (chirp-tweet-article-images tweet))
       (chirp-media-prefetch-media media buffer)))
-  (dolist (url (chirp-media-link-card-urls tweet))
-    (chirp-media-prefetch-link-card url buffer))
+  (if-let* ((card (plist-get tweet :link-card)))
+      (when-let* ((image-url (plist-get card :image-url)))
+        (chirp-media-prefetch-file image-url "media" "jpg"
+                                   (chirp-media--prefetch-callback buffer)))
+    (dolist (url (chirp-media-link-card-urls tweet))
+      (chirp-media-prefetch-link-card url buffer)))
   (when-let* ((quoted (plist-get tweet :quoted-tweet)))
     (chirp-media-prefetch-tweet quoted buffer)))
 
@@ -1091,87 +1131,6 @@ When FALLBACK is non-nil, call it if remote extraction fails."
               (when (< scale 1.0)
                 (plist-put (cdr image) :scale scale))
               image)))
-      (error nil))))
-
-(defun chirp-media--scaled-dimensions (width height max-width max-height)
-  "Return scaled WIDTH and HEIGHT constrained by MAX-WIDTH and MAX-HEIGHT."
-  (let* ((scale (min 1.0
-                     (/ (float max-width) (max 1.0 width))
-                     (/ (float max-height) (max 1.0 height)))))
-    (cons (max 1 (round (* width scale)))
-          (max 1 (round (* height scale))))))
-
-(defun chirp-media--mime-type (file)
-  "Return a MIME type for FILE."
-  (pcase (downcase (or (file-name-extension file) ""))
-    ((or "jpg" "jpeg") "image/jpeg")
-    ("gif" "image/gif")
-    ("webp" "image/webp")
-    (_ "image/png")))
-
-(defun chirp-media--photo-thumbnail-image (file max-width max-height)
-  "Render FILE within MAX-WIDTH and MAX-HEIGHT without runtime scaling."
-  (when (and file
-             (display-images-p))
-    (condition-case nil
-        (let ((base-image (create-image file)))
-          (when base-image
-            (pcase-let* ((`(,width . ,height) (image-size base-image t))
-                         (`(,target-width . ,target-height)
-                          (chirp-media--scaled-dimensions
-                           width height max-width max-height))
-                         (svg (svg-create target-width target-height)))
-              (svg-embed svg
-                         file
-                         (chirp-media--mime-type file)
-                         nil
-                         :x 0
-                         :y 0
-                         :width target-width
-                         :height target-height
-                         :preserveAspectRatio "xMidYMid meet")
-              (svg-image svg :ascent 'center))))
-      (error nil))))
-
-(defun chirp-media--video-badged-thumbnail-image (file size)
-  "Return FILE rendered as a SIZE thumbnail with a play badge."
-  (when (and file
-             (display-images-p))
-    (condition-case nil
-        (let* ((svg (svg-create size size))
-               (center (/ size 2.0))
-               (radius (max 10.0 (/ size 6.0)))
-               (left (- center (* radius 0.35)))
-               (top (- center (* radius 0.55)))
-               (bottom (+ center (* radius 0.55)))
-               (right (+ center (* radius 0.55))))
-          (svg-embed svg
-                     file
-                     (chirp-media--mime-type file)
-                     nil
-                     :x 0
-                     :y 0
-                     :width size
-                     :height size
-                     :preserveAspectRatio "xMidYMid slice")
-          (dom-append-child
-           svg
-           (dom-node 'circle
-                     `((cx . ,center)
-                       (cy . ,center)
-                       (r . ,radius)
-                       (fill . "rgba(0,0,0,0.5)")
-                       (stroke . "rgba(255,255,255,0.85)")
-                       (stroke-width . "1.5"))))
-          (dom-append-child
-           svg
-           (dom-node 'polygon
-                     `((points . ,(format "%s,%s %s,%s %s,%s"
-                                          left top
-                                          left bottom
-                                          right center))
-                       (fill . "white"))))
-          (svg-image svg :ascent 'center))
       (error nil))))
 
 (defun chirp-media--video-placeholder-image (size &optional animated-gif-p)
@@ -1252,13 +1211,33 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
 
+(defun chirp-media--avatar-pixel-size ()
+  "Return avatar pixel size for the current buffer's text scale.
+
+`chirp-avatar-size' is a baseline ratio where 28 is exactly one text line."
+  (let* ((line-height (appkit-chat-avatar-line-pixel-height))
+         (size-factor (/ (float (max 1 chirp-avatar-size)) 28.0)))
+    (max 8 (round (* line-height size-factor)))))
+
 (defun chirp-media-avatar-image (url)
   "Return a small avatar image descriptor for URL."
   (when-let* ((file (if chirp-media-render-from-cache-only
                         (chirp-media-cached-file url "avatars" "jpg")
-                      (chirp-media-local-file url "avatars" "jpg"))))
-    (or (appkit-media-circular-image-from-file file chirp-avatar-size)
-        (chirp-media--scaled-image file chirp-avatar-size chirp-avatar-size))))
+                      (chirp-media-local-file url "avatars" "jpg")))
+              (size (chirp-media--avatar-pixel-size)))
+    (or (appkit-media-circular-image-from-file file size)
+        (chirp-media--scaled-image file size size))))
+
+(defun chirp-media-cached-image (url &optional max-width max-height)
+  "Return an Appkit preview image for cached URL, or nil when not ready.
+
+MAX-WIDTH and MAX-HEIGHT default to `chirp-media-thumbnail-size'.  Sizing
+and slice metadata come from `appkit-media-preview-image-from-file'."
+  (when-let* ((file (chirp-media-cached-file url "media" "jpg")))
+    (appkit-media-preview-image-from-file
+     file
+     (or max-width chirp-media-thumbnail-size)
+     (or max-height chirp-media-thumbnail-size))))
 
 (defun chirp-media-thumbnail-image (media)
   "Return a thumbnail descriptor for MEDIA."
@@ -1271,12 +1250,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                         (chirp-media-local-file (plist-get media :url)
                                                 "media"
                                                 "jpg"))))
-      (or (chirp-media--photo-thumbnail-image file
-                                              chirp-media-thumbnail-size
-                                              chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))
+      (appkit-media-preview-image-from-file
+       file chirp-media-thumbnail-size chirp-media-thumbnail-size)))
    ((chirp-media-video-like-p media)
     (when-let* ((file (if chirp-media-render-from-cache-only
                           (or (and-let* ((preview-url (plist-get media :preview-url)))
@@ -1287,20 +1262,16 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
                                 (and (file-exists-p thumbnail-file)
                                      thumbnail-file)))
                         (chirp-media-video-thumbnail-file media))))
-      (or (chirp-media--video-badged-thumbnail-image file
-                                                     chirp-media-thumbnail-size)
-          (chirp-media--scaled-image file
-                                     chirp-media-thumbnail-size
-                                     chirp-media-thumbnail-size))))))
+      (appkit-media-preview-image-from-file
+       file chirp-media-thumbnail-size chirp-media-thumbnail-size)))))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."
   (when-let* ((file (chirp-media-local-file (plist-get media :url)
                                             "media"
                                             "jpg")))
-    (chirp-media--scaled-image file
-                               chirp-media-view-max-width
-                               chirp-media-view-max-height)))
+    (appkit-media-preview-image-from-file
+     file chirp-media-view-max-width chirp-media-view-max-height)))
 
 (defun chirp-media-browse ()
   "Browse the current media URL."
@@ -1594,9 +1565,8 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
 (defun chirp-media--cached-video-preview-image (media)
   "Return a cached still preview image for video-like MEDIA, or nil."
   (when-let* ((file (chirp-media--cached-video-preview-file media)))
-    (chirp-media--scaled-image file
-                               chirp-media-view-max-width
-                               chirp-media-view-max-height)))
+    (appkit-media-preview-image-from-file
+     file chirp-media-view-max-width chirp-media-view-max-height)))
 
 (defun chirp-media--extract-video-thumbnail (video-file thumbnail-file)
   "Extract a thumbnail from VIDEO-FILE into THUMBNAIL-FILE."
