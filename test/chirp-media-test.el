@@ -341,27 +341,40 @@ rerender and creates a CPU loop."
                    "https://github.com/preview.png"))))
 
 
-(ert-deftest chirp-media-thumbnail-image-uses-appkit-preview ()
-  "Photo and video thumbs should use Appkit's character-height preview sizer."
+(ert-deftest chirp-media-thumbnail-image-uses-appkit-video-decoration ()
+  "Photo and video thumbnails should use Appkit sizing and video decoration."
   (let ((chirp-media-render-from-cache-only t)
-        rendered)
+        rendered
+        decorated)
     (cl-letf (((symbol-function 'chirp-media-cached-file)
                (lambda (&rest _args)
                  "/tmp/chirp-thumb.jpg"))
               ((symbol-function 'appkit-media-preview-image-from-file)
                (lambda (file max-width max-height)
                  (setq rendered (list file max-width max-height))
-                 'preview-image)))
+                 'preview-image))
+              ((symbol-function 'appkit-media-video-preview-display-image)
+               (lambda (image namespace)
+                 (setq decorated (list image namespace))
+                 'decorated-preview)))
       (should (eq (chirp-media-thumbnail-image
                    '(:type "photo"
                      :url "https://example.com/photo.jpg"))
                   'preview-image))
       (should (equal rendered
                      '("/tmp/chirp-thumb.jpg" 128 128)))
+      (should-not decorated)
       (should (eq (chirp-media-thumbnail-image
                    '(:type "video"
                      :preview-url "https://example.com/preview.jpg"))
-                  'preview-image)))))
+                  'decorated-preview))
+      (should (equal decorated '(preview-image chirp)))
+      (cl-letf (((symbol-function 'appkit-media-video-preview-display-image)
+                 (lambda (&rest _args) nil)))
+        (should (eq (chirp-media-thumbnail-image
+                     '(:type "video"
+                       :preview-url "https://example.com/preview.jpg"))
+                    'preview-image))))))
 
 (ert-deftest chirp-media-thumbnail-placeholder-image-exists-for-video-like-media ()
   "Video-like media should reserve thumbnail space before the real preview arrives."
