@@ -162,6 +162,8 @@ Tweet lists use a lightweight separator between posts by default. To customize i
 
 Set it to `nil` or an empty string to disable tweet separators.
 
+Tweet timestamps follow X's localized forms: list rows and replies use compact relative or calendar text aligned to the live right edge, while the focused tweet in a thread shows its exact time and date. They default to Chinese through `chirp-language`; set it to another BCP 47 tag such as `"en"` for English forms.
+
 Avatars size to one text line when `chirp-avatar-size` is 28, and both avatars and card prefixes rebuild after `text-scale-mode`. Avatars and tweet media thumbnails can be hidden independently:
 
 ```elisp

@@ -269,6 +269,63 @@
              (list :sequence-id (plist-get (car events) :sequence-id)
                    :key-version "0"))))
 
+(ert-deftest chirp-dm-inbox-time-is-localized-and-right-aligned ()
+  "Inbox rows should put compact localized time at the view's right edge."
+  (let* ((chirp-language "zh-CN")
+         (now (encode-time 0 0 12 13 8 2026))
+         (milliseconds
+          (number-to-string
+           (* 1000
+              (time-convert
+               (time-subtract now (seconds-to-time (* 6 3600)))
+               'integer))))
+         (entry
+          (appkit-directory-entry-create
+           :key "conversation-1"
+           :payload
+           (list :id "conversation-1"
+                 :title "Alice"
+                 :preview "Hello"
+                 :updated-at-msec milliseconds))))
+    (with-temp-buffer
+      (setq-local fill-column 40)
+      (cl-letf (((symbol-function 'current-time) (lambda () now)))
+        (chirp-dm--insert-inbox-item nil entry))
+      (goto-char (point-min))
+      (search-forward "6小时")
+      (should
+       (equal
+        (get-text-property (1- (match-beginning 0)) 'display)
+        `(space :align-to
+                (- right (,(string-width "6小时") . width))))))))
+
+(ert-deftest chirp-dm-message-time-is-localized-and-right-aligned ()
+  "Message headings should put compact localized time at the right edge."
+  (let* ((chirp-language "zh-CN")
+         (now (encode-time 0 0 12 13 8 2026))
+         (event
+          (chirp-dm-test--normalized-event "20" "20" "Hello"))
+         (row
+          (appkit-chat-timeline-row-create
+           :key "20" :payload event :context '(:sender-label "Alice"))))
+    (setf (plist-get event :created-at-msec)
+          (number-to-string
+           (* 1000
+              (time-convert
+               (time-subtract now (seconds-to-time (* 6 3600)))
+               'integer))))
+    (with-temp-buffer
+      (setq-local fill-column 40)
+      (cl-letf (((symbol-function 'current-time) (lambda () now)))
+        (chirp-dm--print-event-row row))
+      (goto-char (point-min))
+      (search-forward "6小时")
+      (should
+       (equal
+        (get-text-property (1- (match-beginning 0)) 'display)
+        `(space :align-to
+                (- right (,(string-width "6小时") . width))))))))
+
 (ert-deftest chirp-xchat-recovery-input-selects-latest-bounded-key-config ()
   "Recovery normalization should select the latest key's exact token map."
   (let* ((input

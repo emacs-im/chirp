@@ -68,9 +68,9 @@ Either `draft' or `scheduled'.")
   "Return a tabulated-list row for ENTRY."
   (list (plist-get entry :id)
         (vector " "
-                (chirp-unsent--when-label entry)
                 (format "%d" (length (plist-get entry :texts)))
-                (chirp-unsent--preview entry))))
+                (chirp-unsent--preview entry)
+                (chirp-unsent--when-label entry))))
 
 (defun chirp-unsent--title ()
   "Return the buffer title for the current unsent collection."
@@ -83,9 +83,9 @@ Either `draft' or `scheduled'.")
   (setq-local truncate-lines t)
   (setq-local tabulated-list-format
               [("C" 1 nil :pad-right 1)
-               ("When" 16 t)
                ("Posts" 5 t :right-align t)
-               ("Text" 0 t)])
+               ("Text" 80 t)
+               ("When" 16 t :right-align t)])
   (setq-local tabulated-list-padding 0)
   (setq-local tabulated-list-sort-key nil)
   (setq-local mode-line-process

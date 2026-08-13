@@ -21,6 +21,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-ui)
+(require 'appkit-view)
 
 (declare-function appkit-compose-cancel-submit "appkit-compose" ())
 (declare-function appkit-compose-finish-submit "appkit-compose" ())
@@ -130,10 +131,29 @@
   :type 'string
   :group 'chirp)
 
+(defcustom chirp-language "zh-CN"
+  "BCP 47 language tag used for localized timestamps and X requests.
+
+Chirp currently localizes timestamps for Chinese and English; other language
+tags use the English timestamp forms."
+  :type 'string
+  :group 'chirp)
+
+(defun chirp--language-tag-p (value)
+  "Return non-nil when VALUE is a conservative BCP 47 language tag."
+  (and (stringp value)
+       (string-match-p
+        "\\`[[:alpha:]]\\{2,3\\}\\(?:-[[:alnum:]]\\{2,8\\}\\)*\\'"
+        value)))
+
 (defcustom chirp-default-max-results 20
   "Default number of posts requested for list views."
   :type 'integer
   :group 'chirp)
+
+(defun chirp--view-width ()
+  "Return the current Chirp view's responsive width in columns."
+  (or (appkit-view-responsive-width) fill-column))
 
 (defcustom chirp-timeline-refresh-max-results 10
   "Number of head posts requested when refreshing a timeline with `g'.
@@ -533,14 +553,14 @@ NO-SEPARATOR-P suppresses EWOC's automatic newlines between rows."
     (&key id title state sync-function printer
           (mode 'chirp-view-mode)
           (anchor-property 'chirp-entry-id)
-          (parts '(frame entries))
+          (parts '(frame entries geometry))
           setup select)
   "Open or reuse a read-only Chirp projection view.
 
 ID identifies the view.  TITLE names the buffer.  STATE is the canonical
 view plist.  SYNC-FUNCTION applies invalidations.  PRINTER renders one
-projected row.  MODE, ANCHOR-PROPERTY, PARTS, SETUP, and SELECT are
-forwarded to `appkit-open-view'."
+projected row.  MODE, ANCHOR-PROPERTY, PARTS, and SELECT are forwarded to
+`appkit-open-view'.  SETUP runs after responsive geometry is enabled."
   (let ((view
          (appkit-open-view
           :app (chirp-app)
@@ -551,10 +571,13 @@ forwarded to `appkit-open-view'."
           :sync-function sync-function
           :parts parts
           :position-policy anchor-property
-          :setup (or setup
-                     (lambda (live)
-                       (chirp--setup-projection-view
-                        live title printer anchor-property)))
+          :setup
+          (lambda (live)
+            (appkit-view-enable-responsive-geometry live)
+            (if setup
+                (funcall setup live)
+              (chirp--setup-projection-view
+               live title printer anchor-property)))
           :select select)))
     (with-current-buffer (appkit-view-buffer view)
       (setq-local chirp--view-title title)
@@ -570,16 +593,19 @@ HEADER updates the generated frame when supplied."
          (event-count (length events))
          (position-intent (chirp-projection-position-intent events))
          (resources (appkit-invalidations-resource-keys invalidations))
+         (parts (appkit-invalidations-parts invalidations))
          (all-resources-p (memq 'all resources))
+         (force-all-rows-p
+          (or all-resources-p (memq 'geometry parts)))
          (reconcile-p
           (or (appkit-invalidations-structure-p invalidations)
               (appkit-invalidations-entry-keys invalidations)
               resources
-              (appkit-invalidations-parts invalidations)))
+              parts))
          (force-keys
           (append
            (appkit-invalidations-entry-keys invalidations)
-           (and all-resources-p
+           (and force-all-rows-p
                 (mapcar #'appkit-projection-row-key rows)))))
     (appkit-projection-sync
      view (and reconcile-p rows)

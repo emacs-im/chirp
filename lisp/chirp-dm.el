@@ -14,13 +14,16 @@
 (require 'subr-x)
 (require 'url-parse)
 (require 'appkit-core)
+(require 'appkit-chat-ins)
 (require 'appkit-directory)
 (require 'appkit-evil)
 (require 'appkit-invalidation)
 (require 'appkit-chatbuf)
 (require 'appkit-chat-history)
 (require 'appkit-chat-timeline)
+(require 'appkit-view)
 (require 'chirp-core)
+(require 'chirp-time)
 (require 'chirp-backend)
 (require 'chirp-media)
 
@@ -75,8 +78,7 @@
   "Return a compact local timestamp for MILLISECONDS, or an empty string."
   (if (and (stringp milliseconds)
            (string-match-p "\\`[0-9]+\\'" milliseconds))
-      (format-time-string
-       "%m-%d %H:%M"
+      (chirp-time--format-compact
        (seconds-to-time (/ (string-to-number milliseconds) 1000)))
     ""))
 
@@ -194,15 +196,29 @@
          (title (chirp-dm--one-line (plist-get conversation :title)))
          (preview (chirp-dm--one-line (plist-get conversation :preview)))
          (time (chirp-dm--format-time
-                (plist-get conversation :updated-at-msec))))
-    (insert (propertize (if (string-empty-p title) "Direct message" title)
-                        'face 'bold))
-    (when (plist-get conversation :message-request-p)
-      (insert (propertize "  [request]" 'face 'warning)))
-    (unless (string-empty-p preview)
-      (insert "  " (propertize preview 'face 'shadow)))
+                (plist-get conversation :updated-at-msec)))
+         (content
+          (concat
+           (propertize (if (string-empty-p title) "Direct message" title)
+                       'face 'bold)
+           (when (plist-get conversation :message-request-p)
+             (propertize "  [request]" 'face 'warning))
+           (unless (string-empty-p preview)
+             (concat "  " (propertize preview 'face 'shadow)))))
+         (available
+          (max 0
+               (- (chirp--view-width)
+                  (current-column)
+                  (if (string-empty-p time)
+                      0
+                    (+ 2 (string-width time)))))))
+    (insert (truncate-string-to-width content available nil nil "…"))
     (unless (string-empty-p time)
-      (insert "  " (propertize time 'face 'shadow)))
+      (appkit-chat-ins-insert-right-aligned-text
+       time (chirp--view-width)
+       :face 'shadow
+       :right-edge-margin 0
+       :overflow-newline-p nil))
     (insert "\n")))
 
 (defun chirp-dm--activate-inbox-item (_surface entry)
@@ -210,14 +226,20 @@
   (chirp-dm--open-conversation
    (appkit-directory-entry-payload entry) :refresh-p t))
 
-(defun chirp-dm--sync-inbox (view _invalidations)
-  "Synchronize inbox VIEW from canonical state."
-  (appkit-directory-reconcile
-   (appkit-directory-surface)
-   (chirp-dm--project-inbox (chirp-dm--inbox-state view))))
+(defun chirp-dm--sync-inbox (view invalidations)
+  "Synchronize inbox VIEW for pending INVALIDATIONS."
+  (let* ((entries
+          (chirp-dm--project-inbox (chirp-dm--inbox-state view)))
+         (force-keys
+          (and (memq 'geometry
+                     (appkit-invalidations-parts invalidations))
+               (mapcar #'appkit-directory-entry-key entries))))
+    (appkit-directory-reconcile
+     (appkit-directory-surface) entries :force-keys force-keys)))
 
 (defun chirp-dm--setup-inbox (view)
   "Initialize Appkit directory adapters for inbox VIEW."
+  (appkit-view-enable-responsive-geometry view)
   (setq-local chirp--view-title "Direct Messages")
   (setq-local header-line-format nil)
   (appkit-directory-configure
@@ -741,7 +763,7 @@ view has no conversation-key event."
            :buffer-name (chirp--format-buffer-name "Direct Messages")
            :state (chirp-dm--make-inbox-state instance)
            :sync-function #'chirp-dm--sync-inbox
-           :parts '(entries)
+           :parts '(entries geometry)
            :position-policy appkit-directory-key-property
            :setup #'chirp-dm--setup-inbox
            :select t)))
@@ -958,18 +980,23 @@ view has no conversation-key event."
                                   "Unknown sender")
                               'face 'bold))
           (unless (string-empty-p timestamp)
-            (insert "  " (propertize timestamp 'face 'shadow)))
+            (appkit-chat-ins-insert-right-aligned-text
+             timestamp (chirp--view-width)
+             :face 'shadow
+             :right-edge-margin 0))
           (insert "\n")
           (chirp-dm--insert-message-content
            (appkit-current-view) event context)
           (insert "\n\n"))
       (insert (propertize
-               (format "— %s%s —\n\n"
-                       (chirp-dm--event-system-label event)
-                       (if (string-empty-p timestamp)
-                           ""
-                         (concat " · " timestamp)))
-               'face 'shadow)))
+               (format "— %s —" (chirp-dm--event-system-label event))
+               'face 'shadow))
+      (unless (string-empty-p timestamp)
+        (appkit-chat-ins-insert-right-aligned-text
+         timestamp (chirp--view-width)
+         :face 'shadow
+         :right-edge-margin 0))
+      (insert "\n\n"))
     (add-text-properties
      start (point)
      (list 'read-only t
@@ -1027,7 +1054,15 @@ view has no conversation-key event."
          (slice
           (appkit-chat-history-window-slice
            (plist-get state :events)
-           (lambda (event) (plist-get event :id)))))
+           (lambda (event) (plist-get event :id))))
+         (rows
+          (and (plist-get slice :valid-p)
+               (chirp-dm--project-conversation-events
+                state (plist-get slice :entries))))
+         (force-keys
+          (and (memq 'geometry
+                     (appkit-invalidations-parts invalidations))
+               (mapcar #'appkit-chat-timeline-row-key rows))))
     (unless (plist-get slice :valid-p)
       (error "Invalid XChat history window: %s" (plist-get slice :reason)))
     (setq-local chirp--view-title
@@ -1036,8 +1071,8 @@ view has no conversation-key event."
     (appkit-chat-timeline-run-preserving-position
      (lambda ()
        (appkit-chat-timeline-sync
-        (chirp-dm--project-conversation-events
-         state (plist-get slice :entries))
+        rows
+        :force-keys force-keys
         :changed-resources
         (appkit-invalidations-resource-keys invalidations))
        (appkit-chat-timeline-set-frame
@@ -1073,6 +1108,7 @@ view has no conversation-key event."
 
 (defun chirp-dm--setup-conversation (view)
   "Initialize Appkit chat controllers for conversation VIEW."
+  (appkit-view-enable-responsive-geometry view)
   (let ((state (chirp-dm--conversation-state view)))
     (appkit-chatbuf-reset-state)
     (appkit-chat-history-reset-state)
@@ -1604,7 +1640,7 @@ When REFRESH-P is non-nil, fetch focused conversation data before decryption."
                     (if (string-empty-p title) "Conversation" title)))
            :state (chirp-dm--make-conversation-state instance conversation)
            :sync-function #'chirp-dm--sync-conversation
-           :parts '(frame timeline composer)
+           :parts '(frame timeline composer geometry)
            :position-policy 'chirp-dm-message-id
            :setup #'chirp-dm--setup-conversation
            :select t)))

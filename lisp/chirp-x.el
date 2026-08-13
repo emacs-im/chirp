@@ -503,6 +503,8 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
 
 (defun chirp-x--headers (credentials &optional content-type)
   "Return authenticated X headers from CREDENTIALS and CONTENT-TYPE."
+  (unless (chirp--language-tag-p chirp-language)
+    (error "Invalid Chirp language tag: %S" chirp-language))
   (mapcar
    (lambda (header)
      (chirp-x--ascii-header (car header) (cdr header)))
@@ -515,7 +517,7 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
       ("X-Csrf-Token" . ,(plist-get credentials :ct0))
       ("X-Twitter-Active-User" . "yes")
       ("X-Twitter-Auth-Type" . "OAuth2Session")
-      ("X-Twitter-Client-Language" . "en")
+      ("X-Twitter-Client-Language" . ,chirp-language)
       ("Origin" . "https://x.com")
       ("Referer" . "https://x.com/")
       ("User-Agent" . ,chirp-x-user-agent)

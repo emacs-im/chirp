@@ -13,6 +13,7 @@
 (require 'appkit-projection)
 (require 'appkit-invalidation)
 (require 'appkit-position)
+(require 'appkit-view)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -362,7 +363,7 @@
                                (chirp-timeline--title kind))
                  :state state
                  :sync-function #'chirp-timeline--sync
-                 :parts '(frame entries)
+                 :parts '(frame entries geometry)
                  :position-policy 'chirp-entry-id
                  :setup #'chirp-timeline--setup-view
                  :select t))
