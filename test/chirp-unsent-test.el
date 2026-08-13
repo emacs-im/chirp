@@ -172,6 +172,28 @@ When MEDIA-ID is set, include that media ID and optional PREVIEW-URL."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-unsent-rows-keep-a-trailing-when-column ()
+  "Unsent rows should retain preview text before the trailing When column."
+  (let ((buffer (generate-new-buffer " *chirp-unsent-columns-test*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (chirp-unsent-mode)
+          (setq-local chirp-unsent-kind 'scheduled)
+          (chirp-unsent--apply-entries
+           (list (list :id "2090"
+                       :kind 'scheduled
+                       :texts '("A long scheduled post preview")
+                       :execute-at 1786572521)))
+          (goto-char (point-min))
+          (search-forward "A long scheduled post preview")
+          (search-forward "2026-")
+          (should (equal
+                   (get-text-property
+                    (match-beginning 0) 'tabulated-list-column-name)
+                   "When")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-compose-open-unsent-restores-thread-text ()
   "Opening an unsent draft should restore every part and the draft ID."
   (pcase-let ((`(,compose . ,source)

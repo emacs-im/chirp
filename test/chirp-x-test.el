@@ -443,7 +443,8 @@
 
 (ert-deftest chirp-x-graphql-get-encodes-a-persisted-operation ()
   "GET operations should carry compact JSON parameters and web auth headers."
-  (let (captured-url captured-headers captured-method silent inhibit-cookies
+  (let ((chirp-language "zh-CN")
+        captured-url captured-headers captured-method silent inhibit-cookies
         redirect-limit received)
     (cl-letf (((symbol-function 'chirp-x-credentials)
                (lambda ()
@@ -486,6 +487,10 @@
                    "auth_token=auth; ct0=csrf"))
     (should (equal (alist-get "X-Csrf-Token" captured-headers nil nil #'string=)
                    "csrf"))
+    (should (equal
+             (alist-get "X-Twitter-Client-Language"
+                        captured-headers nil nil #'string=)
+             "zh-CN"))
     (should (assoc-string "home"
                           (cdr (assoc-string "data" received t))
                           t))))

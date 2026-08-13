@@ -7,6 +7,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'face-remap)
+(require 'time-date)
 (require 'chirp-thread)
 
 (ert-deftest chirp-thread-open-renders-seed-focus-tweet-before-network-thread-load ()
@@ -161,6 +162,42 @@
             (chirp-previous-entry)
             (should (equal (plist-get (chirp-entry-at-point) :id)
                            "root"))))
+      (chirp-stop)
+      (when (buffer-live-p scratch)
+        (kill-buffer scratch))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-thread-focus-uses-full-time-and-replies-use-compact-time ()
+  "Thread focus should show an exact time while replies stay compact."
+  (let* ((chirp-language "zh-CN")
+         (now (encode-time 0 0 12 13 8 2026))
+         (created-at
+          (format-time-string
+           "%Y-%m-%dT%H:%M:%S%z"
+           (time-subtract now (seconds-to-time (* 6 3600)))))
+         (scratch (generate-new-buffer " *chirp-thread-time-test*"))
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'current-time) (lambda () now))
+                  ((symbol-function 'chirp-media-avatar-image)
+                   (lambda (&rest _args) nil)))
+          (setq buffer
+                (chirp-thread--render-view
+                 scratch
+                 "Thread"
+                 #'ignore
+                 `((:kind tweet :id "root" :text "Root"
+                    :author-name "Alice" :created-at ,created-at)
+                   (:kind tweet :id "reply" :text "Reply"
+                    :reply-to-id "root" :author-name "Bob"
+                    :created-at ,created-at))
+                 nil nil "root"))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (should (search-forward
+                     "上午6:00 · 2026年8月13日" nil t))
+            (should (search-forward "6小时" nil t))))
       (chirp-stop)
       (when (buffer-live-p scratch)
         (kill-buffer scratch))

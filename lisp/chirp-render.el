@@ -32,10 +32,12 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'appkit-chat-ins)
 (require 'appkit-discussion)
 (require 'appkit-media-image)
 (require 'appkit-ui)
 (require 'chirp-core)
+(require 'chirp-time)
 (require 'chirp-media)
 (require 'nerd-icons nil t)
 
@@ -1027,8 +1029,12 @@ TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
         (insert (propertize (format "@%s" handle) 'face 'chirp-handle-face)))
       (chirp-render--add-profile-action author-start (point) handle))
     (when (and time-p created-at)
-      (insert "  ")
-      (insert (propertize created-at 'face 'chirp-meta-face)))
+      (when-let* ((time (chirp-time--format-compact created-at))
+                  ((not (string-empty-p time))))
+        (appkit-chat-ins-insert-right-aligned-text
+         time (chirp--view-width)
+         :face 'chirp-meta-face
+         :right-edge-margin 0)))
     (when newline-p
       (insert "\n"))))
 
@@ -1201,7 +1207,11 @@ tweet content and actions."
             (lambda ()
               (chirp-render--insert-tweet-heading
                tweet :avatar-p t :time-p nil :newline-p nil))
-            :time (plist-get tweet :created-at)
+            :time (if focus-p
+                      (chirp-time--format-full
+                       (plist-get tweet :created-at))
+                    (chirp-time--format-compact
+                     (plist-get tweet :created-at)))
             :body-inserter
             (lambda (body-prefix _properties)
               (let ((body-start (point)))
@@ -1218,6 +1228,7 @@ tweet content and actions."
                   'chirp-entry-id key
                   'chirp-entry-url (plist-get tweet :url)
                   'rear-nonsticky t))
+           :width (chirp--view-width)
            :avatar-p nil)))
     (put-text-property (car span) (1+ (car span))
                        'chirp-entry-start t)

@@ -873,6 +873,36 @@
         (chirp-open-at-point)
         (should-not opened-profile)))))
 
+(ert-deftest chirp-render-insert-tweet-right-aligns-compact-time ()
+  "Tweet headings should align localized time to the view's right edge."
+  (let* ((chirp-language "zh-CN")
+         (chirp-show-avatars nil)
+         (now (encode-time 0 0 12 13 8 2026))
+         (created-at
+          (format-time-string
+           "%Y-%m-%dT%H:%M:%S%z"
+           (time-subtract now (seconds-to-time (* 6 3600)))))
+         (tweet
+          (list :kind 'tweet :id "time-1" :text "Body"
+                :author-name "Alice" :author-handle "alice"
+                :created-at created-at
+                :reply-count 0 :retweet-count 0 :like-count 0
+                :quote-count 0 :bookmark-count 0 :view-count 0)))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (setq-local fill-column 40)
+      (cl-letf (((symbol-function 'current-time) (lambda () now)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (search-forward "6小时")
+      (let ((spacer (1- (match-beginning 0))))
+        (should
+         (equal
+          (get-text-property spacer 'display)
+          `(space :align-to
+                  (- right (,(string-width "6小时") . width)))))))))
+
 (ert-deftest chirp-render-insert-tweet-can-hide-avatar-and-keep-author-text ()
   "Hiding avatars should leave the display name and handle visible."
   (let ((chirp-show-avatars nil)
