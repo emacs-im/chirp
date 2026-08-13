@@ -1568,9 +1568,9 @@ Disjoint focused fragments are bridged through older history before merging."
       (kbd "g r") #'chirp-dm-refresh-conversation)
     (appkit-evil-define-keys '(normal motion) 'chirp-dm--timeline-mode-map
       (kbd "q") #'chirp-quit-current-buffer
-      (kbd "n") #'chirp-dm-next-message
-      (kbd "p") #'chirp-dm-previous-message
-      (kbd "N") #'chirp-dm-load-older-messages)))
+      (kbd "g j") #'chirp-dm-next-message
+      (kbd "g k") #'chirp-dm-previous-message
+      (kbd "g n") #'chirp-dm-load-older-messages)))
 
 (chirp-dm--setup-evil)
 

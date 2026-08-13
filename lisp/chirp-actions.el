@@ -14,6 +14,8 @@
 (require 'transient)
 (require 'appkit-core)
 (require 'appkit-compose)
+(require 'appkit-evil)
+(require 'appkit-media-image)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -144,7 +146,17 @@ Appkit compose parts until the draft is snapshotted for send.")
   (add-hook 'post-command-hook #'chirp-compose--after-command nil t)
   (add-hook 'kill-buffer-hook #'chirp-compose--cancel-mention-prefetch nil t)
   (add-hook 'kill-buffer-hook #'chirp-compose--cancel-chrome-refresh nil t)
+  (appkit-evil-normalize-keymaps)
   (visual-line-mode 1))
+
+(defun chirp-compose--setup-evil ()
+  "Install optional Evil bindings for compose buffers."
+  (when appkit-evil-enable-integration
+    (when (and (featurep 'evil)
+               (fboundp 'evil-set-initial-state))
+      (evil-set-initial-state 'chirp-compose-mode 'insert))))
+
+(chirp-compose--setup-evil)
 
 (defun chirp-compose--mention-bounds ()
   "Return handle bounds at point when composing an @mention."
@@ -754,7 +766,7 @@ When called interactively, prompt for AUDIENCE."
   "Return a small image descriptor for cached preview URL, or nil."
   (when-let* ((file (and (stringp url)
                          (chirp-media-cached-file url "media" "jpg"))))
-    (create-image file nil nil :max-width 48 :max-height 48)))
+    (appkit-media-one-line-preview-image-from-file file 48)))
 
 (defun chirp-compose--prefetch-preview (buffer url)
   "Prefetch preview URL and refresh compose BUFFER when it arrives."
@@ -1624,25 +1636,6 @@ When TWEET is non-nil, use it as the reply or quote target."
     (when (plist-get tweet :reply-limited-p)
       (user-error "You cannot reply to this conversation"))
     (chirp-compose-open 'reply tweet)))
-
-(defun chirp--dispatch-mouse-action (event)
-  "Dispatch the tweet action at mouse EVENT."
-  (interactive "e")
-  (let* ((position (event-start event))
-         (window (posn-window position)))
-    (unless (and (window-live-p window)
-                 (integer-or-marker-p (posn-point position)))
-      (user-error "Mouse click is not inside a Chirp buffer"))
-    (with-current-buffer (window-buffer window)
-      (unless (derived-mode-p 'chirp-view-mode)
-        (user-error "Mouse click is not inside a Chirp view"))
-      (posn-set-point position)
-      (pcase (chirp--text-property-at-point 'chirp-tweet-action)
-        ('reply (chirp-reply-at-point))
-        ('retweet (chirp-toggle-retweet-at-point))
-        ('like (chirp-toggle-like-at-point))
-        ('bookmark (chirp-toggle-bookmark-at-point))
-        (_ (user-error "No tweet action at mouse position"))))))
 
 (defun chirp-quote-at-point ()
   "Open a compose buffer to quote the tweet at point."

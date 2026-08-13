@@ -14,9 +14,12 @@
 (require 'subr-x)
 (require 'browse-url)
 (require 'json)
+(require 'xml)
 (require 'warnings)
 (require 'appkit-core)
+(require 'appkit-evil)
 (require 'appkit-invalidation)
+(require 'appkit-ui)
 
 (declare-function chirp-backend-tweet "chirp-backend"
                   (tweet-id callback &optional errback))
@@ -26,7 +29,6 @@
 (declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
 (declare-function chirp-thread-add-spam-rule "chirp-thread" (&optional authorp))
 (declare-function chirp-dispatch "chirp-actions" ())
-(declare-function chirp--dispatch-mouse-action "chirp-actions" (event))
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
@@ -312,7 +314,33 @@ commands still work, and displays alt text when the backend provides it."
   (setq-local line-spacing 0)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
+  (add-hook 'text-scale-mode-hook #'chirp--on-text-scale-change nil t)
+  (appkit-evil-normalize-keymaps)
   (visual-line-mode 1))
+
+(defun chirp--setup-evil ()
+  "Install optional Evil bindings for Chirp browsing views."
+  (when appkit-evil-enable-integration
+    (when (and (featurep 'evil)
+               (fboundp 'evil-set-initial-state))
+      (evil-set-initial-state 'chirp-view-mode 'normal))
+    (appkit-evil-define-readonly-keys 'chirp-view-mode-map)
+    (appkit-evil-define-keys '(normal motion) 'chirp-view-mode-map
+      (kbd "RET") #'chirp-open-at-point
+      (kbd "<return>") #'chirp-open-at-point
+      (kbd "TAB") #'chirp-toggle-home-following
+      (kbd "g r") #'chirp-refresh
+      (kbd "g j") #'chirp-next-entry
+      (kbd "g k") #'chirp-previous-entry
+      (kbd "g n") #'chirp-load-more
+      (kbd "m") #'chirp-open-primary-media
+      (kbd "D") #'chirp-media-download-at-point
+      (kbd "A") #'chirp-open-author-at-point
+      (kbd "S") #'chirp-thread-add-spam-rule
+      (kbd "x") #'chirp-dispatch
+      (kbd "o") #'chirp-browse-at-point)))
+
+(chirp--setup-evil)
 
 (defun chirp--status-face (kind)
   "Return a mode-line face for status KIND."
@@ -451,7 +479,10 @@ revisited later."
 (defun chirp-render-into-buffer (buffer title refresh render-fn)
   "Render legacy BUFFER with TITLE using REFRESH and RENDER-FN."
   (with-current-buffer buffer
-    (chirp-view-mode)
+    ;; Re-entering the major mode runs `kill-all-local-variables', which
+    ;; drops `text-scale-mode' and snaps the buffer back to default size.
+    (unless (derived-mode-p 'chirp-view-mode)
+      (chirp-view-mode))
     (setq-local chirp--view-title title)
     (setq-local chirp--refresh-function refresh)
     (setq-local chirp--timeline-kind nil)
@@ -476,6 +507,15 @@ revisited later."
       (erase-buffer)
       (funcall render-fn)
       (goto-char (point-min)))))
+
+(defun chirp--on-text-scale-change ()
+  "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
+
+The hook only requests a redraw.  Appkit timeline sync or
+`chirp--rerender-function' owns the buffer mutation, so card prefixes
+and avatars are recreated at the current line metrics."
+  (when (derived-mode-p 'chirp-view-mode)
+    (chirp-request-rerender nil 0)))
 
 (defun chirp-request-rerender (&optional buffer delay)
   "Schedule one coalesced projection update for BUFFER after DELAY."
@@ -522,15 +562,16 @@ revisited later."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) property))))
 
-(defvar chirp--tweet-action-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'chirp--dispatch-mouse-action)
-    map)
-  "Keymap used by clickable tweet action metrics.")
-
 (defun chirp-author-handle-at-point ()
   "Return the author handle stored at point, or nil."
   (chirp--text-property-at-point 'chirp-author-handle))
+
+(defun chirp-open-profile-handle (handle)
+  "Open HANDLE's profile."
+  (if (and (stringp handle)
+           (not (string-empty-p (string-remove-prefix "@" handle))))
+      (chirp-profile-open handle)
+    (user-error "No profile available at point")))
 
 (defun chirp-reply-parent-id-at-point ()
   "Return the inline reply parent id stored at point, or nil."
@@ -675,7 +716,7 @@ revisited later."
                 (chirp--entry-position-forward (point-min)))))
     (cond
      (pos
-     (goto-char pos))
+      (goto-char pos))
      ((and (chirp--appkit-timeline-state)
            (chirp-entry-at-point))
       (chirp-load-more (chirp-entry-id-at-point)))
@@ -770,54 +811,17 @@ revisited later."
     (funcall chirp--rerender-function)))
 
 (defun chirp-open-at-point ()
-  "Open the entry at point."
+  "Activate the Appkit action at point, or open the current entry."
   (interactive)
-  (let* ((entry (chirp-entry-at-point))
-         (expand-tweet-id
-          (chirp--text-property-at-point 'chirp-expand-tweet-id))
-         (profile-view-mode
-          (chirp--text-property-at-point 'chirp-profile-view-mode))
-         (profile-action
-          (chirp--text-property-at-point 'chirp-profile-action))
-         (author-handle (chirp-author-handle-at-point))
-         (profile-list-kind
-          (chirp--text-property-at-point 'chirp-profile-list-kind))
-         (profile-list-handle
-          (chirp--text-property-at-point 'chirp-profile-list-handle)))
-    (cond
-     (expand-tweet-id
-      (chirp--expand-tweet expand-tweet-id))
-     ((and profile-view-mode
-           (functionp chirp--profile-switch-mode-function))
-      (funcall chirp--profile-switch-mode-function profile-view-mode))
-     (profile-action
-      (pcase profile-action
-        ('toggle-follow (chirp-toggle-follow-user-at-point))
-        (_ (user-error "Unknown profile action at point"))))
-     (author-handle
-      (let ((clean-author (string-remove-prefix "@" author-handle))
-            (clean-profile (and chirp--profile-handle
-                                (string-remove-prefix "@" chirp--profile-handle))))
-        (if (and (eq (plist-get entry :kind) 'tweet)
-                 clean-profile
-                 (equal clean-author clean-profile))
-            (chirp-thread-open entry (plist-get entry :id))
-          (chirp-profile-open author-handle))))
-     ((and profile-list-kind profile-list-handle)
-      (pcase profile-list-kind
-        ('followers (chirp-profile-followers profile-list-handle))
-        ('following (chirp-profile-following-users profile-list-handle))
-        (_ (user-error "Unknown profile list at point"))))
-     ((chirp-reply-parent-id-at-point)
-      (chirp-open-reply-parent-at-point))
-     ((chirp-media-at-point)
-      (chirp-media-open-at-point))
-     ((eq (plist-get entry :kind) 'tweet)
-      (chirp-thread-open entry (plist-get entry :id)))
-     ((eq (plist-get entry :kind) 'user)
-      (chirp-profile-open (plist-get entry :handle)))
-     (t
-      (user-error "No entry at point")))))
+  (unless (appkit-ui-activate-at)
+    (let ((entry (chirp-entry-at-point)))
+      (cond
+       ((eq (plist-get entry :kind) 'tweet)
+        (chirp-thread-open entry (plist-get entry :id)))
+       ((eq (plist-get entry :kind) 'user)
+        (chirp-profile-open (plist-get entry :handle)))
+       (t
+        (user-error "No entry at point"))))))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."
@@ -915,27 +919,10 @@ revisited later."
            return value))
 
 (defun chirp-decode-html-entities (text)
-  "Decode common HTML entities in TEXT."
-  (let ((decoded text))
-    (setq decoded
-          (replace-regexp-in-string
-           "&#\\([0-9]+\\);"
-           (lambda (match)
-             (string (string-to-number (match-string 1 match))))
-           decoded t t))
-    (setq decoded
-          (replace-regexp-in-string
-           "&#x\\([0-9A-Fa-f]+\\);"
-           (lambda (match)
-             (string (string-to-number (match-string 1 match) 16)))
-           decoded t t))
-    (setq decoded (replace-regexp-in-string "&gt;" ">" decoded t t))
-    (setq decoded (replace-regexp-in-string "&lt;" "<" decoded t t))
-    (setq decoded (replace-regexp-in-string "&amp;" "&" decoded t t))
-    (setq decoded (replace-regexp-in-string "&quot;" (string 34) decoded t t))
-    (setq decoded (replace-regexp-in-string "&#39;" "'" decoded t t))
-    (setq decoded (replace-regexp-in-string "&nbsp;" " " decoded t t))
-    decoded))
+  "Decode XML/HTML entities in TEXT using `xml-substitute-special'."
+  (if (and (stringp text) (not (string-empty-p text)))
+      (xml-substitute-special text)
+    (or text "")))
 
 (defun chirp-clean-text (value)
   "Normalize VALUE into a human-readable string."
@@ -948,32 +935,8 @@ revisited later."
    (t
     (string-trim (format "%s" value)))))
 
-(defun chirp--utf16-units (character)
-  "Return the number of UTF-16 code units needed for CHARACTER."
-  (if (<= character #xFFFF) 1 2))
-
-(defun chirp--charpos-from-utf16 (string units)
-  "Return the character position in STRING at UTF-16 index UNITS."
-  (let ((pos 0)
-        (seen 0)
-        (len (length string)))
-    (while (and (< pos len) (< seen units))
-      (setq seen (+ seen (chirp--utf16-units (aref string pos)))
-            pos (1+ pos)))
-    pos))
-
-(defun chirp--substring-utf16 (string start &optional end)
-  "Return the substring of STRING between UTF-16 indices START and END."
-  (let* ((len-units (cl-loop for index from 0 below (length string)
-                             sum (chirp--utf16-units (aref string index))))
-         (from (min (max 0 (or start 0)) len-units))
-         (to (min (max from (or end len-units)) len-units)))
-    (substring string
-               (chirp--charpos-from-utf16 string from)
-               (chirp--charpos-from-utf16 string to))))
-
 (defun chirp--display-text-range (value)
-  "Return VALUE as a (START . END) UTF-16 range, or nil."
+  "Return VALUE as a (START . END) code-point range, or nil."
   (cond
    ((and (vectorp value) (>= (length value) 2)
          (integerp (aref value 0)) (integerp (aref value 1)))
@@ -987,27 +950,6 @@ revisited later."
   (chirp--display-text-range
    (or (chirp-get object "display_text_range" "displayTextRange")
        (chirp-get legacy "display_text_range" "displayTextRange"))))
-
-(defun chirp--strip-leading-reply-mentions (text)
-  "Remove a leading run of @handle tokens from TEXT."
-  (if (and (stringp text)
-           (string-match "\\`\\(?:@[A-Za-z0-9_]+[ \t]+\\)+" text))
-      (substring text (match-end 0))
-    text))
-
-(defun chirp--visible-tweet-text (text range replyp)
-  "Return the web-visible portion of tweet TEXT.
-
-RANGE is an optional (START . END) UTF-16 display range.  REPLYP is
-non-nil when TEXT belongs to a reply.  X hides the leading reply-chain
-@handles; they are not part of the visible post."
-  (cond
-   ((not (stringp text)) "")
-   (range
-    (chirp--substring-utf16 text (car range) (cdr range)))
-   (replyp
-    (chirp--strip-leading-reply-mentions text))
-   (t text)))
 
 (defconst chirp--short-url-regexp "https?://t\\.co/[[:alnum:]]+"
   "Regexp that matches short X/Twitter URLs in tweet text.")
@@ -1053,6 +995,302 @@ non-nil when TEXT belongs to a reply.  X hides the leading reply-chain
    (chirp-get-in object '("entities" "urls"))
    (and legacy
         (chirp-get-in legacy '("entities" "urls")))))
+
+(defun chirp--entity-indices (value)
+  "Return VALUE's code-point (START . END) indices, or nil."
+  (chirp--display-text-range
+   (or (chirp-get value "indices")
+       (and (integerp (chirp-get value "from_index"))
+            (integerp (chirp-get value "to_index"))
+            (vector (chirp-get value "from_index")
+                    (chirp-get value "to_index"))))))
+
+(defun chirp-normalize-mention (value)
+  "Normalize one mention VALUE into a handle plist, or nil."
+  (cond
+   ((stringp value)
+    (let ((handle (string-remove-prefix "@" (string-trim value))))
+      (unless (string-empty-p handle)
+        (list :handle handle :name handle))))
+   ((chirp-object-p value)
+    (when-let* ((handle (chirp-first-nonblank
+                         (chirp-get value "screen_name" "screenName"
+                                    "username" "handle")
+                         (chirp-get-in value '("core" "screen_name")))))
+      (setq handle (string-remove-prefix "@" handle))
+      (list :handle handle
+            :name (or (chirp-first-nonblank
+                       (chirp-get value "name" "display_name" "displayName")
+                       (chirp-get-in value '("core" "name")))
+                      handle))))
+   (t nil)))
+
+(defun chirp-normalize-hashtag (value)
+  "Normalize one hashtag VALUE into its tag text, or nil."
+  (let ((tag
+         (cond
+          ((stringp value)
+           (string-remove-prefix "#" (string-trim value)))
+          ((chirp-object-p value)
+           (chirp-first-nonblank
+            (chirp-get value "text" "tag" "hashtag" "cashtag")))
+          (t nil))))
+    (and tag
+         (not (string-empty-p tag))
+         (string-remove-prefix "#" (string-remove-prefix "$" tag)))))
+
+(defun chirp--normalize-text-entity (kind value)
+  "Normalize one X text entity VALUE of KIND.
+
+KIND is `mention', `hashtag', `cashtag', `url', `media', or `timestamp'.
+Indices are Unicode code-point offsets into the tweet text."
+  (when-let* ((indices (chirp--entity-indices value)))
+    (pcase kind
+      ('mention
+       (when-let* ((mention (chirp-normalize-mention value)))
+         (append mention
+                 (list :kind 'mention
+                       :start (car indices)
+                       :end (cdr indices)))))
+      ((or 'hashtag 'cashtag)
+       (when-let* ((tag (chirp-normalize-hashtag value)))
+         (list :kind kind
+               :tag tag
+               :start (car indices)
+               :end (cdr indices))))
+      ((or 'url 'media)
+       (list :kind kind
+             :url (chirp-normalize-url-item value)
+             :display (chirp-first-nonblank
+                       (chirp-get value "display_url" "displayUrl")
+                       (chirp-get value "display"))
+             :start (car indices)
+             :end (cdr indices)))
+      ('timestamp
+       (list :kind 'timestamp
+             :tag (chirp-first-nonblank (chirp-get value "text"))
+             :seconds (chirp-get value "seconds")
+             :start (car indices)
+             :end (cdr indices))))))
+
+(defun chirp--entities-of (entities field kind)
+  "Return normalized KIND entities from ENTITIES field FIELD."
+  (let (items)
+    (dolist (item (chirp-get entities field) (nreverse items))
+      (when-let* ((entity (chirp--normalize-text-entity kind item)))
+        (push entity items)))))
+
+(defun chirp-extract-text-entities (entities)
+  "Extract X tweet-text entities from one ENTITIES object.
+
+This is the same set `tweetTextParts` walks: mentions, hashtags, cashtags,
+URLs, media, and timestamps.  Each item keeps its code-point `indices'."
+  (when (chirp-object-p entities)
+    (append
+     (chirp--entities-of entities "user_mentions" 'mention)
+     (chirp--entities-of entities "userMentions" 'mention)
+     (chirp--entities-of entities "hashtags" 'hashtag)
+     (chirp--entities-of entities "symbols" 'cashtag)
+     (chirp--entities-of entities "urls" 'url)
+     (chirp--entities-of entities "media" 'media)
+     (chirp--entities-of entities "timestamps" 'timestamp))))
+
+(defun chirp--note-tweet-result (object)
+  "Return OBJECT's note-tweet result, or nil."
+  (or (chirp-get-in object '("note_tweet" "note_tweet_results" "result"))
+      (chirp-get object "note_tweet")))
+
+(defun chirp--tweet-source-text-and-entities (object legacy)
+  "Return a plist describing OBJECT's visible text source.
+
+The plist contains `:text', `:entities', and `:note-p'.  Note-tweet text is
+paired with its `entity_set'.  Ordinary tweets use `full_text' and the
+matching `entities' object.  Mixing those sources would apply the wrong
+code-point indices."
+  (let* ((note (chirp--note-tweet-result object))
+         (note-text (and note (chirp-first-nonblank (chirp-get note "text"))))
+         (legacy-text (chirp-first-nonblank
+                       (chirp-get object "full_text" "text")
+                       (chirp-get legacy "full_text" "text"))))
+    (if (and (stringp note-text)
+             (not (string-empty-p note-text)))
+        (list :text note-text
+              :entities (chirp-extract-text-entities
+                         (or (chirp-get note "entity_set")
+                             (chirp-get note "entitySet")))
+              :note-p t)
+      (list :text legacy-text
+            :entities (chirp-extract-text-entities
+                       (or (chirp-get object "entities")
+                           (chirp-get legacy "entities")))))))
+
+(defun chirp--leading-reply-mention-length (text)
+  "Return the character length of a leading reply-mention run in TEXT."
+  (if (and (stringp text)
+           (string-match "\\`\\(?:@[A-Za-z0-9_]+[ \t]+\\)+" text))
+      (match-end 0)
+    0))
+
+(defun chirp--visible-text-range (text range replyp)
+  "Return the code-point (START . END) visible range for TEXT.
+
+RANGE is an optional display-text range.  REPLYP enables the leading
+@handle fallback used when X omits `display_text_range'."
+  (or range
+      (let ((end (length (or text ""))))
+        (cons (if replyp (chirp--leading-reply-mention-length text) 0)
+              end))))
+
+(defun chirp--rebase-text-entities (entities from to)
+  "Shift ENTITIES so indices are relative to code-point slice FROM..TO."
+  (let (visible)
+    (dolist (entity entities (nreverse visible))
+      (let ((start (plist-get entity :start))
+            (end (plist-get entity :end)))
+        (when (and (integerp start)
+                   (integerp end)
+                   (< start to)
+                   (> end from))
+          (let ((copy (copy-sequence entity)))
+            (setq copy (plist-put copy :start (max 0 (- start from))))
+            (setq copy (plist-put copy :end (min (- to from) (- end from))))
+            (when (< (plist-get copy :start) (plist-get copy :end))
+              (push copy visible))))))))
+
+(defun chirp--url-entity-label (entity)
+  "Return the visible label X would show for URL ENTITY."
+  (or (let ((display (plist-get entity :display)))
+        (and (stringp display)
+             (not (string-empty-p display))
+             display))
+      (plist-get entity :url)))
+
+(defun chirp--omit-text-entity-p (entity context)
+  "Return non-nil when ENTITY should not appear in visible tweet text.
+
+Media and quoted-tweet permalinks stay out of the body, as on the web.
+Ordinary URL entities stay in place as their `display_url'."
+  (pcase (plist-get entity :kind)
+    ('media t)
+    ('url
+     (let ((url (plist-get entity :url)))
+       (or (null (chirp--url-entity-label entity))
+           (chirp--media-url-p url (plist-get context :media))
+           (cl-some (lambda (tweet)
+                      (chirp--tweet-permalink-p url tweet))
+                    (delq nil (list (plist-get context :quoted-tweet)
+                                    (plist-get context :tweet)))))))
+    (_ nil)))
+
+(defun chirp--substring (string start &optional end)
+  "Return the substring of STRING between code-point indices START and END."
+  (let* ((len (length (or string "")))
+         (from (min (max 0 (or start 0)) len))
+         (to (min (max from (or end len)) len)))
+    (substring (or string "") from to)))
+
+(defun chirp--emit-visible-text (text entities &optional context)
+  "Return (DISPLAY . SPANS) by walking TEXT with code-point ENTITIES.
+
+CONTEXT decides whether a URL entity is inlined as `display_url' or omitted.
+SPAN offsets are Emacs character positions in DISPLAY."
+  (let* ((sorted (cl-sort (copy-sequence entities) #'<
+                          :key (lambda (entity)
+                                 (or (plist-get entity :start) 0))))
+         (limit (length text))
+         (cursor 0)
+         (omit-next-space nil)
+         (parts nil)
+         (spans nil)
+         (char-pos 0)
+         (trim-last-spaces
+          (lambda ()
+            (when parts
+              (let* ((last (car parts))
+                     (trimmed (replace-regexp-in-string "[ \t]+\\'" "" last)))
+                (setcar parts trimmed)
+                (setq char-pos (- char-pos
+                                  (- (length last) (length trimmed))))))))
+         (take-chunk
+          (lambda (chunk)
+            (setq chunk (chirp-decode-html-entities (or chunk "")))
+            (when omit-next-space
+              (cond
+               ((string-prefix-p "\n" chunk)
+                (funcall trim-last-spaces))
+               ((string-match "\\`[ \t]" chunk)
+                (setq chunk (substring chunk 1)))))
+            (push chunk parts)
+            (setq char-pos (+ char-pos (length chunk)))
+            (setq omit-next-space nil))))
+    (dolist (entity sorted)
+      (let ((start (max 0 (or (plist-get entity :start) 0)))
+            (end (min limit (or (plist-get entity :end) 0))))
+        (when (and (< start end)
+                   (>= start cursor))
+          (when (< cursor start)
+            (funcall take-chunk (chirp--substring text cursor start)))
+          (if (chirp--omit-text-entity-p entity context)
+              (setq omit-next-space t)
+            (let* ((chunk
+                    (pcase (plist-get entity :kind)
+                      ('url
+                       (or (chirp--url-entity-label entity)
+                           (chirp--substring text start end)))
+                      ('timestamp
+                       (or (plist-get entity :tag)
+                           (chirp--substring text start end)))
+                      (_
+                       (chirp--substring text start end))))
+                   (from char-pos)
+                   (url
+                    (or (plist-get entity :url)
+                        (chirp--timestamp-entity-url entity context))))
+              (funcall take-chunk chunk)
+              (push (list :kind (plist-get entity :kind)
+                          :handle (plist-get entity :handle)
+                          :name (plist-get entity :name)
+                          :tag (plist-get entity :tag)
+                          :url url
+                          :start from
+                          :end char-pos)
+                    spans)))
+          (setq cursor end))))
+    (when (< cursor limit)
+      (funcall take-chunk (chirp--substring text cursor)))
+    (chirp--trim-visible-text
+     (apply #'concat (nreverse parts))
+     (nreverse spans))))
+
+(defun chirp--timestamp-entity-url (entity context)
+  "Return a tweet permalink with timestamp for ENTITY when CONTEXT has one."
+  (when-let* ((seconds (plist-get entity :seconds))
+              ((integerp seconds))
+              (base (plist-get (plist-get context :tweet) :url)))
+    (format "%s%st=%s"
+            base
+            (if (string-match-p "\\?" base) "&" "?")
+            seconds)))
+
+(defun chirp--trim-visible-text (text spans)
+  "Trim TEXT and shift SPANS by the removed prefix."
+  (let* ((trimmed (string-trim (or text "")))
+         (prefix (or (and (not (string-empty-p trimmed))
+                          (cl-search trimmed text))
+                     0)))
+    (cons
+     trimmed
+     (delq nil
+           (mapcar
+            (lambda (span)
+              (let ((start (max 0 (- (plist-get span :start) prefix)))
+                    (end (- (plist-get span :end) prefix)))
+                (when (< start end)
+                  (let ((copy (copy-sequence span)))
+                    (setq copy (plist-put copy :start start))
+                    (setq copy (plist-put copy :end (min (length trimmed) end)))
+                    copy))))
+            spans)))))
 
 (defun chirp-tweet-candidate-urls (tweet)
   "Return likely canonical URLs for TWEET."
@@ -1150,6 +1388,42 @@ CONTEXT is a plist containing the current tweet, quoted tweet, and media."
     (setq cleaned (replace-regexp-in-string "[ \t]\\{2,\\}" " " cleaned t))
     (setq cleaned (replace-regexp-in-string "\n\\{3,\\}" "\n\n" cleaned t))
     (string-trim cleaned)))
+
+(defun chirp--entity-overlaps-p (left right)
+  "Return non-nil when LEFT and RIGHT code-point ranges overlap."
+  (and (integerp (plist-get left :start))
+       (integerp (plist-get left :end))
+       (integerp (plist-get right :start))
+       (integerp (plist-get right :end))
+       (< (plist-get left :start) (plist-get right :end))
+       (> (plist-get left :end) (plist-get right :start))))
+
+(defun chirp--uncovered-short-url-entities (text entities)
+  "Return synthetic omit-entities for `t.co` placeholders not already in ENTITIES."
+  (cl-remove-if
+   (lambda (synthetic)
+     (cl-some (lambda (entity)
+                (chirp--entity-overlaps-p synthetic entity))
+              entities))
+   (chirp--synthetic-url-entities text)))
+
+(defun chirp--synthetic-url-entities (text)
+  "Return URL entities for each `t.co` placeholder in TEXT.
+
+Indices are code-point offsets into TEXT.  Used only when expanded URL coverage
+says leftover placeholders should be omitted from the visible body."
+  (let ((start 0)
+        (value (or text ""))
+        items)
+    (while (string-match chirp--short-url-regexp value start)
+      (let ((beg (match-beginning 0))
+            (end (match-end 0)))
+        (push (list :kind 'url
+                    :start beg
+                    :end end)
+              items)
+        (setq start end)))
+    (nreverse items)))
 
 (defun chirp--normalize-markdown-summary (text)
   "Flatten markdown-ish TEXT into a readable single paragraph."
@@ -1677,19 +1951,131 @@ Return non-nil when BUFFER currently projects a primary feed."
       (delq nil (mapcar #'chirp-normalize-media-variant value))
     nil))
 
+(defun chirp--tweet-card (object)
+  "Return OBJECT's card object, or nil."
+  (or (chirp-get object "card")
+      (chirp-get object "tweet_card")))
+
+(defun chirp--tweet-card-legacy (object)
+  "Return OBJECT's card legacy payload, or nil."
+  (when-let* ((card (chirp--tweet-card object)))
+    (or (chirp-get card "legacy") card)))
+
+(defun chirp--card-binding-entries (bindings)
+  "Normalize card BINDINGS into an alist of (KEY . VALUE)."
+  (cond
+   ((null bindings) nil)
+   ((vectorp bindings)
+    (chirp--card-binding-entries (append bindings nil)))
+   ((not (listp bindings)) nil)
+   ((and (consp (car bindings))
+         (stringp (chirp-get (car bindings) "key")))
+    (cl-loop for binding in bindings
+             for key = (chirp-get binding "key")
+             for value = (or (chirp-get binding "value") binding)
+             when (stringp key)
+             collect (cons key value)))
+   ((chirp-object-p bindings)
+    (cl-loop for (key . value) in bindings
+             when (stringp key)
+             collect (cons key value)))))
+
+(defun chirp--tweet-card-bindings (object)
+  "Return OBJECT's card bindings as an alist of (KEY . VALUE)."
+  (chirp--card-binding-entries
+   (chirp-get (chirp--tweet-card-legacy object) "binding_values")))
+
+(defun chirp--card-binding (bindings key)
+  "Return the VALUE object for KEY in BINDINGS, or nil."
+  (cdr (assoc-string key bindings t)))
+
+(defun chirp--card-binding-raw-string (bindings key)
+  "Return the raw string_value for KEY in BINDINGS, or nil."
+  (let ((value (chirp--card-binding bindings key)))
+    (chirp-first-nonblank
+     (chirp-get value "string_value" "stringValue")
+     (and (stringp value) value))))
+
+(defun chirp--card-binding-string (bindings &rest keys)
+  "Return the first cleaned string in BINDINGS for KEYS, or nil."
+  (cl-loop for key in keys
+           for raw = (chirp--card-binding-raw-string bindings key)
+           for text = (and raw (chirp-clean-text raw))
+           when (and text (not (string-empty-p text)))
+           return text))
+
+(defun chirp--card-binding-image-url (bindings)
+  "Return the best website-card image URL from BINDINGS, or nil."
+  (cl-loop for key in '("thumbnail_image_large"
+                        "thumbnail_image"
+                        "thumbnail_image_x_large"
+                        "thumbnail_image_original"
+                        "summary_photo_image_original"
+                        "summary_photo_image"
+                        "photo_image_full_size_original"
+                        "photo_image_full_size"
+                        "player_image_original"
+                        "player_image")
+           for value = (chirp--card-binding bindings key)
+           for url = (chirp-first-nonblank
+                      (chirp-get-in value '("image_value" "url"))
+                      (chirp-get-in value '("imageValue" "url"))
+                      (chirp-get value "url"))
+           when (and (stringp url)
+                     (string-match-p "\\`https?://" url))
+           return url))
+
+(defun chirp--link-card-name-p (name)
+  "Return non-nil when card NAME is a website preview card."
+  (when (stringp name)
+    (let ((base (downcase (car (last (split-string name ":"))))))
+      (or (string-prefix-p "summary" base)
+          (string= base "player")))))
+
+(defun chirp--external-http-url-p (url)
+  "Return non-nil when URL is an http(s) link outside X itself."
+  (and (stringp url)
+       (string-match-p "\\`https?://" url)
+       (not (string-match-p
+             "\\`https?://\\(?:x\\.com\\|twitter\\.com\\|t\\.co\\)/"
+             url))))
+
+(defun chirp-normalize-link-card (object &optional urls)
+  "Normalize OBJECT's website card into a plist, or nil.
+
+URLS are already-expanded tweet URLs used to prefer a real destination
+over the card's `t.co` permalink."
+  (when-let* ((legacy (chirp--tweet-card-legacy object))
+              (name (chirp-first-nonblank
+                     (chirp-get legacy "name")
+                     (chirp-get (chirp--tweet-card object) "name")))
+              ((chirp--link-card-name-p name))
+              (bindings (chirp--tweet-card-bindings object)))
+    (let* ((title (chirp--card-binding-string bindings "title" "vanity_title"))
+           (description (chirp--card-binding-string bindings "description"))
+           (domain (chirp--card-binding-string bindings "vanity_url" "domain"))
+           (website (chirp--card-binding-string
+                     bindings "website_url" "card_url"))
+           (image-url (chirp--card-binding-image-url bindings))
+           (url (or (car (cl-remove-if-not #'chirp--external-http-url-p urls))
+                    (and (chirp--external-http-url-p website) website)
+                    (and domain
+                         (not (string-match-p "://" domain))
+                         (concat "https://" domain))
+                    website
+                    (chirp-get legacy "url"))))
+      (when (or title description image-url)
+        (list :url url
+              :title title
+              :description description
+              :image-url image-url
+              :domain domain)))))
+
 (defun chirp--normalize-unified-card-media (object)
   "Normalize video media embedded in OBJECT's bounded unified card."
-  (when-let* ((card (chirp-get object "card"))
-              (legacy (or (chirp-get card "legacy") card))
-              (bindings (chirp-get legacy "binding_values"))
-              (encoded
-               (cl-loop for binding in (if (vectorp bindings)
-                                           (append bindings nil)
-                                         bindings)
-                        when (equal (chirp-get binding "key")
-                                    "unified_card")
-                        return (chirp-get-in
-                                binding '("value" "string_value"))))
+  (when-let* ((encoded (chirp--card-binding-raw-string
+                        (chirp--tweet-card-bindings object)
+                        "unified_card"))
               ((stringp encoded))
               ((<= (string-bytes encoded) (* 256 1024))))
     (condition-case nil
@@ -1952,13 +2338,12 @@ Return non-nil when BUFFER currently projects a primary feed."
                     (format "https://x.com/%s/status/%s" author-handle id))
                (and id (format "https://x.com/i/status/%s" id))))
          (tweet-identity (list :id id :url url :author-handle author-handle))
-         (raw-source
-          (chirp-first-nonblank
-           (chirp-get object "full_text" "text")
-           (chirp-get legacy "full_text" "text")
-           (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "text"))
-           (chirp-get-in object '("note_tweet" "text"))))
-         (display-range (chirp--tweet-display-text-range object legacy))
+         (source (chirp--tweet-source-text-and-entities object legacy))
+         (raw-source (plist-get source :text))
+         (source-entities (plist-get source :entities))
+         (display-range
+          (and (not (plist-get source :note-p))
+               (chirp--tweet-display-text-range object legacy)))
          (reply-to-handle (let ((handle (chirp-first-nonblank
                                          (chirp-get object "inReplyToScreenName"
                                                     "in_reply_to_screen_name")
@@ -1971,10 +2356,20 @@ Return non-nil when BUFFER currently projects a primary feed."
                                   "in_reply_to_status_id")
                        (chirp-get legacy "in_reply_to_status_id_str"
                                   "in_reply_to_status_id")))
-         (text (chirp-clean-text
-                (chirp--visible-tweet-text
-                 raw-source display-range
-                 (or reply-to-id reply-to-handle))))
+         (visible-range
+          (chirp--visible-text-range
+           raw-source display-range
+           (or reply-to-id reply-to-handle)))
+         (visible-raw
+          (chirp--substring
+           (or raw-source "")
+           (car visible-range)
+           (cdr visible-range)))
+         (visible-entities
+          (chirp--rebase-text-entities
+           source-entities
+           (car visible-range)
+           (cdr visible-range)))
          (full-text (chirp-clean-text raw-source))
          (quoted-tweet (chirp-normalize-quoted-tweet object))
          (timeline-context
@@ -2002,11 +2397,31 @@ Return non-nil when BUFFER currently projects a primary feed."
          (covered-short-url-count
           (+ (length all-urls)
              (if (and media (not media-url-covered-p)) 1 0)))
-         (display-text (if (>= covered-short-url-count
-                               (chirp-short-url-count text))
-                           (chirp-strip-short-urls text)
-                         text))
+         (walk-entities
+          (if (>= covered-short-url-count
+                  (chirp-short-url-count visible-raw))
+              (append visible-entities
+                      (chirp--uncovered-short-url-entities
+                       visible-raw visible-entities))
+            visible-entities))
+         (emitted
+          (chirp--emit-visible-text visible-raw walk-entities url-context))
+         (display-text (car emitted))
+         (text-entities (cdr emitted))
+         (mentions
+          (cl-remove-if-not
+           (lambda (entity)
+             (eq (plist-get entity :kind) 'mention))
+           text-entities))
+         (hashtags
+          (delq nil
+                (mapcar
+                 (lambda (entity)
+                   (and (eq (plist-get entity :kind) 'hashtag)
+                        (plist-get entity :tag)))
+                 text-entities)))
          (urls (chirp--filter-display-urls all-urls url-context))
+         (link-card (chirp-normalize-link-card object urls))
          (article-result
           (chirp-get-in object '("article" "article_results" "result")))
          (article-title (chirp-first-nonblank
@@ -2024,6 +2439,11 @@ Return non-nil when BUFFER currently projects a primary feed."
                          (chirp-get wrapper "retweetedBy" "retweeted_by")
                          (plist-get retweeter :handle))))
             (and handle (string-remove-prefix "@" handle))))
+         (retweeted-by-name
+          (chirp-first-nonblank
+           (chirp-get wrapper "retweetedByName" "retweeted_by_name")
+           (plist-get retweeter :name)
+           retweeted-by))
          (retweeted-p (chirp-boolean-value
                        (chirp-coalesce
                         (chirp-get object "retweeted" "isRetweeted")
@@ -2055,7 +2475,7 @@ Return non-nil when BUFFER currently projects a primary feed."
               (equal (chirp-get legacy "limited_actions")
                      "limited_replies")))
          (state-overrides (and id (gethash id (chirp--tweet-state-table)))))
-    (when (or id (not (string-empty-p text)))
+    (when (or id (not (string-empty-p display-text)))
       (list :kind 'tweet
             :id id
             :text display-text
@@ -2065,6 +2485,10 @@ Return non-nil when BUFFER currently projects a primary feed."
                          (chirp-get legacy "created_at"))
             :url url
             :urls urls
+            :link-card link-card
+            :mentions mentions
+            :hashtags hashtags
+            :text-entities text-entities
             :conversation-id (chirp-first-nonblank
                               (chirp-get object "conversationId" "conversation_id")
                               (chirp-get legacy "conversation_id_str"))
@@ -2074,6 +2498,7 @@ Return non-nil when BUFFER currently projects a primary feed."
             :reply-control-mode reply-control-mode
             :reply-limited-p reply-limited-p
             :retweeted-by retweeted-by
+            :retweeted-by-name retweeted-by-name
             :author-name (plist-get author-user :name)
             :author-handle author-handle
             :author-avatar-url (plist-get author-user :avatar-url)
@@ -2145,16 +2570,16 @@ Return non-nil when BUFFER currently projects a primary feed."
     (cl-labels ((walk (node)
                   (cond
                    ((chirp-tweet-like-p node)
-                   (let* ((tweet (chirp-normalize-tweet node))
+                    (let* ((tweet (chirp-normalize-tweet node))
                            (id (plist-get tweet :id))
                            (key (or id (plist-get tweet :url))))
-                      (when (and tweet
-                                 (chirp-tweet-visible-p tweet)
-                                 (or (not key)
-                                     (not (gethash key seen))))
-                        (when key
-                          (puthash key t seen))
-                        (push tweet tweets))))
+                       (when (and tweet
+                                  (chirp-tweet-visible-p tweet)
+                                  (or (not key)
+                                      (not (gethash key seen))))
+                         (when key
+                           (puthash key t seen))
+                         (push tweet tweets))))
                    ((chirp-object-p node)
                     (dolist (cell node)
                       (walk (cdr cell))))

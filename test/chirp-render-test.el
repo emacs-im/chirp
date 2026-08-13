@@ -6,12 +6,15 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-render)
+(require 'chirp-actions)
 (require 'chirp-thread)
 
-(declare-function chirp--dispatch-mouse-action
-                  "chirp-actions" (event))
+(declare-function evil-mode "evil" (&optional arg))
+(declare-function evil-normal-state "evil-states" ())
+(defvar evil-mode)
 
 (defun chirp-test--face-member-p (face value)
   "Return non-nil when FACE appears in text property VALUE."
@@ -465,6 +468,7 @@
     (should (equal (plist-get tweet :text) "Original post"))
     (should (equal (plist-get tweet :author-handle) "bob"))
     (should (equal (plist-get tweet :retweeted-by) "alice"))
+    (should (equal (plist-get tweet :retweeted-by-name) "Alice"))
     (should (plist-get tweet :promoted-p))))
 
 (ert-deftest chirp-normalize-user-parses-structured-profile-payload-with-blank-name ()
@@ -625,6 +629,121 @@
         (should (string-match-p "https://t\\.co/read" rendered))
         (should (string-match-p "https://github.com/example/project" rendered))))))
 
+(defun chirp-test--sample-inline-url-tweet ()
+  "Return a tweet whose URL entities replace list-item `t.co` placeholders."
+  (let* ((text "See\n- https://t.co/aaa\n- https://t.co/bbb\n- ASD-STE100")
+         (first (string-match "https://t.co/aaa" text))
+         (second (string-match "https://t.co/bbb" text)))
+    (chirp-normalize-tweet
+     `(("id" . "2087")
+       ("text" . ,text)
+       ("entities" .
+        (("urls" .
+          ((("url" . "https://t.co/aaa")
+            ("expanded_url" . "https://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html")
+            ("display_url" . "tbaggery.com/2008/04/19/a-n...")
+            ("indices" . (,first ,(+ first (length "https://t.co/aaa")))))
+           (("url" . "https://t.co/bbb")
+            ("expanded_url" . "https://cbea.ms/git-commit/")
+            ("display_url" . "cbea.ms/git-commit/")
+            ("indices" . (,second ,(+ second (length "https://t.co/bbb")))))))))
+       ("author" . (("screenName" . "zackkanter")
+                    ("name" . "Zack Kanter")))))))
+
+(ert-deftest chirp-normalize-tweet-uses-code-point-entity-indices ()
+  "GraphQL entity indices are Unicode code points, not UTF-16 units."
+  (let* ((text (concat "FuckCraft Episode 4 Pinke's Gym Arc! [Pinke Anims] "
+                       "Minecraft: pinke gym anal gangbang deepthroat sweaty "
+                       "heat 30:06 fire! 🍑🍆💦🔥🥵\nFull uncut here 👇\n"
+                       "https://t.co/ZC1eHiIdEj\n\n"
+                       "#Rule34 #Minecraft #FuckCraft #PinkeAnims #NSFW "
+                       "https://t.co/YqNlKANgce"))
+         (tweet (chirp-normalize-tweet
+                 `(("id" . "2087131921880871390")
+                   ("full_text" . ,text)
+                   ("display_text_range" . (0 217))
+                   ("entities" .
+                    (("urls" .
+                      ((("url" . "https://t.co/ZC1eHiIdEj")
+                        ("expanded_url" . "https://t.me/r34videoss")
+                        ("display_url" . "t.me/r34videoss")
+                        ("indices" . (145 168)))))
+                     ("hashtags" .
+                      ((("text" . "Rule34") ("indices" . (170 177)))
+                       (("text" . "Minecraft") ("indices" . (178 188)))
+                       (("text" . "FuckCraft") ("indices" . (189 199)))
+                       (("text" . "PinkeAnims") ("indices" . (200 211)))
+                       (("text" . "NSFW") ("indices" . (212 217)))))
+                     ("timestamps" .
+                      ((("text" . "30:06")
+                        ("seconds" . 1806)
+                        ("indices" . (109 114)))))
+                     ("media" .
+                      ((("url" . "https://t.co/YqNlKANgce")
+                        ("expanded_url" . "https://x.com/Rule34XXX34/status/2087131921880871390/video/1")
+                        ("display_url" . "pic.x.com/YqNlKANgce")
+                        ("indices" . (218 241))
+                        ("type" . "video"))))))
+                   ("author" . (("screenName" . "Rule34XXX34")
+                                ("name" . "Rule34XXX")))))))
+    (should (string-match-p "Full uncut here" (plist-get tweet :text)))
+    (should (string-match-p "t\\.me/r34videoss" (plist-get tweet :text)))
+    (should-not (string-match-p "het\\.me" (plist-get tweet :text)))
+    (should-not (string-match-p "HiIdEj" (plist-get tweet :text)))
+    (should (string-match-p "#NSFW" (plist-get tweet :text)))
+    (should (string-match-p "30:06" (plist-get tweet :text)))
+    (should (member "NSFW" (plist-get tweet :hashtags)))
+    (should (cl-find-if (lambda (entity)
+                          (and (eq (plist-get entity :kind) 'timestamp)
+                               (equal (plist-get entity :tag) "30:06")))
+                        (plist-get tweet :text-entities)))))
+
+(ert-deftest chirp-normalize-tweet-inlines-display-urls-from-entities ()
+  "URL entities should replace `t.co` in place with X's display_url."
+  (let ((tweet (chirp-test--sample-inline-url-tweet)))
+    (should (equal (plist-get tweet :text)
+                   "See\n- tbaggery.com/2008/04/19/a-n...\n- cbea.ms/git-commit/\n- ASD-STE100"))
+    (let ((entities (plist-get tweet :text-entities)))
+      (should (equal (mapcar (lambda (entity)
+                               (list (plist-get entity :kind)
+                                     (plist-get entity :url)))
+                             entities)
+                     '((url "https://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html")
+                       (url "https://cbea.ms/git-commit/"))))
+      (should (equal (substring (plist-get tweet :text)
+                                (plist-get (car entities) :start)
+                                (plist-get (car entities) :end))
+                     "tbaggery.com/2008/04/19/a-n..."))
+      (should (equal (substring (plist-get tweet :text)
+                                (plist-get (cadr entities) :start)
+                                (plist-get (cadr entities) :end))
+                     "cbea.ms/git-commit/")))))
+
+(ert-deftest chirp-render-insert-tweet-keeps-inline-display-urls-in-order ()
+  "Inline display URLs should stay on their list lines instead of moving below."
+  (let ((tweet (chirp-test--sample-inline-url-tweet))
+        opened-url)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'browse-url)
+                 (lambda (url &rest _args)
+                   (setq opened-url url))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (let ((rendered (buffer-string)))
+          (should (string-match-p
+                   "- tbaggery\\.com/2008/04/19/a-n\\.\\.\\.\n- cbea\\.ms/git-commit/\n- ASD-STE100"
+                   rendered))
+          (should-not (string-match-p "https://tbaggery\\.com" rendered))
+          (should-not (string-match-p "https://t\\.co/" rendered)))
+        (goto-char (point-min))
+        (search-forward "cbea.ms/git-commit/")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-url "https://cbea.ms/git-commit/"))))))
+
 (ert-deftest chirp-render-insert-tweet-renders-retweet-social-context ()
   "Tweet rendering should show who retweeted the current post."
   (let ((tweet (chirp-test--sample-retweeted-tweet)))
@@ -635,10 +754,125 @@
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (goto-char (point-min))
-      (should (search-forward "retweeted by @dotey" nil t))
+      (should (search-forward "retweeted by dotey" nil t))
       (should (chirp-test--face-member-p
                'chirp-social-context-face
-               (get-text-property (match-beginning 0) 'face))))))
+               (get-text-property (match-beginning 0) 'face)))
+      (should (functionp (appkit-ui-action-at (match-beginning 0)))))))
+
+(ert-deftest chirp-open-at-point-opens-retweeter-profile-from-social-context ()
+  "RET on the retweeted-by line should open the retweeter, not the tweet."
+  (let ((tweet (chirp-test--sample-retweeted-tweet))
+        opened-profile
+        opened-thread)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle)))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (&rest args)
+                   (setq opened-thread args))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "retweeted by")
+        (chirp-open-at-point)))
+    (should (equal opened-profile "dotey"))
+    (should-not opened-thread)))
+
+(ert-deftest chirp-normalize-tweet-extracts-mentions-and-hashtags ()
+  "Tweet entities should keep mentions and hashtags for inline actions."
+  (let ((tweet (chirp-normalize-tweet
+                '(("id" . "55")
+                  ("text" . "Hi @bob see #emacs")
+                  ("author" . (("screenName" . "alice")
+                               ("name" . "Alice")))
+                  ("entities" .
+                   (("user_mentions" . ((("screen_name" . "bob")
+                                         ("name" . "Bob")
+                                         ("indices" . (3 7)))))
+                    ("hashtags" . ((("text" . "emacs")
+                                    ("indices" . (12 18)))))))))))
+    (should (equal (plist-get (car (plist-get tweet :mentions)) :handle) "bob"))
+    (should (equal (plist-get (car (plist-get tweet :mentions)) :name) "Bob"))
+    (should (equal (plist-get tweet :hashtags) '("emacs")))
+    (should (equal (mapcar (lambda (entity)
+                             (list (plist-get entity :kind)
+                                   (or (plist-get entity :handle)
+                                       (plist-get entity :tag))
+                                   (plist-get entity :start)
+                                   (plist-get entity :end)))
+                           (plist-get tweet :text-entities))
+                   '((mention "bob" 3 7)
+                     (hashtag "emacs" 12 18))))))
+
+(ert-deftest chirp-open-at-point-follows-mentions-and-hashtags ()
+  "RET on an inline @handle or #hashtag should follow that target."
+  (let ((tweet '(:kind tweet
+                 :id "55"
+                 :text "Hi @bob see #emacs"
+                 :author-name "Alice"
+                 :author-handle "alice"
+                 :text-entities
+                 ((:kind mention :handle "bob" :name "Bob" :start 3 :end 7)
+                  (:kind hashtag :tag "emacs" :start 12 :end 18))))
+        opened-profile
+        opened-search
+        opened-thread)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle)))
+                ((symbol-function 'chirp-timeline-open-search)
+                 (lambda (query &optional _buffer)
+                   (setq opened-search query)))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (&rest args)
+                   (setq opened-thread args))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "@bob")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-profile "bob"))
+        (should-not opened-thread)
+        (goto-char (point-min))
+        (search-forward "#emacs")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-search "#emacs"))
+        (should-not opened-thread)))))
+
+(ert-deftest chirp-open-at-point-ignores-unparsed-at-words ()
+  "A visible @word is not a profile action unless X sent a mention entity."
+  (let ((tweet '(:kind tweet
+                 :id "56"
+                 :text "email foo@bar.com and @notalink"
+                 :author-name "Alice"
+                 :author-handle "alice"))
+        opened-profile)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-profile-open)
+                 (lambda (handle &optional _buffer)
+                   (setq opened-profile handle)))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "@notalink")
+        (goto-char (match-beginning 0))
+        (should-not (appkit-ui-action-at))
+        (chirp-open-at-point)
+        (should-not opened-profile)))))
 
 (ert-deftest chirp-render-insert-tweet-can-hide-avatar-and-keep-author-text ()
   "Hiding avatars should leave the display name and handle visible."
@@ -845,30 +1079,136 @@
         (should-not (string-match-p "!\\[Cover\\]" rendered))))))
 
 (ert-deftest chirp-render-insert-tweet-renders-link-card-preview ()
-  "Tweet rendering should include cached external link-card previews."
+  "Tweet rendering should include X website-card previews."
   (let ((tweet
-         (chirp-normalize-tweet
-          '(("id" . "125")
-            ("text" . "Repo https://t.co/repo")
-            ("urls" . ("https://github.com/example/project"))
-            ("author" . (("screenName" . "alice")
-                         ("name" . "Alice")))))))
+         (list :kind 'tweet
+               :id "125"
+               :text "Repo github.com/example/project"
+               :author-name "Alice"
+               :author-handle "alice"
+               :link-card
+               (list :url "https://github.com/example/project"
+                     :title "microsoft/RD-Agent"
+                     :description "Research and development agent"
+                     :domain "github.com"
+                     :image-url "https://opengraph.githubassets.com/demo"))))
     (with-temp-buffer
       (chirp-view-mode)
-      (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-link-cards-for-tweet)
-                 (lambda (_tweet)
-                   (list '(:url "https://github.com/example/project"
-                           :title "microsoft/RD-Agent"
-                           :description "Research and development agent"
-                           :image-url "https://opengraph.githubassets.com/demo")))))
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((rendered (buffer-string)))
         (should (string-match-p "microsoft/RD-Agent" rendered))
         (should (string-match-p "Research and development agent" rendered))
-        (should (string-match-p "https://github.com/example/project" rendered))))))
+        (should (string-match-p "github\\.com" rendered)))
+      (goto-char (point-min))
+      (search-forward "microsoft/RD-Agent")
+      (let ((position (match-beginning 0))
+            opened)
+        (should (chirp-test--face-member-p
+                 'chirp-quoted-tweet-block-face
+                 (get-text-property position 'face)))
+        (should (stringp (get-text-property position 'line-prefix)))
+        (cl-letf (((symbol-function 'browse-url)
+                   (lambda (url &rest _args)
+                     (setq opened url))))
+          (goto-char position)
+          (chirp-open-at-point))
+        (should (equal opened "https://github.com/example/project"))))))
+
+(ert-deftest chirp-render-link-card-slices-cached-preview-image ()
+  "A cached website-card image should be inserted as Appkit slices."
+  (let ((tweet
+         (list :kind 'tweet
+               :id "126"
+               :text "Card"
+               :author-name "Alice"
+               :author-handle "alice"
+               :link-card
+               (list :url "https://example.com/post"
+                     :title "Example"
+                     :domain "example.com"
+                     :image-url "https://pbs.twimg.com/card_img/demo.jpg")))
+        sliced)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-cached-image)
+                 (lambda (&rest _args)
+                   '(image :type png :data "x")))
+                ((symbol-function 'appkit-media-insert-image-slices)
+                 (lambda (image &rest _args)
+                   (setq sliced image)
+                   (insert "[slice]"))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (should (equal sliced '(image :type png :data "x")))
+      (should (string-match-p "\\[slice\\]" (buffer-string)))
+      (goto-char (point-min))
+      (search-forward "[slice]")
+      (should (stringp (get-text-property (match-beginning 0) 'line-prefix))))))
+
+(ert-deftest chirp-normalize-tweet-decodes-html-entities-without-shifting-urls ()
+  "HTML entities in tweet text should decode without moving URL spans."
+  (let* ((raw "Scala &amp; Java https://t.co/aaa")
+         (url-beg (string-match "https://t.co/aaa" raw))
+         (url-end (+ url-beg (length "https://t.co/aaa")))
+         (tweet
+          (chirp-normalize-tweet
+           `(("id" . "amp")
+             ("text" . ,raw)
+             ("entities"
+              . (("urls"
+                  . ((("url" . "https://t.co/aaa")
+                      ("expanded_url" . "https://example.com/x")
+                      ("display_url" . "example.com/x")
+                      ("indices" . (,url-beg ,url-end)))))))))))
+    (should (string-match-p "Scala & Java" (plist-get tweet :text)))
+    (should-not (string-match-p "&amp;" (plist-get tweet :text)))
+    (let ((entity (car (plist-get tweet :text-entities))))
+      (should (eq (plist-get entity :kind) 'url))
+      (should (equal (substring (plist-get tweet :text)
+                                (plist-get entity :start)
+                                (plist-get entity :end))
+                     "example.com/x")))))
+
+(ert-deftest chirp-render-keeps-url-entity-aligned-around-ampersand ()
+  "Re-cleaning emitted tweet text must not shift entity offsets past `&'."
+  (let* ((text "Scala & Java see example.com/path")
+         (start (string-match "example\\.com/path" text))
+         (end (+ start (length "example.com/path")))
+         (tweet
+          (list :kind 'tweet
+                :id "amp-1"
+                :text text
+                :author-name "Alice"
+                :author-handle "alice"
+                :text-entities
+                (list (list :kind 'url
+                            :url "https://example.com/path"
+                            :start start
+                            :end end))))
+        opened)
+    (should (equal (substring text start end) "example.com/path"))
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'browse-url)
+                 (lambda (url &rest _args)
+                   (setq opened url))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "example.com/path")
+        (goto-char (match-beginning 0))
+        (should (eq (get-text-property (point) 'face) 'chirp-link-face))
+        (chirp-open-at-point)
+        (should (equal opened "https://example.com/path"))))))
 
 (ert-deftest chirp-render-metric-string-uses-action-specific-active-faces ()
   "Liked, bookmarked, and retweeted metrics should use distinct active faces."
@@ -885,8 +1225,8 @@
                                  (chirp-render--metric-string 'reply 1 nil))
               'chirp-meta-face)))
 
-(ert-deftest chirp-render-insert-tweet-marks-mouse-action-metrics ()
-  "Tweet action metrics should expose mouse controls without changing faces."
+(ert-deftest chirp-render-insert-tweet-marks-metric-actions ()
+  "Tweet metrics should be Appkit actions with the matching commands."
   (let ((tweet '(:kind tweet
                  :id "mouse-1"
                  :text "Clickable actions"
@@ -905,55 +1245,39 @@
       (chirp-view-mode)
       (let ((inhibit-read-only t))
         (chirp-render-insert-tweet tweet))
-      (let (actions)
-        (goto-char (point-min))
-        (while (< (point) (point-max))
-          (when-let* ((action (get-text-property (point) 'chirp-tweet-action)))
-            (push (list action
-                        (point)
-                        (get-text-property (point) 'face)
-                        (get-text-property (point) 'mouse-face)
-                        (get-text-property (point) 'pointer)
-                        (get-text-property (point) 'help-echo)
-                        (get-text-property (point) 'keymap)
-                        (get-text-property (point) 'chirp-entry-item))
-                  actions))
-          (goto-char
-           (or (next-single-property-change
-                (point) 'chirp-tweet-action nil (point-max))
-               (point-max))))
-        (setq actions (nreverse actions))
-        (should (equal (mapcar #'car actions)
-                       '(reply retweet like bookmark)))
-        (dolist (action-data actions)
-          (pcase-let ((`(,action ,position ,face ,mouse-face ,pointer ,help
-                                  ,keymap ,entry)
-                       action-data))
-            (should (eq face
-                        (pcase action
-                          ('reply 'chirp-meta-face)
-                          ('retweet 'chirp-retweeted-metric-face)
-                          ('like 'chirp-liked-metric-face)
-                          ('bookmark 'chirp-bookmarked-metric-face))))
-            (should (eq mouse-face 'highlight))
-            (should (eq pointer 'hand))
-            (should (string-match-p "\\`Mouse-1:" help))
-            (should (keymapp keymap))
-            (should (eq (lookup-key keymap [mouse-1])
-                        #'chirp--dispatch-mouse-action))
-            (goto-char position)
-            (should (eq (key-binding (kbd "RET"))
-                        #'chirp-open-at-point))
-            (should (equal entry tweet))))
-        (dolist (metric `((quote . ,(chirp-render--metric-string 'quote 4))
-                          (view . ,(chirp-render--metric-string 'view 6))))
+      (dolist (spec
+               `((reply 1 nil ,#'chirp-reply-at-point
+                        chirp-meta-face "Reply")
+                 (retweet 2 t ,#'chirp-toggle-retweet-at-point
+                          chirp-retweeted-metric-face "Repost")
+                 (like 3 t ,#'chirp-toggle-like-at-point
+                       chirp-liked-metric-face "Like")
+                 (quote 4 nil ,#'chirp-quote-at-point
+                        chirp-meta-face "Quote")
+                 (bookmark 5 t ,#'chirp-toggle-bookmark-at-point
+                           chirp-bookmarked-metric-face "Bookmark")))
+        (pcase-let ((`(,label ,count ,active ,command ,face ,help) spec))
           (goto-char (point-min))
-          (search-forward (cdr metric))
-          (let ((position (1- (point))))
-            (should-not (get-text-property position 'chirp-tweet-action))
-            (should-not (get-text-property position 'keymap))
-            (should-not (get-text-property position 'mouse-face))))
-        (should buffer-read-only)))))
+          (search-forward (chirp-render--metric-string label count active))
+          (let ((position (match-beginning 0)))
+            (should (eq (get-text-property position 'face) face))
+            (should (eq (get-text-property position 'mouse-face) 'highlight))
+            (should (eq (get-text-property position 'pointer) 'hand))
+            (should (equal (get-text-property position 'help-echo) help))
+            (should (eq (appkit-ui-action-at position) command))
+            (should (eq (lookup-key (get-text-property position 'keymap)
+                                    [mouse-1])
+                        #'appkit-ui-activate))
+            (goto-char position)
+            (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
+            (should (equal (get-text-property position 'chirp-entry-item)
+                           tweet)))))
+      (goto-char (point-min))
+      (search-forward (chirp-render--metric-string 'view 6))
+      (let ((position (match-beginning 0)))
+        (should-not (appkit-ui-action-at position))
+        (should-not (get-text-property position 'mouse-face)))
+      (should buffer-read-only))))
 
 (ert-deftest chirp-render-insert-tweet-renders-reply-control ()
   "Restricted reply audiences should be visible above tweet metrics."
@@ -998,17 +1322,9 @@
       (should (string-match-p
                "You cannot reply to this conversation"
                (buffer-string)))
-      (let (actions)
-        (goto-char (point-min))
-        (while (< (point) (point-max))
-          (when-let* ((action (get-text-property
-                               (point) 'chirp-tweet-action)))
-            (push action actions))
-          (goto-char
-           (or (next-single-property-change
-                (point) 'chirp-tweet-action nil (point-max))
-               (point-max))))
-        (should-not (memq 'reply actions))))))
+      (goto-char (point-min))
+      (search-forward (chirp-render--metric-string 'reply 1))
+      (should-not (appkit-ui-action-at (match-beginning 0))))))
 
 (ert-deftest chirp-render-metric-string-omits-missing-count-placeholder ()
   "Metrics with unavailable counts should retain only their action icon."
@@ -1037,6 +1353,39 @@
       (goto-char (point-min))
       (search-forward "Bob @bob")
       (should (equal (plist-get (chirp-entry-at-point) :id) "456")))))
+
+(ert-deftest chirp-open-at-point-opens-quoted-tweet-from-card-body ()
+  "RET on quoted body opens that tweet; card metrics stay local actions."
+  (let ((tweet (chirp-test--sample-quoted-tweet))
+        opened-thread
+        liked)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-thread-open)
+                 (lambda (tweet-or-url &optional focus-id _buffer)
+                   (setq opened-thread
+                         (list (plist-get tweet-or-url :id) focus-id))))
+                ((symbol-function 'chirp-toggle-like-at-point)
+                 (lambda ()
+                   (setq liked (plist-get (chirp-entry-at-point) :id)))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "Quoted body text")
+        (goto-char (match-beginning 0))
+        (chirp-open-at-point)
+        (should (equal opened-thread '("456" "456")))
+        (search-forward (chirp-render--metric-string 'like nil))
+        (goto-char (match-beginning 0))
+        (should (eq (appkit-ui-action-at)
+                    #'chirp-toggle-like-at-point))
+        (chirp-open-at-point)
+        (should (equal liked "456"))
+        (should (equal opened-thread '("456" "456")))))))
 
 (ert-deftest chirp-render-quoted-tweet-follows-own-media ()
   "A tweet's own media should render before its quoted tweet card."
@@ -1108,7 +1457,7 @@
                   'chirp-thread-reply-context-face))
       (search-forward "@bob")
       (should (eq (get-text-property (match-beginning 0) 'face)
-                  'chirp-handle-face)))))
+                  'chirp-link-face)))))
 
 (ert-deftest chirp-render-insert-tweet-highlights-quoted-tweet-block ()
   "Quoted tweet cards should carry a distinct block face and prefix."
@@ -1151,16 +1500,15 @@
 (ert-deftest chirp-render-quoted-tweet-media-uses-gapless-image-slices ()
   "Quoted tweet media should use the card prefix on gapless image slices."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
-        (fake-image '(image :type png :file "/tmp/fake.png")))
+        (fake-image '(image :type png :file "/tmp/fake.png"
+                            :appkit-media-nslices 4)))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) fake-image))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image) (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-render--thumbnail-row-metrics)
-                 (lambda (&rest _args) '(24 . 75)))
                 ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(64 . 96))))
+                 (lambda (&rest _args) '(8 . 4))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-tweet tweet)))
       (let ((slices (chirp-test--slice-displays)))
@@ -1171,13 +1519,13 @@
           (lambda (item)
             (stringp (get-text-property (car item) 'line-prefix)))
           slices))
-        (should (equal
-                 (mapcar (lambda (item) (nth 2 (car (cdr item)))) slices)
-                 '(0 24 48 72)))
+        (let ((slice-height (nth 4 (car (cdr (car slices))))))
+          (should (equal
+                   (mapcar (lambda (item) (nth 2 (car (cdr item)))) slices)
+                   (list 0 slice-height (* 2 slice-height)
+                         (* 3 slice-height)))))
         (cl-loop for (position . display) in slices
                  for finalp = (= position (caar (last slices)))
-                 do (should (= (plist-get (cdr (cadr display)) :height) 96))
-                 do (should (= (plist-get (cdr (cadr display)) :ascent) 75))
                  do (should (plist-get
                              (get-text-property position 'chirp-media-item)
                              :url))
@@ -1189,44 +1537,48 @@
                                      (line-end-position) 'line-height)
                                     t)))))))))
 
-(ert-deftest chirp-render-thumbnail-slices-cover-an-integer-pixel-canvas ()
-  "Thumbnail slices should cover a copied one-to-one pixel canvas exactly."
-  (let ((source '(image :type png :file "/tmp/fake.png")))
-    (cl-letf (((symbol-function 'image-size)
-               (lambda (&rest _args) '(64 . 45))))
-      (pcase-let* ((`(,slices . ,width)
-                    (chirp-render--thumbnail-slices source '(20 . 80))))
-        (should (= width 85))
-        (should (= (length slices) 3))
-        (cl-loop for slice in slices
-                 for offset in '(0 20 40)
-                 for display = (get-text-property 0 'display slice)
-                 for image = (cadr display)
+(ert-deftest chirp-render-media-grid-uses-appkit-slice-rows ()
+  "Tweet media cells should use Appkit slice rows for current-line geometry."
+  (let ((source '(image :type png :file "/tmp/fake.png"
+                        :height (3 . ch)
+                        :appkit-media-nslices 3))
+        (media '(:type "photo" :url "https://example.com/a.jpg")))
+    (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+               (lambda (&rest _args) source))
+              ((symbol-function 'image-size)
+               (lambda (&rest _args) '(8 . 3)))
+              ((symbol-function 'appkit-media--char-pixel-height)
+               (lambda () 10)))
+      (let* ((cell (chirp-render--media-grid-cell media 0))
+             (rows (plist-get cell :rows)))
+        (should (= (length rows) 3))
+        (should (equal (get-text-property 0 'display
+                                         (plist-get cell :padding))
+                       '(space :width 8)))
+        (cl-loop for row in rows
+                 for index from 0
+                 for display = (get-text-property 0 'display row)
                  do (should (equal (car display)
-                                   `(slice 0 ,offset 1.0 20)))
-                 do (should (= (plist-get (cdr image) :width) 85))
-                 do (should (= (plist-get (cdr image) :height) 60))
-                 do (should (= (plist-get (cdr image) :scale) 1.0))
-                 do (should (= (plist-get (cdr image) :ascent) 80))
-                 do (should (eq (get-text-property 0 'line-height slice) t)))
+                                   (list 'slice 0 (* index 10) 1.0 10)))
+                 do (should (= (plist-get (cdr (cadr display)) :height) 30)))
         (should (equal source
-                       '(image :type png :file "/tmp/fake.png")))))))
-
+                       '(image :type png :file "/tmp/fake.png"
+                               :height (3 . ch)
+                               :appkit-media-nslices 3)))))))
 
 (ert-deftest chirp-render-video-placeholder-cover-is-sliced ()
   "Video placeholders should use the same sliced cover path as photos."
   (let ((media '(:type "video" :url "https://example.com/video.mp4"))
-        (placeholder '(image :type svg :data "video-cover")))
+        (placeholder '(image :type svg :data "video-cover"
+                             :appkit-media-nslices 3)))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
                  (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image)
                  (lambda (&rest _args) placeholder))
-                ((symbol-function 'chirp-render--thumbnail-row-metrics)
-                 (lambda (&rest _args) '(20 . 75)))
                 ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(80 . 45))))
+                 (lambda (&rest _args) '(8 . 3))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-media-strip (list media))))
       (let ((slices (chirp-test--slice-displays)))
@@ -1243,22 +1595,20 @@
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
                  (lambda (media)
-                   `(image :type png :file ,(plist-get media :url))))
+                   `(image :type png
+                           :file ,(plist-get media :url)
+                           :appkit-media-nslices
+                           ,(if (equal (plist-get media :url) "short") 2 3))))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image)
                  (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-render--thumbnail-row-metrics)
-                 (lambda (&rest _args) '(20 . 75)))
                 ((symbol-function 'image-size)
-                 (lambda (image &rest _args)
-                   (if (equal (plist-get (cdr image) :file) "short")
-                       '(40 . 40)
-                     '(40 . 60)))))
+                 (lambda (_image &rest _args) '(8 . 3))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-media-strip media-list)))
       (goto-char (point-min))
       (forward-line 2)
       (should (equal (get-text-property (point) 'display)
-                     '(space :width (40))))
+                     '(space :width 8)))
       (should (= (get-text-property (point) 'chirp-media-index) 0))
       (forward-char 1)
       (should (eq (car-safe (car-safe (get-text-property (point) 'display)))
@@ -1452,8 +1802,8 @@
         (should (equal opened-thread '("123" "123")))
         (should-not opened-profile)))))
 
-(ert-deftest chirp-open-at-point-uses-thread-for-profile-owned-post-author-region ()
-  "RET on the current profile owner's post avatar/name should open thread, not reopen profile."
+(ert-deftest chirp-open-at-point-opens-profile-from-author-on-that-profile ()
+  "RET on an author handle opens the profile even on that user's profile view."
   (let ((tweet '(:kind tweet
                  :id "123"
                  :text "Hello world"
@@ -1483,8 +1833,8 @@
         (search-forward "@alice")
         (goto-char (match-beginning 0))
         (chirp-open-at-point)
-        (should (equal opened-thread '("123" "123")))
-        (should-not opened-profile)))))
+        (should (equal opened-profile "alice"))
+        (should-not opened-thread)))))
 
 (ert-deftest chirp-entry-navigation-can-disable-wraparound ()
   "List-style buffers should be able to stop at the ends instead of wrapping."
@@ -1604,6 +1954,25 @@
                '(:id "123"
                  :text "Read this"
                  :article-text "Full article body."))))
+
+(ert-deftest chirp-view-evil-keeps-native-prefixes-and-actions ()
+  "Evil normal state should keep `gg` and use `g r` for refresh."
+  (skip-unless (require 'evil nil t))
+  (let ((evil-was-enabled (bound-and-true-p evil-mode)))
+    (unwind-protect
+        (progn
+          (unless evil-was-enabled
+            (evil-mode 1))
+          (with-temp-buffer
+            (chirp-view-mode)
+            (evil-normal-state)
+            (should (eq (key-binding (kbd "RET")) #'chirp-open-at-point))
+            (should (eq (key-binding (kbd "g g")) #'evil-goto-first-line))
+            (should (eq (key-binding (kbd "g r")) #'chirp-refresh))
+            (should (eq (key-binding (kbd "g j")) #'chirp-next-entry))
+            (should (eq (key-binding (kbd "g k")) #'chirp-previous-entry))))
+      (unless evil-was-enabled
+        (evil-mode -1)))))
 
 (provide 'chirp-render-test)
 

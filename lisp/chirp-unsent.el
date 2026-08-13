@@ -13,6 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'tabulated-list)
+(require 'appkit-evil)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-actions)
@@ -89,7 +90,27 @@ Either `draft' or `scheduled'.")
   (setq-local tabulated-list-sort-key nil)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (appkit-evil-normalize-keymaps))
+
+(defun chirp-unsent--setup-evil ()
+  "Install optional Evil bindings for unsent draft lists."
+  (when appkit-evil-enable-integration
+    (when (and (featurep 'evil)
+               (fboundp 'evil-set-initial-state))
+      (evil-set-initial-state 'chirp-unsent-mode 'normal))
+    (appkit-evil-define-readonly-keys 'chirp-unsent-mode-map)
+    (appkit-evil-define-keys '(normal motion) 'chirp-unsent-mode-map
+      (kbd "RET") #'chirp-unsent-open
+      (kbd "g r") #'chirp-unsent-refresh
+      (kbd "m") #'chirp-unsent-mark
+      (kbd "u") #'chirp-unsent-unmark
+      (kbd "U") #'chirp-unsent-unmark-all
+      (kbd "d") #'chirp-unsent-flag-delete
+      (kbd "x") #'chirp-unsent-execute
+      (kbd "TAB") #'chirp-unsent-toggle-kind)))
+
+(chirp-unsent--setup-evil)
 
 (defun chirp-unsent--buffer ()
   "Return the reusable unsent list buffer."
