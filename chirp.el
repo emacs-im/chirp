@@ -5,7 +5,7 @@
 
 ;; Author: lucius
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (appkit "0.2.11") (browser-session "0.1.0") (plz "0.8") (transient "0.4.3"))
+;; Package-Requires: ((emacs "29.1") (appkit "0.2.13") (browser-session "0.1.0") (plz "0.8") (transient "0.4.3"))
 ;; Keywords: convenience, comm
 ;; URL: https://github.com/LuciusChen/chirp
 

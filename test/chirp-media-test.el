@@ -338,48 +338,28 @@ rerender and creates a CPU loop."
     (should (equal (plist-get card :image-url)
                    "https://github.com/preview.png"))))
 
-(ert-deftest chirp-media-scaled-dimensions-preserve-aspect-ratio ()
-  "Scaled dimensions should fit the target box without distorting aspect ratio."
-  (should (equal (chirp-media--scaled-dimensions 921 1008 128 128)
-                 '(117 . 128)))
-  (should (equal (chirp-media--scaled-dimensions 1651 1079 128 128)
-                 '(128 . 84))))
 
-(ert-deftest chirp-media-thumbnail-image-uses-photo-thumbnail-wrapper ()
-  "Photo thumbnails should prefer the fixed-size SVG wrapper renderer."
+(ert-deftest chirp-media-thumbnail-image-uses-appkit-preview ()
+  "Photo and video thumbs should use Appkit's character-height preview sizer."
   (let ((chirp-media-render-from-cache-only t)
-        rendered-file)
+        rendered)
     (cl-letf (((symbol-function 'chirp-media-cached-file)
                (lambda (&rest _args)
-                 "/tmp/chirp-photo-thumb.jpg"))
-              ((symbol-function 'chirp-media--photo-thumbnail-image)
-               (lambda (file width height)
-                 (setq rendered-file (list file width height))
-                 'photo-image)))
-        (should (eq (chirp-media-thumbnail-image
-                     '(:type "photo"
-                       :url "https://example.com/photo.jpg"))
-                    'photo-image))
-      (should (equal rendered-file
-                     '("/tmp/chirp-photo-thumb.jpg" 128 128))))))
-
-(ert-deftest chirp-media-thumbnail-image-badges-video-like-media ()
-  "Video-like thumbnails should use the play-badge renderer."
-  (let ((chirp-media-render-from-cache-only t)
-        rendered-file)
-    (cl-letf (((symbol-function 'chirp-media-cached-file)
-               (lambda (&rest _args)
-                 "/tmp/chirp-video-thumb.jpg"))
-              ((symbol-function 'chirp-media--video-badged-thumbnail-image)
-               (lambda (file size)
-                 (setq rendered-file (list file size))
-                 'badge-image)))
+                 "/tmp/chirp-thumb.jpg"))
+              ((symbol-function 'appkit-media-preview-image-from-file)
+               (lambda (file max-width max-height)
+                 (setq rendered (list file max-width max-height))
+                 'preview-image)))
+      (should (eq (chirp-media-thumbnail-image
+                   '(:type "photo"
+                     :url "https://example.com/photo.jpg"))
+                  'preview-image))
+      (should (equal rendered
+                     '("/tmp/chirp-thumb.jpg" 128 128)))
       (should (eq (chirp-media-thumbnail-image
                    '(:type "video"
                      :preview-url "https://example.com/preview.jpg"))
-                  'badge-image))
-      (should (equal rendered-file
-                     '("/tmp/chirp-video-thumb.jpg" 128))))))
+                  'preview-image)))))
 
 (ert-deftest chirp-media-thumbnail-placeholder-image-exists-for-video-like-media ()
   "Video-like media should reserve thumbnail space before the real preview arrives."
@@ -410,6 +390,80 @@ rerender and creates a CPU loop."
     (should (equal (mapcar (lambda (variant) (plist-get variant :url))
                            (plist-get media :variants))
                    '("https://high.mp4" "https://low.mp4")))))
+
+(defun chirp-test--card-binding (key value)
+  "Return one GraphQL-style card binding for KEY and VALUE."
+  (list (cons "key" key)
+        (cons "value" value)))
+
+(defun chirp-test--card-object (name bindings)
+  "Return a tweet card object named NAME with BINDINGS."
+  `(("legacy" . (("name" . ,name)
+                 ("binding_values" . ,bindings)))))
+
+(ert-deftest chirp-normalize-tweet-reads-summary-link-card ()
+  "Website cards should come from X binding_values, not a later HTML fetch."
+  (let* ((bindings
+          (list
+           (chirp-test--card-binding
+            "title" '(("string_value" . "GitHub - antirez/h3.c")))
+           (chirp-test--card-binding
+            "description"
+            '(("string_value" . "MiniMax H3 inference engine for Mac computers.")))
+           (chirp-test--card-binding
+            "vanity_url" '(("string_value" . "github.com")))
+           (chirp-test--card-binding
+            "thumbnail_image"
+            '(("image_value"
+               . (("url" . "https://pbs.twimg.com/card_img/demo.jpg")))))))
+         (tweet
+          (chirp-normalize-tweet
+           (list (cons "rest_id" "2086764219433660463")
+                 (cons "urls" (list "https://github.com/antirez/h3.c"))
+                 (cons "card" (chirp-test--card-object "summary" bindings)))))
+         (card (plist-get tweet :link-card)))
+    (should (equal (plist-get card :title) "GitHub - antirez/h3.c"))
+    (should (equal (plist-get card :description)
+                   "MiniMax H3 inference engine for Mac computers."))
+    (should (equal (plist-get card :domain) "github.com"))
+    (should (equal (plist-get card :url) "https://github.com/antirez/h3.c"))
+    (should (equal (plist-get card :image-url)
+                   "https://pbs.twimg.com/card_img/demo.jpg"))))
+
+(ert-deftest chirp-normalize-tweet-ignores-poll-cards ()
+  "Poll cards should not be rendered as website previews."
+  (let ((tweet
+         (chirp-normalize-tweet
+          (list (cons "id" "1")
+                (cons "text" "poll")
+                (cons "card"
+                      (chirp-test--card-object
+                       "poll2choice_text_only"
+                       (list (chirp-test--card-binding
+                              "title"
+                              '(("string_value" . "A or B"))))))))))
+    (should-not (plist-get tweet :link-card))))
+
+(ert-deftest chirp-media-prefetch-tweet-prefetches-x-link-card-image ()
+  "An X website card should prefetch its thumbnail instead of Open Graph HTML."
+  (let (file-urls card-urls)
+    (cl-letf (((symbol-function 'chirp-media-prefetch-avatar) #'ignore)
+              ((symbol-function 'chirp-media-prefetch-media) #'ignore)
+              ((symbol-function 'chirp-media-prefetch-file)
+               (lambda (url &rest _args)
+                 (push url file-urls)))
+              ((symbol-function 'chirp-media-prefetch-link-card)
+               (lambda (url _buffer)
+                 (push url card-urls))))
+      (chirp-media-prefetch-tweet
+       '(:author-avatar-url "https://example.com/avatar.jpg"
+         :urls ("https://github.com/antirez/h3.c")
+         :link-card (:url "https://github.com/antirez/h3.c"
+                     :title "GitHub - antirez/h3.c"
+                     :image-url "https://pbs.twimg.com/card_img/demo.jpg"))
+       (current-buffer)))
+    (should (equal file-urls '("https://pbs.twimg.com/card_img/demo.jpg")))
+    (should-not card-urls)))
 
 (ert-deftest chirp-normalize-tweet-reads-unified-card-video-media ()
   "Tweet normalization should expose playable unified-card video variants."
@@ -667,6 +721,64 @@ rerender and creates a CPU loop."
                    "https://pbs.twimg.com/media/abc123.jpg?name=orig"))
     (should (equal copied-target "/tmp/chirp-photo.jpg"))
     (should (equal final-message "Downloaded /tmp/chirp-photo.jpg"))))
+
+(ert-deftest chirp-media-avatar-pixel-size-follows-current-line-height ()
+  "Avatar pixels should track the current line height and `chirp-avatar-size'."
+  (let ((chirp-avatar-size 28)
+        (line-height 21))
+    (cl-letf (((symbol-function 'appkit-chat-avatar-line-pixel-height)
+               (lambda () line-height)))
+      (should (= 21 (chirp-media--avatar-pixel-size)))
+      (setq line-height 35)
+      (should (= 35 (chirp-media--avatar-pixel-size)))
+      (setq chirp-avatar-size 14)
+      (should (= 18 (chirp-media--avatar-pixel-size))))))
+
+(ert-deftest chirp-media-avatar-image-uses-current-line-pixel-size ()
+  "Avatar descriptors should be built at the current line pixel size."
+  (let ((chirp-avatar-size 28)
+        (chirp-media-render-from-cache-only t)
+        captured-size)
+    (cl-letf (((symbol-function 'appkit-chat-avatar-line-pixel-height)
+               (lambda () 35))
+              ((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args) "/tmp/chirp-avatar.jpg"))
+              ((symbol-function 'appkit-media-circular-image-from-file)
+               (lambda (_file size)
+                 (setq captured-size size)
+                 '(image :type svg :data "avatar"))))
+      (should (equal (chirp-media-avatar-image "https://example.com/a.jpg")
+                     '(image :type svg :data "avatar")))
+      (should (= captured-size 35)))))
+
+(ert-deftest chirp-view-mode-rebuilds-geometry-after-text-scale ()
+  "Text scale should request a cached redraw, not a network refresh."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (should (memq #'chirp--on-text-scale-change text-scale-mode-hook))
+    (let (rerender-args)
+      (cl-letf (((symbol-function 'chirp-request-rerender)
+                 (lambda (&optional buffer delay)
+                   (setq rerender-args (list buffer delay))))
+                ((symbol-function 'chirp-refresh)
+                 (lambda ()
+                   (ert-fail "text-scale must not refetch"))))
+        (chirp--on-text-scale-change)
+        (should (equal rerender-args '(nil 0)))))))
+
+(ert-deftest chirp-render-into-buffer-preserves-text-scale ()
+  "A cached redraw must not re-enter the major mode and drop text scale."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (text-scale-increase 2)
+    (let ((amount text-scale-mode-amount))
+      (should (> amount 0))
+      (chirp-render-into-buffer
+       (current-buffer) "scale" #'ignore
+       (lambda () (insert "hello\n")))
+      (should (eq major-mode 'chirp-view-mode))
+      (should (equal amount text-scale-mode-amount))
+      (should (bound-and-true-p text-scale-mode)))))
 
 (provide 'chirp-media-test)
 
