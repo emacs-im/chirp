@@ -1033,31 +1033,35 @@ TIME-P controls the timestamp; NEWLINE-P controls the trailing newline."
       (insert "\n"))))
 
 (cl-defun chirp-render--insert-tweet-context
-    (tweet &key prefix prefix-face show-reply-context reply-parent)
+    (tweet &key prefix prefix-face reply-parent (trailing-newline-p t))
   "Insert social and parent context for TWEET.
 
-PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT is accepted
-for existing callers; related items are labeled independently.  REPLY-PARENT
-supplies the preceding tweet."
-  (ignore show-reply-context)
-  (when reply-parent
-    (chirp-render--insert-list-reply-context
-     tweet reply-parent prefix prefix-face))
-  (when (eq (plist-get tweet :timeline-context) 'related)
-    (chirp-render--insert-prefix prefix prefix-face)
-    (insert (propertize "Related tweet"
-                        'face 'chirp-thread-related-context))
-    (insert "\n"))
-  (when-let* ((retweeted-by (plist-get tweet :retweeted-by)))
-    (chirp-render--insert-prefix prefix prefix-face)
-    (let ((start (point))
-          (name (or (plist-get tweet :retweeted-by-name) retweeted-by)))
-      (insert (propertize (format "retweeted by %s" name)
-                          'face 'chirp-social-context-face))
-      (chirp-render--add-profile-action
-       start (point) retweeted-by
-       (format "Open @%s" retweeted-by)))
-    (insert "\n")))
+PREFIX and PREFIX-FACE control indentation.  REPLY-PARENT supplies the
+preceding tweet.  TRAILING-NEWLINE-P controls whether a non-empty context
+block ends in a newline."
+  (let ((start (point)))
+    (when reply-parent
+      (chirp-render--insert-list-reply-context
+       tweet reply-parent prefix prefix-face))
+    (when (eq (plist-get tweet :timeline-context) 'related)
+      (chirp-render--insert-prefix prefix prefix-face)
+      (insert (propertize "Related tweet"
+                          'face 'chirp-thread-related-context))
+      (insert "\n"))
+    (when-let* ((retweeted-by (plist-get tweet :retweeted-by)))
+      (chirp-render--insert-prefix prefix prefix-face)
+      (let ((action-start (point))
+            (name (or (plist-get tweet :retweeted-by-name) retweeted-by)))
+        (insert (propertize (format "retweeted by %s" name)
+                            'face 'chirp-social-context-face))
+        (chirp-render--add-profile-action
+         action-start (point) retweeted-by
+         (format "Open @%s" retweeted-by)))
+      (insert "\n"))
+    (unless trailing-newline-p
+      (when (and (< start (point))
+                 (eq (char-before) ?\n))
+        (delete-char -1)))))
 
 (cl-defun chirp-render--insert-tweet-body
     (tweet &key prefix prefix-face reply-context-prefix show-reply-context
@@ -1155,8 +1159,7 @@ non-nil, show the reply target.  ARTICLE-MODE controls full article rendering,
 and REPLY-PARENT supplies the preceding parent tweet when available."
   (let ((start (point)))
     (chirp-render--insert-tweet-context
-     tweet :prefix prefix :prefix-face prefix-face
-     :show-reply-context show-reply-context :reply-parent reply-parent)
+     tweet :prefix prefix :prefix-face prefix-face :reply-parent reply-parent)
     (chirp-render--insert-tweet-heading
      tweet :prefix prefix :prefix-face prefix-face :avatar-p t)
     (chirp-render--insert-tweet-body
@@ -1190,6 +1193,10 @@ tweet content and actions."
             :connector (plist-get row :connector)
             :avatar nil
             :avatar-fallback " "
+            :context-inserter
+            (lambda ()
+              (chirp-render--insert-tweet-context
+               tweet :trailing-newline-p nil))
             :heading-inserter
             (lambda ()
               (chirp-render--insert-tweet-heading
@@ -1198,9 +1205,6 @@ tweet content and actions."
             :body-inserter
             (lambda (body-prefix _properties)
               (let ((body-start (point)))
-                (chirp-render--insert-tweet-context
-                 tweet :prefix nil
-                 :show-reply-context show-reply-context)
                 (chirp-render--insert-tweet-body
                  tweet :prefix nil
                  :reply-context-prefix nil

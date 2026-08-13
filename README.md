@@ -10,7 +10,7 @@ Home, Following, search, bookmarks, notifications, user-handle completion, acces
 
 ## Quick Start
 
-Chirp requires GNU Emacs 29.1 or newer, Appkit 0.2.3 or newer, Plz 0.8 or newer with `curl`, Transient 0.4.3 or newer, and browser-session 0.1.0 or newer with its external helper. Direct X views and actions require an authenticated X web session.
+Chirp requires GNU Emacs 29.1 or newer, Appkit 0.2.16 or newer, Plz 0.8 or newer with `curl`, Transient 0.4.3 or newer, and browser-session 0.1.0 or newer with its external helper. Direct X views and actions require an authenticated X web session.
 
 ### Sign in to X
 
