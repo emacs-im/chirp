@@ -1,0 +1,49 @@
+#+title: Chirp development
+#+options: toc:2 num:nil
+
+* Tests
+
+Eask owns package activation, local Appkit and browser-session
+dependencies, byte compilation, and ERT load paths:
+
+#+begin_src sh
+eask run script test-local
+#+end_src
+
+Automated tests cover request shaping and response adaptation without
+sending live X writes.
+
+* Write smoke
+
+Live publishing checks are excluded from ERT.  With disposable
+credentials:
+
+#+begin_src sh
+CHIRP_ALLOW_WRITE_SMOKE=1 emacs -Q --batch -L . -L lisp \
+  -l test/chirp-write-smoke.el --eval '(chirp-write-smoke-run)'
+#+end_src
+
+The smoke creates a root post, reply, quote, long-form post, and
+image post, then deletes them in reverse order.  Ambiguous write
+failures are never retried.
+
+* Transport notes
+
+Timelines, search, bookmarks, notifications, threads, core profile
+views, Likes, XChat, compose, and tweet mutations use X persisted web
+GraphQL through ~url.el~.  User typeahead, list discovery,
+relationship lists, translation, follow state, and multipart media
+upload use allowlisted REST roots.
+
+Appkit owns session lifecycle, view identity, keyed reconciliation,
+history windows, composer state, and bounded media queues.  X
+protocol state, request semantics, cache paths, tweet rendering, and
+media geometry remain Chirp-owned.
+
+Post, reply, quote, media INIT/APPEND/FINALIZE, and other writes are
+never retried automatically.  Authenticated POST retrievals disable
+~url.el~ transport replay.
+
+* License
+
+Chirp is available under the MIT License.  See [[file:../LICENSE][LICENSE]].
