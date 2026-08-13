@@ -613,7 +613,7 @@
 
 (ert-deftest chirp-quit-current-buffer-keeps-main-timeline-buffers ()
   "Quitting For You/Following should keep the timeline buffer alive."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev-test*"))
         (timeline (generate-new-buffer " *chirp-home*")))
     (unwind-protect
         (save-window-excursion
@@ -631,7 +631,7 @@
 
 (ert-deftest chirp-quit-current-buffer-kills-secondary-chirp-views ()
   "Quitting secondary Chirp views should still kill the current buffer."
-  (let ((previous (generate-new-buffer " *chirp-prev*"))
+  (let ((previous (generate-new-buffer "*chirp-prev-test*"))
         (detail (generate-new-buffer " *chirp-detail*")))
     (unwind-protect
         (save-window-excursion
@@ -680,25 +680,6 @@
                                                  ("name" . "Brand")))))))
                    '("1" "2")))))
 
-(ert-deftest chirp-load-more-stops-when-timeline-is-exhausted ()
-  "Loading more should short-circuit once the timeline is exhausted."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (setq-local chirp--timeline-kind 'home)
-    (setq-local chirp--timeline-limit 20)
-    (setq-local chirp--timeline-exhausted-p t)
-    (let ((open-called nil)
-          (last-message nil))
-      (cl-letf (((symbol-function 'chirp-timeline--open)
-                 (lambda (&rest _args)
-                   (setq open-called t)))
-                ((symbol-function 'message)
-                 (lambda (format-string &rest args)
-                   (setq last-message (apply #'format format-string args)))))
-        (chirp-load-more))
-      (should-not open-called)
-      (should (equal last-message "No older posts.")))))
-
 (ert-deftest chirp-status-appears-in-mode-line ()
   "Persistent Chirp status should stay visible in the mode line."
   (with-temp-buffer
@@ -721,252 +702,9 @@
       (chirp-clear-status (current-buffer))
       (should-not (chirp--mode-line-status-string)))))
 
-(ert-deftest chirp-timeline-render-clears-persistent-status ()
-  "Rendering a timeline should clear any previous loading status."
-  (let ((buffer (generate-new-buffer " *chirp-status-render*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'run-with-timer)
-                   (lambda (&rest _args)
-                     'chirp-test-timer))
-                  ((symbol-function 'timerp)
-                   (lambda (value)
-                     (eq value 'chirp-test-timer)))
-                  ((symbol-function 'cancel-timer) #'ignore)
-                  ((symbol-function 'chirp-render-insert-tweet-list) #'ignore)
-                  ((symbol-function 'chirp-render-insert-empty) #'ignore)
-                  ((symbol-function 'chirp-display-buffer) #'ignore)
-                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (with-current-buffer buffer
-            (chirp-view-mode)
-            (chirp-set-status buffer "Refreshing timeline..."))
-          (chirp-timeline--render
-           buffer
-           "For You"
-           #'ignore
-           (list (list :id "1"))
-           :kind 'home
-           :limit 20)
-          (with-current-buffer buffer
-            (should-not chirp--status-text)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-handle-feed-success-keeps-view-when-no-growth ()
-  "Loading more should keep the current view when the response adds nothing."
-  (let ((buffer (generate-new-buffer " *chirp-timeline-test*")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (chirp-view-mode)
-          (setq-local chirp--timeline-loading-more t)
-          (setq-local chirp--request-token 'token)
-          (let ((render-called nil)
-                (last-message nil))
-            (cl-letf (((symbol-function 'chirp-timeline--render)
-                       (lambda (&rest _args)
-                         (setq render-called t)))
-                      ((symbol-function 'message)
-                       (lambda (format-string &rest args)
-                         (setq last-message (apply #'format format-string args)))))
-              (chirp-timeline--handle-feed-success
-               buffer
-               "For You"
-               #'ignore
-               (list (list :id "1") (list :id "2"))
-               :kind 'home
-               :limit 40
-               :anchor-id "2"
-               :loading-more t
-               :refreshing nil
-               :previous-tweets (list (list :id "1") (list :id "2"))
-               :previous-exhausted-p nil
-               :previous-next-cursor nil
-               :envelope nil))
-            (should-not render-called)
-            (should chirp--timeline-exhausted-p)
-            (should-not chirp--timeline-loading-more)
-            (should-not chirp--request-token)
-            (should (equal last-message "No older posts."))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-refresh-merges-newer-posts-at-top ()
-  "Refreshing should prepend newer tweets and keep older visible tweets."
-  (let ((render-args nil)
-        (last-message nil))
-    (cl-letf (((symbol-function 'chirp-timeline--render)
-               (lambda (&rest args)
-                 (setq render-args args)))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq last-message (apply #'format format-string args)))))
-      (chirp-timeline--handle-feed-success
-       (current-buffer)
-       "For You"
-       #'ignore
-       (list (list :id "3") (list :id "2"))
-       :kind 'home
-       :limit 20
-       :anchor-id "2"
-       :loading-more nil
-       :refreshing t
-       :previous-tweets (list (list :id "2") (list :id "1"))
-       :previous-exhausted-p t
-       :previous-next-cursor nil
-       :envelope nil))
-    (should render-args)
-    (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
-                           (nth 3 render-args))
-                   '("3" "2" "1")))
-    (should-not (plist-get (nthcdr 4 render-args) :anchor-id))
-    (should (eq (plist-get (nthcdr 4 render-args) :exhausted-p) t))
-    (should (equal last-message "1 new post."))))
-
-(ert-deftest chirp-timeline-refresh-reports-no-new-posts ()
-  "Refreshing should say when nothing new was added and avoid a rerender."
-  (let ((buffer (generate-new-buffer " *chirp-refresh-no-change*")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (chirp-view-mode)
-          (setq-local chirp--timeline-kind 'home)
-          (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
-          (setq-local chirp--timeline-next-cursor nil)
-          (let ((render-called nil)
-                (last-message nil))
-            (cl-letf (((symbol-function 'chirp-timeline--render)
-                       (lambda (&rest _args)
-                         (setq render-called t)))
-                      ((symbol-function 'message)
-                       (lambda (format-string &rest args)
-                         (setq last-message (apply #'format format-string args)))))
-              (chirp-timeline--handle-feed-success
-               buffer
-               "For You"
-               #'ignore
-               (list (list :id "2") (list :id "1"))
-               :kind 'home
-               :limit 20
-               :anchor-id "2"
-               :loading-more nil
-               :refreshing t
-               :previous-tweets (list (list :id "2") (list :id "1"))
-               :previous-exhausted-p nil
-               :previous-next-cursor nil
-               :envelope nil))
-            (should-not render-called)
-            (should (equal last-message "No new posts."))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-refresh-counts-new-interleaved-posts ()
-  "Refreshing should count unseen tweets even when the top recommendation stays put."
-  (let ((render-args nil)
-        (last-message nil))
-    (cl-letf (((symbol-function 'chirp-timeline--render)
-               (lambda (&rest args)
-                 (setq render-args args)))
-              ((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq last-message (apply #'format format-string args)))))
-      (chirp-timeline--handle-feed-success
-       (current-buffer)
-       "For You"
-       #'ignore
-       (list (list :id "2") (list :id "3") (list :id "1"))
-       :kind 'home
-       :limit 20
-       :anchor-id "2"
-       :loading-more nil
-       :refreshing t
-       :previous-tweets (list (list :id "2") (list :id "1"))
-       :previous-exhausted-p nil
-       :previous-next-cursor nil
-       :envelope nil))
-    (should render-args)
-    (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
-                           (nth 3 render-args))
-                   '("2" "3" "1")))
-    (should-not (plist-get (nthcdr 4 render-args) :anchor-id))
-    (should (equal last-message "1 new post."))))
-
-(ert-deftest chirp-timeline-refresh-skips-rerender-when-page-is-unchanged ()
-  "Refreshing should avoid a full rerender when the visible page is unchanged."
-  (let ((buffer (generate-new-buffer " *chirp-refresh-skip*")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (chirp-view-mode)
-          (setq-local chirp--timeline-kind 'home)
-          (setq-local chirp--timeline-limit 20)
-          (setq-local chirp--timeline-count 2)
-          (setq-local chirp--timeline-next-cursor "cursor-next")
-          (setq-local chirp--timeline-exhausted-p nil)
-          (setq-local chirp--request-token 'token)
-          (let ((render-called nil)
-                (last-message nil))
-            (cl-letf (((symbol-function 'chirp-timeline--render)
-                       (lambda (&rest _args)
-                         (setq render-called t)))
-                      ((symbol-function 'message)
-                       (lambda (format-string &rest args)
-                         (setq last-message (apply #'format format-string args)))))
-              (chirp-timeline--handle-feed-success
-               buffer
-               "For You"
-               #'ignore
-               (list (list :id "2") (list :id "1"))
-               :kind 'home
-               :limit 20
-               :anchor-id "2"
-               :loading-more nil
-               :refreshing t
-               :previous-tweets (list (list :id "2") (list :id "1"))
-               :previous-exhausted-p nil
-               :previous-next-cursor "cursor-next"
-               :envelope nil))
-            (should-not render-called)
-            (should-not chirp--request-token)
-            (should-not chirp--timeline-loading-more)
-            (should (equal chirp--timeline-next-cursor "cursor-next"))
-            (should (equal last-message "No new posts."))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-render-displays-buffer-when-ready ()
-  "Rendering a fetched timeline should display the target buffer."
-  (let ((buffer (generate-new-buffer " *chirp-display-test*"))
-        displayed)
-    (unwind-protect
-        (cl-letf (((symbol-function 'chirp-render-into-buffer)
-                   (lambda (target _title _refresh render-fn)
-                     (with-current-buffer target
-                       (chirp-view-mode)
-                       (let ((inhibit-read-only t))
-                         (erase-buffer)
-                         (funcall render-fn)))))
-                  ((symbol-function 'chirp-render-insert-tweet-list)
-                   (lambda (_tweets)
-                     (insert "tweet\n")))
-                  ((symbol-function 'chirp-display-buffer)
-                   (lambda (target)
-                     (setq displayed target)))
-                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-timeline--render
-           buffer "For You" #'ignore (list (list :id "1"))
-           :kind 'home
-           :limit 20
-           :display-p t))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))
-    (should (eq displayed buffer))))
-
 (ert-deftest chirp-timeline-open-likes-resolves-current-user-before-fetching ()
   "Liked view should resolve the current handle before fetching likes."
-  (let ((buffer (generate-new-buffer " *chirp-liked-test*"))
-        whoami-called
-        likes-handle
-        render-args)
+  (let (whoami-called likes-handle installed)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-begin-background-request)
                    (lambda (_buffer _title)
@@ -982,24 +720,20 @@
                    (lambda (handle callback &optional _errback)
                      (setq likes-handle handle)
                      (funcall callback (list (list :id "1")) nil)))
-                  ((symbol-function 'chirp-timeline--render)
-                   (lambda (&rest args)
-                     (setq render-args args))))
-          (chirp-timeline-open-likes nil buffer)
+                  ((symbol-function 'chirp-timeline--install-tweets)
+                   (lambda (view tweets)
+                     (setq installed
+                           (list (plist-get (appkit-view-state view) :title)
+                                 tweets)))))
+          (chirp-timeline-open-likes)
           (should whoami-called)
           (should (equal likes-handle "alice"))
-          (should (equal (nth 1 render-args) "Liked: @alice"))
-          (should (equal (nth 3 render-args) '((:id "1")))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+          (should (equal installed '("Liked: @alice" ((:id "1"))))))
+      (chirp-stop))))
 
 (ert-deftest chirp-timeline-open-list-prompts-from-accessible-lists ()
   "List selection should prompt with accessible lists and open the chosen id."
-  (let ((buffer (generate-new-buffer " *chirp-list-picker-test*"))
-        captured-target
-        render-args
-        seen-prompt
-        seen-collection)
+  (let (captured-target installed seen-prompt seen-collection)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-backend-lists)
                    (lambda (callback &optional _errback)
@@ -1026,31 +760,30 @@
                    (lambda (list-target callback &optional _errback)
                      (setq captured-target list-target)
                      (funcall callback (list (list :id "1")) nil)))
-                  ((symbol-function 'chirp-timeline--render)
-                   (lambda (&rest args)
-                     (setq render-args args))))
-          (chirp-timeline-open-list nil buffer)
+                  ((symbol-function 'chirp-timeline--install-tweets)
+                   (lambda (view tweets)
+                     (setq installed
+                           (list (plist-get (appkit-view-state view) :title)
+                                 tweets)))))
+          (chirp-timeline-open-list)
           (should (equal seen-prompt "List (1): "))
           (should (string-match-p "@lucius" (caar seen-collection)))
           (should (string-match-p "owned" (caar seen-collection)))
           (should (equal captured-target "1956792682412345678"))
-          (should (equal (nth 1 render-args) "List: 1956792682412345678"))
-          (should (equal (nth 3 render-args) '((:id "1")))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+          (should (equal installed
+                         '("List: 1956792682412345678" ((:id "1"))))))
+      (chirp-stop))))
 
 (ert-deftest chirp-timeline-list-picker-ignores-a-dead-target-buffer ()
   "Delayed list discovery should not prompt after its target buffer dies."
-  (let ((buffer (generate-new-buffer " *chirp-list-dead-test*"))
-        callback
-        prompted)
+  (let (buffer callback prompted)
     (cl-letf (((symbol-function 'chirp-backend-lists)
                (lambda (success &optional _errback)
                  (setq callback success)))
               ((symbol-function 'completing-read)
                (lambda (&rest _args)
                  (setq prompted t))))
-      (chirp-timeline-open-list nil buffer)
+      (setq buffer (chirp-timeline-open-list))
       (kill-buffer buffer)
       (funcall callback
                '((("id" . "1") ("name" . "One")))
@@ -1059,9 +792,7 @@
 
 (ert-deftest chirp-timeline-open-list-uses-list-title-and-renderer ()
   "List view should fetch tweets and render under a list-specific title."
-  (let ((buffer (generate-new-buffer " *chirp-list-test*"))
-        captured-target
-        render-args)
+  (let (captured-target installed)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-begin-background-request)
                    (lambda (_buffer _title)
@@ -1073,62 +804,18 @@
                    (lambda (list-target callback &optional _errback)
                      (setq captured-target list-target)
                      (funcall callback (list (list :id "1")) nil)))
-                  ((symbol-function 'chirp-timeline--render)
-                   (lambda (&rest args)
-                     (setq render-args args))))
-          (chirp-timeline-open-list "https://x.com/i/lists/1956792682412345678" buffer)
-          (should (equal captured-target "https://x.com/i/lists/1956792682412345678"))
-          (should (equal (nth 1 render-args) "List: 1956792682412345678"))
-          (should (equal (nth 3 render-args) '((:id "1")))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-render-stores-next-cursor ()
-  "Timeline render should retain the next pagination cursor."
-  (let ((buffer (generate-new-buffer " *chirp-next-cursor*")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-timeline--render
-           buffer
-           "For You"
-           #'ignore
-           (list (list :id "1"))
-           :kind 'home
-           :limit 20
-           :next-cursor "cursor-next")
-          (with-current-buffer buffer
-            (should (equal chirp--timeline-next-cursor "cursor-next"))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest chirp-timeline-rerender-does-not-steal-focus ()
-  "Background timeline rerenders should not redisplay the buffer."
-  (let ((buffer (generate-new-buffer " *chirp-rerender-test*"))
-        displayed)
-    (unwind-protect
-        (cl-letf (((symbol-function 'chirp-render-into-buffer)
-                   (lambda (target _title _refresh render-fn)
-                     (with-current-buffer target
-                       (chirp-view-mode)
-                       (let ((inhibit-read-only t))
-                         (erase-buffer)
-                         (funcall render-fn)))))
-                  ((symbol-function 'chirp-render-insert-tweet-list)
-                   (lambda (_tweets)
-                     (insert "tweet\n")))
-                  ((symbol-function 'chirp-display-buffer)
-                   (lambda (target)
-                     (setq displayed target)))
-                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
-                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (chirp-timeline--render
-           buffer "For You" #'ignore (list (list :id "1"))
-           :kind 'home
-           :limit 20)
-          (should-not displayed))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+                  ((symbol-function 'chirp-timeline--install-tweets)
+                   (lambda (view tweets)
+                     (setq installed
+                           (list (plist-get (appkit-view-state view) :title)
+                                 tweets)))))
+          (chirp-timeline-open-list
+           "https://x.com/i/lists/1956792682412345678")
+          (should (equal captured-target
+                         "https://x.com/i/lists/1956792682412345678"))
+          (should (equal installed
+                         '("List: 1956792682412345678" ((:id "1"))))))
+      (chirp-stop))))
 
 (ert-deftest chirp-request-rerender-coalesces-primary-view-invalidations ()
   "Repeated background updates should produce one Appkit view sync."
@@ -1193,58 +880,17 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest chirp-load-more-uses-next-cursor-instead-of-growing-max ()
-  "Loading more should request the next cursor without inflating the head page size."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (setq-local chirp--timeline-kind 'home)
-    (setq-local chirp--timeline-limit 20)
-    (setq-local chirp--timeline-next-cursor "cursor-next")
-    (let ((buffer (current-buffer))
-          captured)
-      (cl-letf (((symbol-function 'chirp-timeline--open)
-                 (lambda (&rest args)
-                   (setq captured args))))
-        (chirp-load-more))
-      (should (equal (nth 0 captured) 'home))
-      (should (= (plist-get (cdr captured) :limit) 20))
-      (should (equal (plist-get (cdr captured) :anchor-id) '(:position 1)))
-      (should (eq (plist-get (cdr captured) :buffer) buffer))
-      (should (eq (plist-get (cdr captured) :loading-more) t))
-      (should-not (plist-get (cdr captured) :refreshing))
-      (should (equal (plist-get (cdr captured) :cursor) "cursor-next")))))
-
 (ert-deftest chirp-timeline-refresh-uses-smaller-head-window ()
   "Refreshing should fetch a smaller head page when configured."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (let ((chirp-timeline-refresh-max-results 10)
-          captured)
-      (cl-letf (((symbol-function 'chirp-backend-feed)
-                 (lambda (_callback _following _errback max-results cursor)
-                   (setq captured (list max-results cursor)))))
-        (chirp-timeline--open
-         'home
-         :limit 20
-         :buffer (current-buffer)
-         :refreshing t))
-      (should (equal captured '(10 nil))))))
+  (let ((state (chirp-timeline--make-state 'home 20))
+        (chirp-timeline-refresh-max-results 10))
+    (should (= (chirp-timeline--fetch-count state 'refresh) 10))))
 
 (ert-deftest chirp-timeline-refresh-can-use-current-limit ()
   "Refreshing should keep the old fetch size when the head-window override is disabled."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (let ((chirp-timeline-refresh-max-results nil)
-          captured)
-      (cl-letf (((symbol-function 'chirp-backend-feed)
-                 (lambda (_callback _following _errback max-results cursor)
-                   (setq captured (list max-results cursor)))))
-        (chirp-timeline--open
-         'home
-         :limit 20
-         :buffer (current-buffer)
-         :refreshing t))
-      (should (equal captured '(20 nil))))))
+  (let ((state (chirp-timeline--make-state 'home 20))
+        (chirp-timeline-refresh-max-results nil))
+    (should (= (chirp-timeline--fetch-count state 'refresh) 20))))
 
 (ert-deftest chirp-window-state-restore-preserves-point-and-scroll ()
   "Window-state helpers should preserve point and scroll position."

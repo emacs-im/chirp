@@ -19,7 +19,12 @@
 (require 'appkit-core)
 (require 'appkit-evil)
 (require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-ui)
+
+(declare-function appkit-compose-cancel-submit "appkit-compose" ())
+(declare-function appkit-compose-finish-submit "appkit-compose" ())
+(declare-function appkit-compose-submitting-p "appkit-compose" ())
 
 (declare-function chirp-backend-tweet "chirp-backend"
                   (tweet-id callback &optional errback))
@@ -233,9 +238,6 @@ commands still work, and displays alt text when the backend provides it."
 (defvar-local chirp--profile-view-mode nil
   "Current profile subview mode for the active profile buffer.")
 
-(defvar-local chirp--profile-view-modes nil
-  "Available profile subview modes for the active profile buffer.")
-
 (defvar-local chirp--profile-switch-mode-function nil
   "Function used to switch the current profile buffer to another subview.")
 
@@ -264,7 +266,6 @@ commands still work, and displays alt text when the backend provides it."
 (put 'chirp--entry-wrap-navigation 'permanent-local t)
 (put 'chirp--profile-handle 'permanent-local t)
 (put 'chirp--profile-view-mode 'permanent-local t)
-(put 'chirp--profile-view-modes 'permanent-local t)
 (put 'chirp--profile-switch-mode-function 'permanent-local t)
 (put 'chirp--status-text 'permanent-local t)
 (put 'chirp--status-kind 'permanent-local t)
@@ -476,44 +477,125 @@ revisited later."
        (with-current-buffer buffer
          (eq chirp--request-token token))))
 
-(defun chirp-render-into-buffer (buffer title refresh render-fn)
-  "Render legacy BUFFER with TITLE using REFRESH and RENDER-FN."
-  (with-current-buffer buffer
-    ;; Re-entering the major mode runs `kill-all-local-variables', which
-    ;; drops `text-scale-mode' and snaps the buffer back to default size.
-    (unless (derived-mode-p 'chirp-view-mode)
-      (chirp-view-mode))
+(defun chirp--live-projection-view (&optional buffer)
+  "Return BUFFER's live Appkit projection view, or nil."
+  (let ((target (or buffer (current-buffer))))
+    (when (buffer-live-p target)
+      (with-current-buffer target
+        (when-let* ((view (appkit-current-view))
+                    ((appkit-view-live-p view))
+                    ((appkit-projection-view-p view)))
+          view)))))
+
+(defun chirp--projection-state (&optional buffer)
+  "Return BUFFER's Appkit projection state, or nil."
+  (when-let* ((view (chirp--live-projection-view buffer)))
+    (appkit-view-state view)))
+
+(defun chirp-projection-position-intent (events)
+  "Return the effective semantic position intent from EVENTS."
+  (or (cl-loop for event in events
+               when (eq (plist-get event :position) 'first)
+               return 'first)
+      (cl-loop for event in (reverse events)
+               for position = (plist-get event :position)
+               when position return position)
+      'preserve))
+
+(cl-defun chirp--setup-projection-view
+    (view title printer anchor-property &optional (no-separator-p t))
+  "Initialize VIEW's read-only projection titled TITLE.
+
+PRINTER renders one row.  ANCHOR-PROPERTY carries stable row identity.
+NO-SEPARATOR-P suppresses EWOC's automatic newlines between rows."
+  (let* ((buffer (appkit-view-buffer view))
+         (state (appkit-view-state view)))
     (setq-local chirp--view-title title)
-    (setq-local chirp--refresh-function refresh)
-    (setq-local chirp--timeline-kind nil)
-    (setq-local chirp--timeline-limit nil)
-    (setq-local chirp--timeline-count nil)
-    (setq-local chirp--timeline-next-cursor nil)
-    (setq-local chirp--timeline-load-more-function nil)
-    (setq-local chirp--timeline-exhausted-p nil)
-    (setq-local chirp--timeline-loading-more nil)
+    (setq-local chirp--refresh-function (plist-get state :refresh))
     (setq-local chirp--rerender-function nil)
-    (setq-local chirp--entry-wrap-navigation t)
-    (setq-local chirp--profile-handle nil)
-    (setq-local chirp--profile-view-mode nil)
-    (setq-local chirp--profile-view-modes nil)
-    (setq-local chirp--profile-switch-mode-function nil)
-    (when (timerp chirp--rerender-timer)
-      (cancel-timer chirp--rerender-timer))
-    (setq-local chirp--rerender-timer nil)
     (setq-local header-line-format nil)
+    (setq-local chirp--entry-wrap-navigation
+                (if (plist-member state :wrap-navigation)
+                    (plist-get state :wrap-navigation)
+                  t))
     (chirp--apply-buffer-name buffer title)
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (funcall render-fn)
-      (goto-char (point-min)))))
+    (appkit-projection-ensure
+     view
+     :printer printer
+     :anchor-property anchor-property
+     :no-separator-p no-separator-p)
+    (appkit-view-enqueue-event
+     view (list :position (or (plist-get state :position) 'first)))
+    (appkit-invalidate view :structure t :part 'frame :position t)
+    (appkit-sync-invalidations view)))
+
+(cl-defun chirp-open-projection-view
+    (&key id title state sync-function printer
+          (mode 'chirp-view-mode)
+          (anchor-property 'chirp-entry-id)
+          (parts '(frame entries))
+          setup select)
+  "Open or reuse a read-only Chirp projection view.
+
+ID identifies the view.  TITLE names the buffer.  STATE is the canonical
+view plist.  SYNC-FUNCTION applies invalidations.  PRINTER renders one
+projected row.  MODE, ANCHOR-PROPERTY, PARTS, SETUP, and SELECT are
+forwarded to `appkit-open-view'."
+  (let ((view
+         (appkit-open-view
+          :app (chirp-app)
+          :id id
+          :mode mode
+          :buffer-name (chirp--format-buffer-name title)
+          :state state
+          :sync-function sync-function
+          :parts parts
+          :position-policy anchor-property
+          :setup (or setup
+                     (lambda (live)
+                       (chirp--setup-projection-view
+                        live title printer anchor-property)))
+          :select select)))
+    (with-current-buffer (appkit-view-buffer view)
+      (setq-local chirp--view-title title)
+      (setq-local chirp--refresh-function (plist-get state :refresh))
+      (chirp--apply-buffer-name (current-buffer) title))
+    view))
+
+(defun chirp-sync-projection (view invalidations rows &optional header)
+  "Apply INVALIDATIONS to VIEW by reconciling ROWS.
+
+HEADER updates the generated frame when supplied."
+  (let* ((events (appkit-view-pending-events-snapshot view))
+         (event-count (length events))
+         (position-intent (chirp-projection-position-intent events))
+         (resources (appkit-invalidations-resource-keys invalidations))
+         (all-resources-p (memq 'all resources))
+         (reconcile-p
+          (or (appkit-invalidations-structure-p invalidations)
+              (appkit-invalidations-entry-keys invalidations)
+              resources
+              (appkit-invalidations-parts invalidations)))
+         (force-keys
+          (append
+           (appkit-invalidations-entry-keys invalidations)
+           (and all-resources-p
+                (mapcar #'appkit-projection-row-key rows)))))
+    (appkit-projection-sync
+     view (and reconcile-p rows)
+     :header (or header "")
+     :force-keys force-keys
+     :changed-dependencies (and (not all-resources-p) resources)
+     :position position-intent
+     :reconcile-p reconcile-p)
+    (appkit-view-acknowledge-events view event-count)))
 
 (defun chirp--on-text-scale-change ()
   "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
 
-The hook only requests a redraw.  Appkit timeline sync or
-`chirp--rerender-function' owns the buffer mutation, so card prefixes
-and avatars are recreated at the current line metrics."
+The hook only requests a redraw.  Appkit projection sync owns the
+buffer mutation, so card prefixes and avatars are recreated at the
+current line metrics."
   (when (derived-mode-p 'chirp-view-mode)
     (chirp-request-rerender nil 0)))
 
@@ -522,11 +604,10 @@ and avatars are recreated at the current line metrics."
   (let ((target (or buffer (current-buffer)))
         (wait (or delay chirp-rerender-idle-delay)))
     (when (buffer-live-p target)
-      (with-current-buffer target
-        (if-let* ((view (appkit-current-view))
-                  (state (chirp--appkit-timeline-state)))
-            (appkit-request-sync
-             view :resources '(all) :position t :delay wait)
+      (if-let* ((view (chirp--live-projection-view target)))
+          (appkit-request-sync
+           view :resources '(all) :position t :delay wait)
+        (with-current-buffer target
           (when (timerp chirp--rerender-timer)
             (cancel-timer chirp--rerender-timer))
           (setq-local
@@ -547,13 +628,11 @@ and avatars are recreated at the current line metrics."
   "Schedule a projection update for TWEET-ID in BUFFER after DELAY."
   (let ((target (or buffer (current-buffer))))
     (if (and tweet-id (buffer-live-p target))
-        (with-current-buffer target
-          (if-let* ((view (appkit-current-view))
-                    ((chirp--appkit-timeline-state)))
-              (appkit-request-sync
-               view :entry (list 'tweet tweet-id) :position t
-               :delay (or delay chirp-rerender-idle-delay))
-            (chirp-request-rerender target delay)))
+        (if-let* ((view (chirp--live-projection-view target)))
+            (appkit-request-sync
+             view :entry (list 'tweet tweet-id) :position t
+             :delay (or delay chirp-rerender-idle-delay))
+          (chirp-request-rerender target delay))
       (chirp-request-rerender target delay))))
 
 (defun chirp--text-property-at-point (property)
@@ -592,12 +671,29 @@ and avatars are recreated at the current line metrics."
 (defun chirp-show-error (buffer title refresh message)
   "Display MESSAGE in BUFFER for TITLE using REFRESH for the view."
   (chirp-set-status buffer "Load failed" 'error)
-  (chirp-render-into-buffer
-   buffer title refresh
-   (lambda ()
-     (insert "Unable to load data.\n\n")
-     (insert message)
-     (insert "\n")))
+  (with-current-buffer buffer
+    (setq-local chirp--view-title title)
+    (setq-local chirp--refresh-function refresh)
+    (if-let* ((view (chirp--live-projection-view buffer))
+              (state (appkit-view-state view)))
+        (progn
+          (when (plist-member state :status)
+            (setf (plist-get state :status)
+                  (list :phase 'error :message message)))
+          (when (plist-member state :title)
+            (setf (plist-get state :title) title))
+          (when (plist-member state :refresh)
+            (setf (plist-get state :refresh) refresh))
+          (appkit-request-sync view :part 'frame :position t))
+      (unless (derived-mode-p 'chirp-view-mode)
+        (chirp-view-mode))
+      (chirp--apply-buffer-name buffer title)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Unable to load data.\n\n")
+        (insert message)
+        (insert "\n")
+        (goto-char (point-min)))))
   (chirp-display-buffer buffer))
 
 (defun chirp-refresh ()
@@ -785,21 +881,27 @@ and avatars are recreated at the current line metrics."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-entry-url))))
 
+(defun chirp--expanded-tweet-table (&optional buffer)
+  "Return the expanded-tweet table for BUFFER, or nil."
+  (or (plist-get (chirp--projection-state buffer) :expanded-tweet-ids)
+      (and (buffer-live-p (or buffer (current-buffer)))
+           (with-current-buffer (or buffer (current-buffer))
+             chirp--expanded-tweet-ids))))
+
 (defun chirp--tweet-expanded-p (tweet)
   "Return non-nil when TWEET is expanded in the current buffer."
-  (let ((table
-         (if-let* ((state (chirp--appkit-timeline-state)))
-             (plist-get state :expanded-tweet-ids)
-           chirp--expanded-tweet-ids)))
+  (let ((table (chirp--expanded-tweet-table)))
     (and (hash-table-p table)
          (gethash (plist-get tweet :id) table))))
 
 (defun chirp--expand-tweet (tweet-id)
   "Expand TWEET-ID inline and update the current view."
-  (if-let* ((view (appkit-current-view))
-            (state (chirp--appkit-timeline-state))
-            (table (plist-get state :expanded-tweet-ids)))
-      (progn
+  (if-let* ((view (chirp--live-projection-view))
+            (state (appkit-view-state view)))
+      (let ((table
+             (or (plist-get state :expanded-tweet-ids)
+                 (setf (plist-get state :expanded-tweet-ids)
+                       (make-hash-table :test #'equal)))))
         (puthash tweet-id t table)
         (appkit-request-sync
          view :entry (list 'tweet tweet-id) :position t))
@@ -1103,10 +1205,10 @@ URLs, media, and timestamps.  Each item keeps its code-point `indices'."
 (defun chirp--tweet-source-text-and-entities (object legacy)
   "Return a plist describing OBJECT's visible text source.
 
-The plist contains `:text', `:entities', and `:note-p'.  Note-tweet text is
-paired with its `entity_set'.  Ordinary tweets use `full_text' and the
-matching `entities' object.  Mixing those sources would apply the wrong
-code-point indices."
+LEGACY supplies fallback tweet text and entities.  The plist contains
+`:text', `:entities', and `:note-p'.  Note-tweet text is paired with its
+`entity_set'.  Ordinary tweets use `full_text' and the matching `entities'
+object.  Mixing those sources would apply the wrong code-point indices."
   (let* ((note (chirp--note-tweet-result object))
          (note-text (and note (chirp-first-nonblank (chirp-get note "text"))))
          (legacy-text (chirp-first-nonblank
@@ -1166,7 +1268,7 @@ RANGE is an optional display-text range.  REPLYP enables the leading
       (plist-get entity :url)))
 
 (defun chirp--omit-text-entity-p (entity context)
-  "Return non-nil when ENTITY should not appear in visible tweet text.
+  "Return non-nil when ENTITY should be omitted in CONTEXT.
 
 Media and quoted-tweet permalinks stay out of the body, as on the web.
 Ordinary URL entities stay in place as their `display_url'."
@@ -1399,7 +1501,8 @@ CONTEXT is a plist containing the current tweet, quoted tweet, and media."
        (> (plist-get left :end) (plist-get right :start))))
 
 (defun chirp--uncovered-short-url-entities (text entities)
-  "Return synthetic omit-entities for `t.co` placeholders not already in ENTITIES."
+  "Return synthetic omit-entities for uncovered `t.co` URLs in TEXT.
+ENTITIES identifies ranges that already have server-provided metadata."
   (cl-remove-if
    (lambda (synthetic)
      (cl-some (lambda (entity)

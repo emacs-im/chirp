@@ -6,6 +6,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'face-remap)
 (require 'chirp-thread)
 
 (ert-deftest chirp-thread-open-renders-seed-focus-tweet-before-network-thread-load ()
@@ -24,9 +25,8 @@
                    (lambda (_target callback &optional _errback)
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-backend-article) #'ignore)
-                  ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered
-                            &optional _anchor-id _display-p _focus-id)
+                  ((symbol-function 'chirp-thread--present)
+                   (lambda (_view ordered &optional _position)
                      (push ordered renders)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -97,22 +97,24 @@
 
 (ert-deftest chirp-thread-render-view-preserves-discussion-properties ()
   "Thread rendering should expose Appkit and Chirp entry properties."
-  (let ((buffer (generate-new-buffer " *chirp-thread-discussion-test*")))
+  (let ((scratch (generate-new-buffer " *chirp-thread-discussion-test*"))
+        buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-media-avatar-image)
                    (lambda (&rest _args) nil)))
-          (chirp-thread--render-view
-           buffer
-           "Thread"
-           #'ignore
-           '((:kind tweet :id "root" :text "Root"
-              :author-name "Alice" :author-handle "alice"
-              :created-at "ROOT-TIME")
-             (:kind tweet :id "reply" :text "Reply"
-              :reply-to-id "root"
-              :reply-to-handle "Alice"
-              :author-name "Bob"))
-           nil)
+          (setq buffer
+                (chirp-thread--render-view
+                 scratch
+                 "Thread"
+                 #'ignore
+                 '((:kind tweet :id "root" :text "Root"
+                    :author-name "Alice" :author-handle "alice"
+                    :created-at "ROOT-TIME")
+                   (:kind tweet :id "reply" :text "Reply"
+                    :reply-to-id "root"
+                    :reply-to-handle "Alice"
+                    :author-name "Bob"))
+                 nil))
           (with-current-buffer buffer
             (goto-char (point-min))
             (let ((heading-line
@@ -159,28 +161,61 @@
             (chirp-previous-entry)
             (should (equal (plist-get (chirp-entry-at-point) :id)
                            "root"))))
+      (chirp-stop)
+      (when (buffer-live-p scratch)
+        (kill-buffer scratch))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-thread-rerender-preserves-text-scale ()
+  "A cached thread redraw should keep text scale."
+  (let ((scratch (generate-new-buffer " *chirp-thread-scale*"))
+        buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                   (lambda (&rest _args) nil)))
+          (setq buffer
+                (chirp-thread--render-view
+                 scratch "Thread" #'ignore
+                 '((:kind tweet :id "1" :text "Hello"
+                    :author-name "Alice" :author-handle "alice"))))
+          (with-current-buffer buffer
+            (text-scale-increase 2)
+            (let ((amount text-scale-mode-amount)
+                  (view (appkit-current-view)))
+              (should (> amount 0))
+              (chirp--on-text-scale-change)
+              (appkit-sync-invalidations view)
+              (should (equal amount text-scale-mode-amount))
+              (should (bound-and-true-p text-scale-mode))
+              (should (string-match-p "Hello" (buffer-string))))))
+      (chirp-stop)
+      (when (buffer-live-p scratch)
+        (kill-buffer scratch))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest chirp-thread-render-view-draws-ancestor-chain-prefix ()
   "Ancestors should share a prefix spine and keep replies nested under the focus."
-  (let ((buffer (generate-new-buffer " *chirp-thread-chain-test*")))
+  (let ((scratch (generate-new-buffer " *chirp-thread-chain-test*"))
+        buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-media-avatar-image)
                    (lambda (&rest _args) nil)))
-          (chirp-thread--render-view
-           buffer
-           "Thread"
-           #'ignore
-           '((:kind tweet :id "root" :text "Root"
-              :author-name "Alice" :author-handle "alice")
-             (:kind tweet :id "focus" :text "Focus"
-              :reply-to-id "root"
-              :author-name "Bob" :author-handle "bob")
-             (:kind tweet :id "reply" :text "Reply"
-              :reply-to-id "focus"
-              :author-name "Carol" :author-handle "carol"))
-           nil nil "focus")
+          (setq buffer
+                (chirp-thread--render-view
+                 scratch
+                 "Thread"
+                 #'ignore
+                 '((:kind tweet :id "root" :text "Root"
+                    :author-name "Alice" :author-handle "alice")
+                   (:kind tweet :id "focus" :text "Focus"
+                    :reply-to-id "root"
+                    :author-name "Bob" :author-handle "bob")
+                   (:kind tweet :id "reply" :text "Reply"
+                    :reply-to-id "focus"
+                    :author-name "Carol" :author-handle "carol"))
+                 nil nil "focus"))
           (with-current-buffer buffer
             (should (equal (plist-get (chirp-entry-at-point) :id) "focus"))
             (should (string-prefix-p
@@ -194,6 +229,9 @@
             (should (equal (plist-get (chirp-entry-at-point) :id) "reply"))
             (should (equal "    "
                            (get-text-property (point) 'line-prefix)))))
+      (chirp-stop)
+      (when (buffer-live-p scratch)
+        (kill-buffer scratch))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -216,9 +254,8 @@
                   ((symbol-function 'chirp-backend-thread)
                    (lambda (_target callback &optional _errback)
                      (setq thread-callback callback)))
-                  ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered
-                            &optional _anchor-id _display-p _focus-id)
+                  ((symbol-function 'chirp-thread--present)
+                   (lambda (_view ordered &optional _position)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
@@ -271,9 +308,8 @@
                    (lambda (_target callback &optional _errback)
                      (setq thread-callback callback)))
                   ((symbol-function 'chirp-backend-article) #'ignore)
-                  ((symbol-function 'chirp-thread--render-view)
-                   (lambda (_buffer _title _refresh ordered
-                            &optional _anchor-id _display-p _focus-id)
+                  ((symbol-function 'chirp-thread--present)
+                   (lambda (_view ordered &optional _position)
                      (setq rendered ordered)))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
