@@ -16,6 +16,7 @@
 (require 'appkit-view)
 (require 'chirp-core)
 (require 'chirp-backend)
+(require 'chirp-url)
 (require 'chirp-media)
 (require 'chirp-render)
 
@@ -415,11 +416,9 @@
     "Liked"))
 
 (defun chirp-timeline--list-id (target)
-  "Return a display-friendly list id extracted from TARGET."
-  (let ((text (string-trim (format "%s" target))))
-    (if (string-match "/lists?/\\([0-9]+\\)" text)
-        (match-string 1 text)
-      text)))
+  "Return the list ID represented by TARGET, or TARGET as text."
+  (or (chirp-url-list-id target)
+      (format "%s" target)))
 
 (defun chirp-timeline--list-title (target)
   "Return the buffer title for list TARGET."

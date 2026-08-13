@@ -16,6 +16,10 @@ _Avoid_: Tab cache, response cache
 An ordered set of normalized posts presented by one query, including primary feeds, bookmarks, likes, lists, search results, and profile post views.
 _Avoid_: Timeline cache, response list
 
+**X URL target**:
+A supported HTTPS X or legacy Twitter location whose path identifies one Chirp destination, such as a post, profile, list, search, or account collection.
+_Avoid_: Permalink (when the destination is not a post), arbitrary web URL
+
 ## Publishing
 
 **Compose draft**:

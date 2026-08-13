@@ -23,6 +23,7 @@
                   default-directory))))
     (add-to-list 'load-path (expand-file-name "lisp" dir))))
 
+(require 'chirp-url)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-notifications)
@@ -35,6 +36,33 @@
 (require 'chirp-profile)
 (require 'chirp-timeline)
 (require 'chirp-dm)
+
+(defun chirp--open-url-target (target)
+  "Open parsed X URL TARGET in its owning Chirp view."
+  (pcase (plist-get target :kind)
+    ('home (chirp-timeline-open-home))
+    ('bookmarks (chirp-timeline-open-bookmarks))
+    ('direct-messages (chirp-dm-open-inbox))
+    ('search (chirp-timeline-open-search (plist-get target :query)))
+    ('tweet (chirp-thread-open (plist-get target :id)))
+    ('edit-history (chirp-edit-history-open (plist-get target :id)))
+    ('profile (chirp-profile-open (plist-get target :handle)))
+    ('followers (chirp-profile-open-followers (plist-get target :handle)))
+    ('following-users
+     (chirp-profile-open-following-users (plist-get target :handle)))
+    ('likes (chirp-timeline-open-likes (plist-get target :handle)))
+    ('list (chirp-timeline-open-list (plist-get target :id)))
+    (_ (error "Unsupported Chirp X URL target: %S" target))))
+
+;;;###autoload
+(defun chirp-open-url (url &optional _new-window)
+  "Open supported X URL inside Chirp.
+
+NEW-WINDOW is accepted for compatibility with `browse-url-handlers'."
+  (interactive "sX URL: ")
+  (if-let* ((target (chirp-url-parse url)))
+      (chirp--open-url-target target)
+    (user-error "Unsupported X URL: %s" url)))
 
 ;;;###autoload
 (defun chirp-login ()

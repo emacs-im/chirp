@@ -16,6 +16,7 @@
 (require 'chirp-core)
 (require 'chirp-x)
 (require 'chirp-xchat)
+(require 'chirp-url)
 
 (declare-function chirp-xchat-native-prepare-text
                   "chirp-xchat-native" (conversation-id text))
@@ -300,20 +301,12 @@ When zero or negative, the in-memory read cache is disabled."
   (downcase (string-remove-prefix "@" (format "%s" handle))))
 
 (defun chirp-backend--tweet-id-from-target (target)
-  "Return a likely tweet id extracted from TARGET, or nil."
-  (cond
-   ((null target) nil)
-   ((and (stringp target)
-         (string-match "/status/\\([0-9]+\\)" target))
-    (match-string 1 target))
-   ((stringp target)
-    target)
-   ((listp target)
-    (or (plist-get target :id)
-        (and-let* ((url (plist-get target :url)))
-          (chirp-backend--tweet-id-from-target url))))
-   (t
-    (format "%s" target))))
+  "Return the tweet ID represented by TARGET, or nil."
+  (or (chirp-url-tweet-id target)
+      (and target
+           (not (stringp target))
+           (not (listp target))
+           (format "%s" target))))
 
 (defun chirp-backend--thread-cache-key (tweet-or-url)
   "Return the cache key for thread TWEET-OR-URL."
@@ -351,11 +344,9 @@ When zero or negative, the in-memory read cache is disabled."
   (list :following-users (chirp-backend--normalize-handle handle)))
 
 (defun chirp-backend--list-id-from-target (target)
-  "Return a likely list id extracted from TARGET, or TARGET as-is."
-  (let ((text (string-trim (format "%s" target))))
-    (if (string-match "/lists?/\\([0-9]+\\)" text)
-        (match-string 1 text)
-      text)))
+  "Return the list ID represented by TARGET, or TARGET as-is."
+  (or (chirp-url-list-id target)
+      (and target (format "%s" target))))
 
 (defun chirp-backend-invalidate-thread (tweet-or-url)
   "Drop cached thread and article data for TWEET-OR-URL."
@@ -1040,10 +1031,8 @@ Unix second in year 5138 are treated as milliseconds."
      (t number))))
 
 (defun chirp-backend--quote-status-id (url)
-  "Return the tweet ID embedded in quote URL, or nil."
-  (and (stringp url)
-       (string-match "/status/\\([0-9]+\\)" url)
-       (match-string 1 url)))
+  "Return the tweet ID represented by quote URL, or nil."
+  (chirp-url-tweet-id url))
 
 (defun chirp-backend--media-id-list (value)
   "Return VALUE as a list of numeric media ID strings."

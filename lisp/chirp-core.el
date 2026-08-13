@@ -22,6 +22,7 @@
 (require 'appkit-projection)
 (require 'appkit-ui)
 (require 'appkit-view)
+(require 'chirp-url)
 
 (declare-function appkit-compose-cancel-submit "appkit-compose" ())
 (declare-function appkit-compose-finish-submit "appkit-compose" ())
@@ -1460,11 +1461,8 @@ Limit the result to MAX-LENGTH characters when that argument is non-nil."
   (let ((id (plist-get tweet :id)))
     (or (member url (chirp-tweet-candidate-urls tweet))
         (and id
-             (stringp url)
-             (string-match
-              "\\`https?://\\(?:www\\.\\)?\\(?:x\\.com\\|twitter\\.com\\)/\\(?:[^/?#]+/\\)*status/\\([0-9]+\\)"
-              url)
-             (equal (format "%s" id) (match-string 1 url))))))
+             (equal (format "%s" id)
+                    (chirp-url-tweet-id url))))))
 
 (defun chirp--media-url-p (url media)
   "Return non-nil when URL represents one of the MEDIA items."
