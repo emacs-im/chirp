@@ -37,7 +37,7 @@ Keep it practical. If a rule does not help this codebase, do not cargo-cult it.
 - Timeline, profile, thread, and media views do not use a header line.
 - Key behavior should stay consistent across timeline, thread, profile, and media views.
 - List views should render text first and fill avatars/thumbnails asynchronously when possible.
-- User-visible keybinding or workflow changes must update `README.md` in the same change.
+- User-visible keybinding or workflow changes must update `docs/user.org` in the same change. Update `README.org` only when the landing page, installation, or Quick Start changes.
 
 ## Repository Hygiene
 

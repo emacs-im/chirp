@@ -1,0 +1,178 @@
+#+title: Chirp user guide
+#+options: toc:2 num:nil
+
+* Sign in
+
+~M-x chirp-login~ opens or attaches a supported browser at
+~https://x.com~.  Chirp uses the isolated root in
+~chirp-x-browser-session-profile-root~, which defaults to
+~(locate-user-emacs-file "chirp/browser-session/")~.  It imports only
+the ~auth_token~ and ~ct0~ cookies into ~chirp-x-auth-file~
+(~(locate-user-emacs-file "chirp/auth.json")~, mode ~0600~).
+
+Ordinary commands then use that private auth file.  Run
+~M-x chirp-login~ again only to refresh an expired session or switch
+accounts.  Chirp never reads a browser cookie database, copied
+headers, ~CHIRP_X_AUTH_TOKEN~, ~CHIRP_X_CT0~, or ~auth-source~.
+~M-x chirp-forget-browser-session~ deletes the auth file without
+signing out of the browser.
+
+Configure the browser, proxy, or Firefox/Zen behavior through
+browser-session's public customization variables before login.  Do
+not point ~chirp-x-browser-session-profile-root~ at a daily-use
+browser profile.  Set ~CHIRP_X_BEARER_TOKEN~ only if X rotates its
+public web token.
+
+After a definitive stale-query error, Chirp refreshes read-operation
+query IDs from the current ~TwitterInternalAPIDocument~ registry.
+Retry the failed read, or run ~M-x chirp-refresh-query-ids~.
+~chirp-x-query-id-overrides~ remains authoritative.  Write-operation
+IDs are never selected from the dynamic cache or retried.
+
+Direct messages require the optional source-built Rust module.  Follow
+[[file:../native/README.md][native/README.md]] and set
+~chirp-xchat-native-module-file~ to its absolute path.  Other Chirp
+features remain usable when it is absent.
+
+* Entry points
+
+| Command | Opens |
+|---------+-------|
+| ~M-x chirp-login~ | capture or refresh the X web session |
+| ~M-x chirp-forget-browser-session~ | delete the imported auth file |
+| ~M-x chirp-home~ | For You timeline |
+| ~M-x chirp-following~ | Following timeline |
+| ~M-x chirp-direct-messages~ | XChat inbox after one unlock |
+| ~M-x chirp-bookmarks~ | bookmarks |
+| ~M-x chirp-likes~ | the account's Likes |
+| ~M-x chirp-me~ | the authenticated profile |
+| ~M-x chirp-list~ | one of your lists |
+| ~M-x chirp-search~ | search |
+| ~M-x chirp-thread~ | a thread |
+| ~M-x chirp-profile~ | a user profile |
+| ~M-x chirp-profile-followers~ | followers |
+| ~M-x chirp-profile-following-users~ | following |
+| ~M-x chirp-open-url~ | a supported ~x.com~ or ~twitter.com~ URL |
+
+To route those links from ~browse-url~:
+
+#+begin_src emacs-lisp
+(add-to-list 'browse-url-handlers
+             (cons chirp-url-browse-regexp #'chirp-open-url))
+#+end_src
+
+~M-x chirp-direct-messages~ requires one user-confirmed XChat unlock.
+Conversations project only signature-verified plaintext.  Direct-message
+reads never send read acknowledgments.  Sends are never retried or
+inserted optimistically.
+
+* Keys
+
+~chirp-home~ and ~chirp-following~ share one primary timeline buffer
+and retain independent posts, pagination, and positions.  Reopening
+either subview or switching with ~TAB~ restores canonical state
+without fetching again; use ~g~ for fresh data.
+
+| Key | Action |
+|-----+--------|
+| ~g~ | refresh; Home and Following merge newer posts at the top.  Evil: ~g r~ |
+| ~TAB~ | Home/Following, or profile subviews |
+| ~n~ / ~p~ | next or previous entry.  Evil: ~g j~ / ~g k~ |
+| ~N~ | older posts, conversations, or message history.  Evil: ~g n~ |
+| ~q~ | close the window; Home and Following keep the buffer |
+| ~RET~ / mouse-1 | Appkit action at point, or open the tweet or profile |
+| ~m~ | first media item |
+| ~D~ | download current media |
+| ~A~ | author profile |
+| ~S~ | add a spam phrase; ~C-u S~ starts from the display name |
+| ~x~ | actions menu |
+| ~x r~ | reply, or refuse when X limits replies |
+| ~x T~ | translate the tweet |
+| ~o~ | open in a browser |
+
+In an XChat conversation, ~RET~ on the timeline moves to the
+composer; ~RET~ in the composer sends, ~C-u RET~ inserts a newline,
+and ~C-c C-c~ sends.  ~M-p~ and ~M-n~ walk sent-input history.
+
+~M-x chirp-dm-cancel-unlock~ cancels an active recovery and reports
+an uncertain outcome.
+
+** Compose
+
+| Key | Action |
+|-----+--------|
+| ~C-c C-a~ | attach images (up to 4) or one MP4 |
+| ~C-c C-v~ | paste one clipboard image |
+| ~C-c C-d~ | remove an attachment |
+| ~C-c C-e~ | edit alt text |
+| ~C-c C-n~ | commit the current part and start the next |
+| ~C-c C-p~ | drop the current extra part |
+| ~RET~ / ~e~ | load a draft row back into the composer |
+| ~M-TAB~ | complete a handle after ~@~ |
+| ~C-c C-s~ | save as an unsent X draft |
+| ~C-c C-t~ | schedule for a local time |
+| ~C-c C-c~ | send and keep the draft until X acknowledges |
+| ~C-c C-k~ | cancel an in-flight submit, or close when idle |
+
+Click ~Audience~ on a post or quote to choose who can reply.  Video
+uploads show ~Uploading video n/N~ in the status strip.  ~x d~ opens
+X drafts and ~x t~ opens scheduled posts.
+
+JPEG, PNG, and WebP attachments may be at most 5 MiB; GIFs 15 MiB;
+MP4 videos 512 MiB, uploaded in 1 MiB chunks.  Premium accounts can
+exceed the standard 280 weighted-character limit.
+
+* Notifications and translation
+
+#+begin_src emacs-lisp
+(chirp-notifications-mode 1)
+(setq chirp-notifications-interval 300
+      chirp-notifications-max-results 20
+      chirp-translation-language "zh")
+#+end_src
+
+The first check establishes a baseline.  Later checks run every five
+minutes by default.  Linux uses freedesktop notifications; macOS uses
+AppleScript.
+
+* Thread reply filtering
+
+Chirp hides likely spam replies with a conservative default list.
+Matching ignores case and never filters the focus tweet or its
+ancestor chain.  Press ~S~ on a reply to save a literal phrase.
+~M-x chirp-thread-edit-spam-rules~ edits the file under
+~user-emacs-directory~.
+
+#+begin_src emacs-lisp
+(setq chirp-thread-spam-keywords nil) ; disable filtering
+#+end_src
+
+To propose rules for everyone, use the
+[[https://github.com/LuciusChen/chirp/issues/new?template=spam-rule.yml][spam rule submission form]].
+
+* Appearance
+
+#+begin_src emacs-lisp
+(setq chirp-tweet-separator "- - - - - - - - - - - -"
+      chirp-tweet-separator-indent 6
+      chirp-show-avatars nil
+      chirp-show-tweet-media nil)
+#+end_src
+
+Timestamps follow X's localized forms through ~chirp-language~.
+Edited posts show ~Edited · N versions~; activate it or use ~x H~.
+
+* Media
+
+Images render as gapless row-sliced thumbnails.  ~RET~ on a thumbnail
+opens a Chirp media buffer.  Videos open in ~mpv~ when available.
+
+#+begin_src emacs-lisp
+(setq chirp-video-player-window-size '(1280 . 720)
+      chirp-media-download-directory "~/Downloads/chirp/"
+      chirp-media-prefetch-images nil
+      chirp-backend-read-cache-ttl 15)
+#+end_src
+
+Set ~chirp-video-player-command~ to another player, or ~nil~ to open
+videos in the browser.  In media views, ~q~ closes and ~D~ downloads.

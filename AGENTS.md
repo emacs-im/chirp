@@ -78,12 +78,12 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 - Tests must fail when behavior is wrong. Assert public workflows or meaningful invariants, not cosmetic punctuation or private structure without a product contract.
 - Completion, hooks, async callbacks, command routing, and other dispatcher bugs need at least one test through the installed or public path.
 - Match test weight to the change. Remove duplicate assertions and direct tests of deleted helpers.
-- User-visible behavior, defaults, keys, and configuration update `README.md` in the same change. Release-relevant features and fixes also update the Unreleased section of `CHANGELOG.md`.
+- User-visible behavior, defaults, keys, and configuration update `docs/user.org` in the same change. Update `README.org` only when the landing page, installation, or Quick Start changes. Release-relevant features and fixes also update the Unreleased section of `CHANGELOG.md`.
 - Documentation claims that state commands, capabilities, compatibility, metrics, benchmarks, or trust signals need evidence from code, manifests, tests, workflows, or release records; label claims that remain unverified.
 - Keep documentation-only work documentation-only: do not change product code, configuration, CI, or dependencies merely to make a documentation claim true unless explicitly requested.
-- Substantial `README.md` changes open with what the project is, who it serves, the problem it solves, and the reader's next action, and keep installation and Quick Start easy to find. Lead with user outcomes; avoid vague promotional claims, feature piles, and unnecessary badges or calls to action.
+- Substantial `README.org` changes open with what the project is, who it serves, the problem it solves, and the reader's next action, and keep installation and Quick Start easy to find. Lead with user outcomes; avoid vague promotional claims, feature piles, and unnecessary badges or calls to action. Human-facing docs use Org. Glossaries, ADRs, agent guides, and changelogs stay Markdown.
 - Use a `Breaking Changes` section only for real installation, API, or configuration breaks; omit empty sections instead of writing `None`.
-- Keep each semantic Markdown paragraph or bullet on one source line unless code or a table requires otherwise.
+- Keep each semantic Markdown or Org paragraph or bullet on one source line unless code or a table requires otherwise.
 
 ## Pre-Commit Gates
 

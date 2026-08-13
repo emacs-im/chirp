@@ -1,0 +1,32 @@
+#+title: chirp.el
+#+options: toc:nil num:nil
+
+* What it is
+
+~chirp.el~ is an Emacs browser for X/Twitter.  Read timelines, search
+and inspect posts, open threads and profiles, compose, and use XChat
+direct messages without leaving Emacs.
+
+Browsing views use dedicated buffers.  Chirp sends X web API requests
+through Emacs's ~url.el~.  Plz/curl is limited to the public,
+credential-free query-ID registry.  ~browser-session~ is used only
+for explicit browser login capture.
+
+* Install
+
+GNU Emacs 29.1, Appkit 0.2.16, Plz 0.8 with ~curl~, Transient 0.4.3,
+and browser-session 0.1.0 with its helper.
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "~/chirp")
+(require 'chirp)
+#+end_src
+
+Run ~M-x chirp-login~, sign in at ~https://x.com~, then
+~M-x chirp-home~.
+
+Keys, compose, media, and notifications are in the
+[[file:docs/user.org][user guide]].  Direct messages need the optional
+native module; see [[file:native/README.md][native/README.md]].
+Development and write-smoke notes are in
+[[file:docs/develop.org][docs/develop.org]].
