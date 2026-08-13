@@ -80,17 +80,16 @@ M-x chirp-profile-following-users
 
 `M-x chirp-home` and `M-x chirp-following` share one primary timeline buffer while retaining independent session-owned posts, pagination, and semantic positions. Reopening either subview, switching back with `TAB`, or recreating a killed buffer restores its canonical state without fetching again; use `g` when you want fresh data.
 
-- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top
+- `g`: refresh; on Home and Following, Chirp keeps the current timeline visible and merges newer posts at the top. Evil users use `g r` so `gg` stays beginning-of-buffer
 - `TAB`: switch between Home and Following on those timelines; in profile buffers, cycle `Posts`, `Replies`, `Highlights`, `Media`, and `Likes` when available
-- `n` / `p`: next or previous entry or direct-message event; on Home and Following, `n` on the last entry loads more older posts
-- `N`: load more older posts on Home and Following; in the direct-message inbox, load older conversations; in a conversation, load older message history
+- `n` / `p`: next or previous entry or direct-message event; on Home and Following, `n` on the last entry loads more older posts. Evil users use `g j` / `g k` instead, so `n` stays search-next
+- `N`: load more older posts on Home and Following; in the direct-message inbox, load older conversations; in a conversation, load older message history. Evil users use `g n`
 - `M-x chirp-dm-cancel-unlock`: cancel an active recovery; because a realm may already have processed the attempt, Chirp reports cancellation as an uncertain outcome and never retries automatically
 - `q`: close the current Chirp window; on For You and Following, keep the timeline buffer alive so you can switch back later
 - When Home or Following has no more older posts, Chirp says so instead of leaving the last loading message in place
-- `RET`: expand an article when point is on `Show more`; otherwise open the current tweet or profile, open a direct-message conversation from its inbox row, or open large media when point is on a thumbnail. Opening a reply shows its ancestor chain above the focus tweet with a connecting prefix, then nests later replies from that focus. Leading @handles that X prepends to a reply are hidden, as on the web
-- `Mouse-1` on a tweet's reply, repost/retweet, like, or bookmark metric opens or toggles that action for the clicked tweet
+- `RET` or `Mouse-1`: activate the Appkit action at point, or open the current tweet or profile. Actions include the author, an inline `@handle`, `#hashtag`, or `$cashtag` from X's tweet entities, a retweeter name, a link, `Show more`, media, reply/repost/like/quote/bookmark metrics, and profile summary controls. Opening a reply shows its ancestor chain above the focus tweet with a connecting prefix, then nests later replies from that focus. Leading @handles that X prepends to a reply are hidden, as on the web. A retweet shows `retweeted by` and the retweeter's display name.
 - In an XChat conversation, `RET` on the timeline moves to the trailing composer; `RET` in the composer sends plain text, `C-u RET` inserts a newline, and `C-c C-c` explicitly sends
-- In an XChat composer, `M-p` and `M-n` navigate sent-input history; Evil users enter Insert state normally with `i`
+- In an XChat composer, `M-p` and `M-n` navigate sent-input history; Evil users enter Insert state normally with `i`. Compose buffers start in Insert state.
 - In profile summaries, `RET` on `Followers` or `Following` opens that user list
 - In profile buffers, `RET` on the subview strip switches between available profile timelines
 - `m`: open the first media item for the current tweet
@@ -163,7 +162,7 @@ Tweet lists use a lightweight separator between posts by default. To customize i
 
 Set it to `nil` or an empty string to disable tweet separators.
 
-Avatars and tweet media thumbnails can be hidden independently:
+Avatars size to one text line when `chirp-avatar-size` is 28, and both avatars and card prefixes rebuild after `text-scale-mode`. Avatars and tweet media thumbnails can be hidden independently:
 
 ```elisp
 (setq chirp-show-avatars nil)
@@ -177,7 +176,7 @@ so media commands still work, and shows alt text when X provides it.
 
 - Chirp hides tweet permalinks and image/video resource links; genuine external links remain visible and highlight on hover.
 - Images render as small thumbnails in timeline, thread, and profile post lists.
-- Images and video/GIF cover thumbnails are split into gapless text-row slices, so point can move through a tall cover one row at a time. Multiple media items remain aligned in the same thumbnail grid.
+- Images and video/GIF cover thumbnails are split into gapless text-row slices, so point can move through a tall cover one row at a time. Multiple media items remain aligned in the same thumbnail grid. After `text-scale-mode`, those slices stay one current text row tall.
 - Timeline, thread, and profile views now render cached avatars/thumbnails first; missing media are prefetched in the background so text appears faster.
 - Video and animated GIF thumbnails are filled in asynchronously when Chirp can use an upstream preview image or extract one with `ffmpeg`.
 - Press `RET` on a thumbnail to open the photo in a new Chirp media buffer when image display is available.

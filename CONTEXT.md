@@ -63,3 +63,7 @@ _Avoid_: Ancestor chain, conversation root depth
 **Hidden reply mentions**:
 The leading @handles X prepends to a reply for the conversation participants. They are not part of the visible post text.
 _Avoid_: Reply target, reply audience
+
+**Action span**:
+A rendered region that carries one Appkit action, such as a profile, hashtag search, link, media open, or tweet metric. RET and mouse-1 activate that action; mode keys stay on the view map.
+_Avoid_: Key cheat sheet, open-at-point dispatcher

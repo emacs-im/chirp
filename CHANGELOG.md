@@ -22,7 +22,7 @@ history remains available in Git.
 - Highlighted context labels for related tweets and reply-target handles in thread views.
 - Inline `Show more` expansion for article previews while `RET` elsewhere on a tweet continues to open its detail thread.
 - Persistent user spam phrases and keywords in a plain-text rule file, with `S`/`C-u S` capture from reply content or author names, one shared match scope, and a structured upstream submission form.
-- Mouse-1 controls on visible tweet reply, repost/retweet, like, and bookmark metrics, routed through the existing tweet action commands.
+- Tweet reply, repost, like, quote, and bookmark metrics are Appkit actions. `RET` and `Mouse-1` run the same commands as the actions menu, including on a quoted card.
 - Tweet timelines and threads now display X reply-audience controls and omit the Reply action when X explicitly limits the current account.
 - Compose buffers now use Appkit's shared generated context, status-field, attachment, and editable-body boundary primitives.
 - Post and quote drafts can set who may reply through the Appkit audience status field, and `CreateTweet` / `CreateNoteTweet` send that reply audience as `conversation_control`.
@@ -34,12 +34,14 @@ history remains available in Git.
 - Reopening an unsent post keeps its X `media_ids` and shows `media_entities` previews in compose. Sending that restored draft deletes the corresponding X draft or scheduled post after publish.
 - Compose can attach one MP4 video through the same upload path as images. INIT uses `tweet_video`, large files are read in 1 MiB chunks, and a video cannot be mixed with other attachments.
 - Compose shows Appkit submit progress while media uploads, including video `n/N` chunk status, and `C-c C-k` cancels that in-flight submit instead of refusing. Closing the compose buffer cancels the same view-owned upload.
+- Tweet rendering uses Appkit action spans: RET or mouse-1 on an author, inline `@handle`, `#hashtag`, `$cashtag`, timestamp, retweeter name, link, `Show more`, media, or reply/repost/like/quote/bookmark metric runs that action. Inline text actions come from X's `entities` / `entity_set` code-point indices, the same set the web client walks in `tweetTextParts`. URL entities stay in the body as `display_url` instead of being pulled into a trailing list. Mentions and hashtags use the same link blue as the web. Retweets show the retweeter's display name.
+- Evil bindings now cover timelines, threads, profiles, media, unsent lists, and compose. Normal state keeps `gg` and uses `g r` / `g j` / `g k` / `g n` instead of stealing `g`, `n`, and `p`.
 
 ### Breaking Changes
 
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.11 or newer for compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, and point-safe line metrics.
+- Chirp now requires Appkit 0.2.13 or newer for gapless inline image slices, inline action spans, compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, and point-safe line metrics.
 
 ### Fixed
 
@@ -56,6 +58,11 @@ history remains available in Git.
 - Acknowledged tweet deletion now removes the tweet from both retained primary feeds and updates the active projection without a merge refresh that could preserve the deleted row.
 - Acknowledged XChat sends now bridge disjoint focused fragments through bounded older-history pages before merging one continuous conversation window; focused payloads may omit inbox-only deletion metadata, and inbox continuation may omit a false snapshot-restart flag.
 - Verified XChat image attachments now use Appkit media resources and inline rendering when X provides a trusted URL, while verified reply previews and unsupported attachments no longer remain encrypted placeholders.
+- Website cards such as GitHub summaries now render from X's `card` payload instead of a later Open Graph fetch that GitHub pages exceed.
+- Inline photos, video stills, compose previews, and website-card images use Appkit's two-step media API: cache `:height Nch` previews, then display through `appkit-media-insert-image-slices` or `appkit-media-image-slice-rows`. Tweet media grids no longer slice images locally.
+- Avatars size to the current text line (`chirp-avatar-size` 28 is one line). `text-scale-mode` rebuilds avatars and card prefixes from cached data instead of leaving pixel chrome behind.
+- Cached thread and profile redraws no longer re-enter `chirp-view-mode`, so `text-scale-mode` is not reset back to the default size.
+- Tweet text decodes HTML entities with Emacs's `xml-substitute-special` while walking X's original indices, so "Scala & Java" displays correctly without a second index map.
 - Videos carried only in X unified cards now expose their native thumbnail and bitrate variants for display and external playback.
 - Photo media now prefers X's `media_url_https` over the tweet short link, and invalid HTML responses no longer become persistent image-cache entries.
 - Structured X view metrics and detail-only bookmark counts now render their numeric values, while unavailable metric counts show only their icon rather than `-`.
