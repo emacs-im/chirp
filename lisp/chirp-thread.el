@@ -16,6 +16,7 @@
 (require 'appkit-projection)
 (require 'chirp-core)
 (require 'chirp-backend)
+(require 'chirp-url)
 (require 'chirp-media)
 (require 'chirp-render)
 (require 'chirp-spam-rules)
@@ -358,13 +359,12 @@ protected."
 
 (defun chirp-thread--title (tweet-or-url)
   "Return a display title for TWEET-OR-URL."
-  (if (and (stringp tweet-or-url)
-           (string-match "/status/\\([0-9]+\\)" tweet-or-url))
-      (format "Thread: %s" (match-string 1 tweet-or-url))
-    (format "Thread: %s"
-            (if (stringp tweet-or-url)
-                tweet-or-url
-              (or (plist-get tweet-or-url :id) "tweet")))))
+  (format "Thread: %s"
+          (or (chirp-url-tweet-id tweet-or-url)
+              (and (listp tweet-or-url)
+                   (plist-get tweet-or-url :id))
+              tweet-or-url
+              "tweet")))
 
 (defun chirp-thread--seed-tweets (tweet-or-url focus-id)
   "Return a renderable list for TWEET-OR-URL matching FOCUS-ID, or nil."

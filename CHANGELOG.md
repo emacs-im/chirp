@@ -7,6 +7,8 @@ history remains available in Git.
 
 ### Added
 
+- Added `M-x chirp-open-url` and an opt-in `browse-url-handlers` regexp for opening supported HTTPS X and legacy Twitter links directly in their owning Chirp views. Tweet, list, profile, search, and account-collection URL parsing now share one trusted-host parser.
+
 - Tweet timestamps now use localized X-style forms: list rows and replies show compact relative or calendar text at the live right edge, while a thread's focused tweet shows its exact time and date. The new `chirp-language` option defaults to Simplified Chinese.
 
 - Edited posts now link to a read-only Appkit projection of X's complete edit history, grouped into the latest post and older versions with exact timestamps. Historical snapshots retain read navigation but omit every tweet mutation action.

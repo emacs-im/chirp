@@ -74,6 +74,14 @@ M-x chirp-thread
 M-x chirp-profile
 M-x chirp-profile-followers
 M-x chirp-profile-following-users
+M-x chirp-open-url
+```
+
+`M-x chirp-open-url` opens supported HTTPS `x.com` and legacy `twitter.com` locations directly in their Chirp view, including posts and edit history, profiles and relationship lists, lists, search, Home, bookmarks, Likes, and direct messages. To route those links from `browse-url`, opt in explicitly:
+
+```elisp
+(add-to-list 'browse-url-handlers
+             (cons chirp-url-browse-regexp #'chirp-open-url))
 ```
 
 ## Keys
