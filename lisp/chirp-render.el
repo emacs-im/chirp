@@ -27,10 +27,8 @@
 (declare-function chirp-toggle-like-at-point "chirp-actions" ())
 (declare-function chirp-toggle-bookmark-at-point "chirp-actions" ())
 (declare-function chirp-quote-at-point "chirp-actions" ())
-(declare-function chirp-thread-open "chirp-thread"
-                  (tweet-or-url &optional focus-id buffer))
-(declare-function chirp-edit-history-open "chirp-edit-history"
-                  (tweet-or-id))
+(declare-function chirp-thread-open-tweet "chirp-thread" (tweet))
+(declare-function chirp-edit-history-open-tweet "chirp-edit-history" (tweet))
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -828,8 +826,7 @@ controls mutation actions.  Nested quoted tweets are omitted after one level."
                       (appkit-ui-apply-line-prefix
                        body-start (point) card-prefix)))
                   :action (lambda ()
-                            (chirp-thread-open
-                             quoted (plist-get quoted :id)))
+                            (chirp-thread-open-tweet quoted))
                   :help-echo "Open quoted tweet"
                   :properties
                   `(chirp-subentry-item ,quoted
@@ -1063,7 +1060,7 @@ PREFIX and PREFIX-FACE control indentation."
                       (if (= count 1) "" "s")))
       (chirp-render--add-action
        start (point)
-       (lambda () (chirp-edit-history-open tweet))
+       (lambda () (chirp-edit-history-open-tweet tweet))
        :help-echo "Open edit history"
        :face 'chirp-social-context-face)
       (insert "\n"))))

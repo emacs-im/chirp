@@ -33,7 +33,8 @@
 (declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
 (declare-function chirp-profile-followers "chirp-profile" (handle &optional buffer))
 (declare-function chirp-profile-following-users "chirp-profile" (handle &optional buffer))
-(declare-function chirp-thread-open "chirp-thread" (tweet-or-url &optional focus-id buffer))
+(declare-function chirp-thread-open "chirp-thread" (tweet-id))
+(declare-function chirp-thread-open-tweet "chirp-thread" (tweet))
 (declare-function chirp-thread-add-spam-rule "chirp-thread" (&optional authorp))
 (declare-function chirp-dispatch "chirp-actions" ())
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
@@ -688,11 +689,7 @@ current line metrics."
   (interactive)
   (if-let* ((parent-id (chirp-reply-parent-id-at-point)))
       (or (chirp-goto-entry-id parent-id)
-          (let ((entry (chirp-entry-at-point)))
-            (when (eq (plist-get entry :kind) 'tweet)
-              (chirp-thread-open entry parent-id)
-              t))
-          (user-error "No parent tweet available at point"))
+          (chirp-thread-open parent-id))
     (user-error "No reply parent available at point")))
 
 (defun chirp-show-error (buffer title refresh message)
@@ -946,7 +943,7 @@ current line metrics."
     (let ((entry (chirp-entry-at-point)))
       (cond
        ((eq (plist-get entry :kind) 'tweet)
-        (chirp-thread-open entry (plist-get entry :id)))
+        (chirp-thread-open-tweet entry))
        ((eq (plist-get entry :kind) 'user)
         (chirp-profile-open (plist-get entry :handle)))
        (t

@@ -119,12 +119,12 @@ NEW-WINDOW is accepted for compatibility with `browse-url-handlers'."
      (message "%s" message))))
 
 ;;;###autoload
-(defun chirp-list (&optional list-id-or-url)
+(defun chirp-list (&optional list-id)
   "Open a list timeline.
 
-When LIST-ID-OR-URL is nil, prompt from the authenticated account's lists."
+When LIST-ID is nil, prompt from the authenticated account's lists."
   (interactive)
-  (chirp-timeline-open-list list-id-or-url))
+  (chirp-timeline-open-list list-id))
 
 ;;;###autoload
 (defun chirp-search (query)
@@ -133,10 +133,10 @@ When LIST-ID-OR-URL is nil, prompt from the authenticated account's lists."
   (chirp-timeline-open-search query))
 
 ;;;###autoload
-(defun chirp-thread (tweet-or-url)
-  "Open a thread for TWEET-OR-URL."
-  (interactive "sTweet ID or URL: ")
-  (chirp-thread-open tweet-or-url))
+(defun chirp-thread (tweet-id)
+  "Open a thread for TWEET-ID."
+  (interactive "sTweet ID: ")
+  (chirp-thread-open tweet-id))
 
 ;;;###autoload
 (defun chirp-profile (handle)

@@ -16,7 +16,6 @@
 (require 'appkit-projection)
 (require 'chirp-core)
 (require 'chirp-backend)
-(require 'chirp-url)
 (require 'chirp-media)
 (require 'chirp-render)
 (require 'chirp-spam-rules)
@@ -357,22 +356,16 @@ protected."
               (chirp-thread--spam-reply-p tweet rules)))
        tweets))))
 
-(defun chirp-thread--title (tweet-or-url)
-  "Return a display title for TWEET-OR-URL."
-  (format "Thread: %s"
-          (or (chirp-url-tweet-id tweet-or-url)
-              (and (listp tweet-or-url)
-                   (plist-get tweet-or-url :id))
-              tweet-or-url
-              "tweet")))
+(defun chirp-thread--title (tweet-id)
+  "Return a display title for TWEET-ID."
+  (format "Thread: %s" tweet-id))
 
-(defun chirp-thread--seed-tweets (tweet-or-url focus-id)
-  "Return a renderable list for TWEET-OR-URL matching FOCUS-ID, or nil."
-  (when (and (listp tweet-or-url)
-             (eq (plist-get tweet-or-url :kind) 'tweet)
-             (or (null focus-id)
-                 (equal (plist-get tweet-or-url :id) focus-id)))
-    (list tweet-or-url)))
+(defun chirp-thread--seed-tweets (tweet)
+  "Return TWEET as a renderable seed list, or nil."
+  (when (and tweet
+             (eq (plist-get tweet :kind) 'tweet)
+             (plist-get tweet :id))
+    (list tweet)))
 
 (defun chirp-thread--article-fetch-needed-p (tweet)
   "Return non-nil when TWEET needs direct article enrichment."
@@ -481,23 +474,30 @@ buffer."
       (chirp-display-buffer (appkit-view-buffer view)))
     (appkit-view-buffer view)))
 
-(defun chirp-thread-open (tweet-or-url &optional focus-id _buffer)
-  "Open a thread for TWEET-OR-URL focused on FOCUS-ID."
-  (interactive "sTweet ID or URL: ")
-  (let* ((request-target (cond
-                          ((stringp tweet-or-url) tweet-or-url)
-                          ((plist-get tweet-or-url :url))
-                          ((plist-get tweet-or-url :id))
-                          (t (user-error "Need a tweet id or URL"))))
-         (title (chirp-thread--title request-target))
+(defun chirp-thread-open (tweet-id)
+  "Open a thread focused on numeric TWEET-ID."
+  (interactive "sTweet ID: ")
+  (chirp-thread--open tweet-id))
+
+(defun chirp-thread-open-tweet (tweet)
+  "Open a thread focused on normalized TWEET."
+  (unless (and (listp tweet)
+               (eq (plist-get tweet :kind) 'tweet))
+    (user-error "Need a normalized tweet"))
+  (chirp-thread--open (plist-get tweet :id) tweet))
+
+(defun chirp-thread--open (tweet-id &optional seed-tweet)
+  "Open numeric TWEET-ID, optionally rendering normalized SEED-TWEET first."
+  (unless (and (stringp tweet-id)
+               (string-match-p "\\`[0-9]+\\'" tweet-id))
+    (user-error "Need a numeric tweet ID; use M-x chirp-open-url for an X URL"))
+  (let* ((title (chirp-thread--title tweet-id))
          (refresh (lambda ()
-                    (chirp-backend-invalidate-thread request-target)
-                    (when focus-id
-                      (chirp-backend-invalidate-article focus-id))
-                    (chirp-thread-open request-target focus-id)))
+                    (chirp-backend-invalidate-thread tweet-id)
+                    (chirp-thread-open tweet-id)))
          (view (chirp-thread--ensure-view
-                title refresh focus-id
-                (list 'thread request-target focus-id)))
+                title refresh tweet-id
+                (list 'thread tweet-id)))
          (buffer (appkit-view-buffer view))
          (saved-ordered nil)
          (prefetched-article nil)
@@ -530,23 +530,22 @@ buffer."
                 (when (chirp-request-current-p buffer token)
                   (chirp-clear-status buffer)))))))
       (setq token (chirp-begin-background-request buffer title))
-      (when-let* ((seed (chirp-thread--seed-tweets tweet-or-url focus-id)))
+      (when-let* ((seed (chirp-thread--seed-tweets seed-tweet)))
         (setq saved-ordered seed)
-        (present-current (and focus-id (list 'tweet focus-id))))
-      (when (and (listp tweet-or-url)
-                 (plist-get tweet-or-url :id))
-        (maybe-request-article tweet-or-url))
+        (present-current (list 'tweet tweet-id)))
+      (when seed-tweet
+        (maybe-request-article seed-tweet))
       (chirp-backend-thread
-       request-target
+       tweet-id
        (lambda (tweets _envelope)
          (when (chirp-request-current-p buffer token)
            (setq saved-ordered
                  (chirp-thread--filter-spam-replies
-                  (chirp-thread--reorder tweets focus-id)
-                  focus-id))
+                  (chirp-thread--reorder tweets tweet-id)
+                  tweet-id))
            (apply-prefetched-article)
-           (present-current (and focus-id (list 'tweet focus-id)))
-           (if-let* ((focus (or (chirp-thread--find-tweet saved-ordered focus-id)
+           (present-current (list 'tweet tweet-id))
+           (if-let* ((focus (or (chirp-thread--find-tweet saved-ordered tweet-id)
                                 (car saved-ordered))))
                (progn
                  (maybe-request-article focus)

@@ -13,10 +13,9 @@
   "Trusted X and legacy Twitter URLs should map to Chirp destinations."
   (dolist
       (case
-       '(("https://x.com/alice/status/123"
-          (:kind tweet :id "123" :handle "alice"))
+       '(("https://x.com/alice/status/123" (:kind tweet :id "123"))
          ("https://www.twitter.com/alice/status/123/history?s=20"
-          (:kind edit-history :id "123" :handle "alice"))
+          (:kind edit-history :id "123"))
          ("https://x.com/i/web/status/123" (:kind tweet :id "123"))
          ("https://x.com/i/status/123" (:kind tweet :id "123"))
          ("https://x.com/alice" (:kind profile :handle "alice"))
@@ -26,8 +25,7 @@
           (:kind following-users :handle "alice"))
          ("https://x.com/alice/likes" (:kind likes :handle "alice"))
          ("https://x.com/i/lists/456" (:kind list :id "456"))
-         ("https://twitter.com/alice/lists/456"
-          (:kind list :id "456" :owner "alice"))
+         ("https://twitter.com/alice/lists/456" (:kind list :id "456"))
          ("https://x.com/search?q=emacs%20lisp&src=typed_query"
           (:kind search :query "emacs lisp"))
          ("https://x.com/home" (:kind home))
@@ -50,6 +48,7 @@
 (ert-deftest chirp-url-extractors-accept-identifiers-and-trusted-urls ()
   "Domain extractors should share the trusted URL parser."
   (should (equal (chirp-url-tweet-id "123") "123"))
+  (should-not (chirp-url-tweet-id nil))
   (should (equal (chirp-url-tweet-id
                   "https://twitter.com/alice/status/123/photo/1")
                  "123"))
@@ -57,10 +56,7 @@
                   '(:url "https://x.com/alice/status/123"))
                  "123"))
   (should-not (chirp-url-tweet-id
-               "https://example.com/alice/status/123"))
-  (should (equal (chirp-url-list-id "456") "456"))
-  (should (equal (chirp-url-list-id "https://x.com/i/lists/456") "456"))
-  (should-not (chirp-url-list-id "https://example.com/i/lists/456")))
+               "https://example.com/alice/status/123")))
 
 (ert-deftest chirp-open-url-routes-each-target-through-public-command ()
   "The public URL command should dispatch every parsed destination."
@@ -74,7 +70,7 @@
               ((symbol-function 'chirp-timeline-open-search)
                (lambda (query &optional _buffer) (push (list 'search query) calls)))
               ((symbol-function 'chirp-thread-open)
-               (lambda (target &optional _focus _buffer)
+               (lambda (target)
                  (push (list 'tweet target) calls)))
               ((symbol-function 'chirp-edit-history-open)
                (lambda (target) (push (list 'edit-history target) calls)))
@@ -115,6 +111,11 @@
 (ert-deftest chirp-open-url-rejects-unsupported-x-path ()
   "The public URL command should surface an unsupported X location."
   (should-error (chirp-open-url "https://x.com/notifications")
+                :type 'user-error))
+
+(ert-deftest chirp-thread-rejects-url-input ()
+  "Thread commands should direct URL input to `chirp-open-url'."
+  (should-error (chirp-thread "https://x.com/alice/status/123")
                 :type 'user-error))
 
 (provide 'chirp-url-test)

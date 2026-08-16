@@ -300,18 +300,14 @@ When zero or negative, the in-memory read cache is disabled."
   "Return HANDLE normalized for cache lookup."
   (downcase (string-remove-prefix "@" (format "%s" handle))))
 
-(defun chirp-backend--tweet-id-from-target (target)
-  "Return the tweet ID represented by TARGET, or nil."
-  (or (chirp-url-tweet-id target)
-      (and target
-           (not (stringp target))
-           (not (listp target))
-           (format "%s" target))))
+(defun chirp-backend--numeric-id-p (value)
+  "Return non-nil when VALUE is a numeric X identifier."
+  (and (stringp value)
+       (string-match-p "\\`[0-9]+\\'" value)))
 
-(defun chirp-backend--thread-cache-key (tweet-or-url)
-  "Return the cache key for thread TWEET-OR-URL."
-  (list :thread (or (chirp-backend--tweet-id-from-target tweet-or-url)
-                    (format "%s" tweet-or-url))))
+(defun chirp-backend--thread-cache-key (tweet-id)
+  "Return the cache key for thread TWEET-ID."
+  (list :thread tweet-id))
 
 (defun chirp-backend--article-cache-key (tweet-id)
   "Return the cache key for TWEET-ID article fetches."
@@ -343,18 +339,11 @@ When zero or negative, the in-memory read cache is disabled."
   "Return the cache key for HANDLE following users."
   (list :following-users (chirp-backend--normalize-handle handle)))
 
-(defun chirp-backend--list-id-from-target (target)
-  "Return the list ID represented by TARGET, or TARGET as-is."
-  (or (chirp-url-list-id target)
-      (and target (format "%s" target))))
-
-(defun chirp-backend-invalidate-thread (tweet-or-url)
-  "Drop cached thread and article data for TWEET-OR-URL."
-  (let ((thread-key (chirp-backend--thread-cache-key tweet-or-url))
-        (tweet-id (chirp-backend--tweet-id-from-target tweet-or-url)))
-    (remhash thread-key (chirp-backend--read-cache))
-    (when tweet-id
-      (chirp-backend-invalidate-article tweet-id))))
+(defun chirp-backend-invalidate-thread (tweet-id)
+  "Drop cached thread and article data for TWEET-ID."
+  (remhash (chirp-backend--thread-cache-key tweet-id)
+           (chirp-backend--read-cache))
+  (chirp-backend-invalidate-article tweet-id))
 
 (defun chirp-backend-invalidate-article (tweet-id)
   "Drop cached article data for TWEET-ID."
@@ -1030,10 +1019,6 @@ Unix second in year 5138 are treated as milliseconds."
      ((> number 100000000000) (/ number 1000))
      (t number))))
 
-(defun chirp-backend--quote-status-id (url)
-  "Return the tweet ID represented by quote URL, or nil."
-  (chirp-url-tweet-id url))
-
 (defun chirp-backend--media-id-list (value)
   "Return VALUE as a list of numeric media ID strings."
   (delq nil
@@ -1136,7 +1121,7 @@ Unix second in year 5138 are treated as milliseconds."
                         (chirp-get request "in_reply_to_status_id")))
              (quote-url (chirp-first-nonblank
                          (chirp-get request "attachment_url")))
-             (quote-id (chirp-backend--quote-status-id quote-url))
+             (quote-id (chirp-url-tweet-id quote-url))
              (execute-at
               (chirp-backend--unix-seconds
                (or (chirp-get entry "execute_at" "scheduled_at")
@@ -2039,15 +2024,18 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
    callback
    errback))
 
-(defun chirp-backend-list (list-target callback &optional errback)
-  "Fetch LIST-TARGET timeline data and call CALLBACK, or ERRBACK on failure."
-  (let ((limit (chirp-backend--timeline-limit nil)))
-    (chirp-backend--request-timeline
-     'list
-     `(("listId" . ,(chirp-backend--list-id-from-target list-target))
-       ("count" . ,limit))
-     '(("data" "list" "tweets_timeline" "timeline"))
-     limit callback :errback errback :label "the list timeline")))
+(defun chirp-backend-list (list-id callback &optional errback)
+  "Fetch LIST-ID timeline data and call CALLBACK, or ERRBACK on failure."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (if (not (chirp-backend--numeric-id-p list-id))
+        (funcall error-fn "List ID must be numeric")
+      (let ((limit (chirp-backend--timeline-limit nil)))
+        (chirp-backend--request-timeline
+         'list
+         `(("listId" . ,list-id)
+           ("count" . ,limit))
+         '(("data" "list" "tweets_timeline" "timeline"))
+         limit callback :errback error-fn :label "the list timeline")))))
 
 (defun chirp-backend--tweet-matches-id-p (tweet tweet-id)
   "Return non-nil when TWEET or its raw wrapper identifies TWEET-ID."
@@ -2056,44 +2044,45 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
               (chirp-get (plist-get tweet :raw) "rest_id" "id_str" "id"))
              tweet-id)))
 
-(defun chirp-backend-thread (tweet-or-url callback &optional errback)
-  "Fetch TWEET-OR-URL thread data and call CALLBACK, or ERRBACK on failure."
-  (let ((tweet-id (chirp-backend--tweet-id-from-target tweet-or-url))
-        (limit (chirp-backend--timeline-limit chirp-thread-max-results)))
-    (chirp-backend--cached-read
-     (chirp-backend--thread-cache-key tweet-or-url)
-     (lambda (success error)
-       (if (not tweet-id)
-           (funcall error "Tweet target does not contain a numeric ID")
-         (chirp-backend--request-timeline
-          'thread
-          `(("focalTweetId" . ,tweet-id)
-            ("count" . ,limit)
-            ("referrer" . "tweet")
-            ("with_rux_injections" . :json-false)
-            ("includePromotedContent" . t)
-            ("rankingMode" . "Relevance")
-            ("withCommunity" . :json-false)
-            ("withQuickPromoteEligibilityTweetFields" . :json-false)
-            ("withBirdwatchNotes" . :json-false)
-            ("withVoice" . :json-false))
-          '(("data" "tweetResult" "result" "timeline")
-            ("data" "threaded_conversation_with_injections_v2"))
-          limit
-          (lambda (tweets envelope)
-            (if-let* ((focus (cl-find-if
-                              (lambda (tweet)
-                                (chirp-backend--tweet-matches-id-p
-                                 tweet tweet-id))
-                              tweets)))
-                (funcall success
-                         (cons focus (cl-remove focus tweets :test #'eq))
-                         envelope)
-              (funcall error
-                       (format "X did not return tweet %s in its thread" tweet-id))))
-          :errback error :label "the tweet conversation")))
-     callback
-     errback)))
+(defun chirp-backend-thread (tweet-id callback &optional errback)
+  "Fetch TWEET-ID thread data and call CALLBACK, or ERRBACK on failure."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (if (not (chirp-backend--numeric-id-p tweet-id))
+        (funcall error-fn "Tweet ID must be numeric")
+      (let ((limit (chirp-backend--timeline-limit chirp-thread-max-results)))
+        (chirp-backend--cached-read
+         (chirp-backend--thread-cache-key tweet-id)
+         (lambda (success error)
+           (chirp-backend--request-timeline
+             'thread
+             `(("focalTweetId" . ,tweet-id)
+               ("count" . ,limit)
+               ("referrer" . "tweet")
+               ("with_rux_injections" . :json-false)
+               ("includePromotedContent" . t)
+               ("rankingMode" . "Relevance")
+               ("withCommunity" . :json-false)
+               ("withQuickPromoteEligibilityTweetFields" . :json-false)
+               ("withBirdwatchNotes" . :json-false)
+               ("withVoice" . :json-false))
+             '(("data" "tweetResult" "result" "timeline")
+               ("data" "threaded_conversation_with_injections_v2"))
+             limit
+             (lambda (tweets envelope)
+               (if-let* ((focus (cl-find-if
+                                 (lambda (tweet)
+                                   (chirp-backend--tweet-matches-id-p
+                                    tweet tweet-id))
+                                 tweets)))
+                   (funcall success
+                            (cons focus (cl-remove focus tweets :test #'eq))
+                            envelope)
+                 (funcall error
+                          (format "X did not return tweet %s in its thread"
+                                  tweet-id))))
+             :errback error :label "the tweet conversation"))
+         callback
+         error-fn)))))
 
 (defun chirp-backend-tweet (tweet-id callback &optional errback)
   "Fetch TWEET-ID and call CALLBACK, or ERRBACK on failure."

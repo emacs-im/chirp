@@ -16,7 +16,6 @@
 (require 'appkit-view)
 (require 'chirp-core)
 (require 'chirp-backend)
-(require 'chirp-url)
 (require 'chirp-media)
 (require 'chirp-render)
 
@@ -415,14 +414,9 @@
       (format "Liked: @%s" handle)
     "Liked"))
 
-(defun chirp-timeline--list-id (target)
-  "Return the list ID represented by TARGET, or TARGET as text."
-  (or (chirp-url-list-id target)
-      (format "%s" target)))
-
-(defun chirp-timeline--list-title (target)
-  "Return the buffer title for list TARGET."
-  (format "List: %s" (chirp-timeline--list-id target)))
+(defun chirp-timeline--list-title (list-id)
+  "Return the buffer title for LIST-ID."
+  (format "List: %s" list-id))
 
 (defun chirp-timeline--list-source-labels (list-info)
   "Return human-readable source labels for LIST-INFO."
@@ -652,12 +646,12 @@ When HANDLE is nil, resolve the currently authenticated account first."
              (chirp-show-error buffer title refresh message))))
         buffer))))
 
-(defun chirp-timeline-open-list (&optional list-target _buffer)
-  "Open the timeline for LIST-TARGET.
+(defun chirp-timeline-open-list (&optional list-id _buffer)
+  "Open the timeline for LIST-ID.
 
-LIST-TARGET may be a numeric list id or a full list URL."
+When LIST-ID is nil, prompt from the authenticated account's lists."
   (interactive)
-  (if (null list-target)
+  (if (null list-id)
       (let* ((buffer (chirp-buffer))
              (token (chirp-begin-request buffer)))
         (message "Loading X lists...")
@@ -678,16 +672,18 @@ LIST-TARGET may be a numeric list id or a full list URL."
                (kill-buffer buffer))
              (message "Chirp list lookup failed: %s" message))))
         buffer)
-    (let* ((clean-target (string-trim (format "%s" list-target)))
-           (title (chirp-timeline--list-title clean-target))
-           (refresh (lambda () (chirp-timeline-open-list clean-target))))
-      (when (string-empty-p clean-target)
-        (user-error "List ID or URL cannot be empty"))
-      (chirp-timeline--fetch-collection
-       (chirp-timeline--ensure-collection 'list title refresh)
-       title refresh
-       (lambda (success errback)
-         (chirp-backend-list clean-target success errback))))))
+    (let ((clean-id (and (stringp list-id)
+                         (string-trim list-id))))
+      (unless (and clean-id
+                   (string-match-p "\\`[0-9]+\\'" clean-id))
+        (user-error "Need a numeric list ID; use M-x chirp-open-url for an X URL"))
+      (let* ((title (chirp-timeline--list-title clean-id))
+             (refresh (lambda () (chirp-timeline-open-list clean-id))))
+        (chirp-timeline--fetch-collection
+         (chirp-timeline--ensure-collection 'list title refresh)
+         title refresh
+         (lambda (success errback)
+           (chirp-backend-list clean-id success errback)))))))
 
 (defun chirp-timeline-open-search (query &optional _buffer)
   "Open search results for QUERY."
