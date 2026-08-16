@@ -15,6 +15,8 @@
 
 (declare-function notifications-notify "notifications" (&rest params))
 
+;;; Options
+
 (defcustom chirp-notifications-interval 300
   "Seconds between account activity checks."
   :type 'number
@@ -25,8 +27,12 @@
   :type 'integer
   :group 'chirp)
 
+;;; Constants
+
 (defconst chirp-notifications--seen-limit 200
   "Maximum number of notification ids retained for deduplication.")
+
+;;; Variables
 
 (defvar chirp-notifications--timer nil
   "Timer used by `chirp-notifications-mode'.")
@@ -43,6 +49,8 @@
 (defvar chirp-notifications--seen-ids nil
   "Recently seen notification ids, newest first.")
 
+;;; Timer
+
 (defun chirp-notifications--cancel-owned-timer (timer)
   "Cancel TIMER and disable notification polling when its app stops."
   (when (timerp timer)
@@ -54,6 +62,8 @@
         chirp-notifications--initialized nil
         chirp-notifications--seen-ids nil
         chirp-notifications-mode nil))
+
+;;; Formatting
 
 (defun chirp-notifications--plain-string (value)
   "Return VALUE as a string without text properties."
@@ -74,6 +84,8 @@
   "Return the best desktop notification body for NOTIFICATION."
   (or (chirp-first-nonblank (chirp-get notification "message"))
       "New X activity."))
+
+;;; Delivery
 
 (defun chirp-notifications--notify-linux (title body)
   "Display TITLE and BODY through freedesktop notifications."
@@ -114,6 +126,8 @@
           (_ (message "%s: %s" title body)))
       (error
        (message "Chirp notification failed: %s" (error-message-string err))))))
+
+;;; Polling
 
 (defun chirp-notifications--remember (ids)
   "Remember IDS while keeping the deduplication list bounded."

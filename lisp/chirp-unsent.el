@@ -18,11 +18,15 @@
 (require 'chirp-backend)
 (require 'chirp-actions)
 
+;;; Constants
+
 (defconst chirp-unsent--mark-char ?>
   "Character used to mark an unsent row.")
 
 (defconst chirp-unsent--delete-char ?D
   "Character used to flag an unsent row for deletion.")
+
+;;; Variables
 
 (defvar-local chirp-unsent-kind 'draft
   "Unsent collection shown in the current buffer.
@@ -31,6 +35,8 @@ Either `draft' or `scheduled'.")
 
 (defvar-local chirp-unsent-entries nil
   "Normalized unsent entries last rendered in the current buffer.")
+
+;;; Mode
 
 (defvar chirp-unsent-mode-map
   (let ((map (make-sparse-keymap)))
@@ -46,6 +52,8 @@ Either `draft' or `scheduled'.")
     (define-key map (kbd "q") #'chirp-quit-current-buffer)
     map)
   "Keymap for `chirp-unsent-mode'.")
+
+;;; Rows
 
 (defun chirp-unsent--when-label (entry)
   "Return the When column label for ENTRY."
@@ -128,6 +136,8 @@ Either `draft' or `scheduled'.")
   (tabulated-list-print t)
   (chirp--apply-buffer-name (current-buffer) (chirp-unsent--title)))
 
+;;; Requests
+
 (defun chirp-unsent-refresh ()
   "Reload the current unsent collection from X."
   (interactive)
@@ -149,6 +159,8 @@ Either `draft' or `scheduled'.")
        (when (chirp-request-current-p buffer token)
          (chirp-clear-status buffer)
          (chirp-actions--show-error message))))))
+
+;;; Commands
 
 (defun chirp-unsent-open-kind (kind)
   "Open the unsent list for KIND.
@@ -198,6 +210,8 @@ KIND is `draft' or `scheduled'."
   "Open the unsent post at point in a compose buffer."
   (interactive)
   (chirp-compose-open-unsent (chirp-unsent--entry-at-point)))
+
+;;; Marks and Deletion
 
 (defun chirp-unsent--set-mark (char)
   "Put CHAR on the current unsent row and move down."

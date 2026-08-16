@@ -27,11 +27,60 @@
 (declare-function plz-response-status "plz" (response))
 (defvar plz-curl-default-args)
 
+;;; Options
+
 (defgroup chirp-x nil
   "X web API transport for Chirp."
   :group 'chirp)
 
+(defcustom chirp-x-auth-file
+  (locate-user-emacs-file "chirp/auth.json")
+  "Private file holding Chirp's browser-imported X session.
+
+`chirp-login' creates this file from an explicit browser-session capture."
+  :type 'file
+  :group 'chirp-x)
+
+(defcustom chirp-x-browser-session-profile-root
+  (locate-user-emacs-file "chirp/browser-session/")
+  "Root for Chirp's persistent isolated X login profiles.
+
+`browser-session' creates a browser-specific profile below this root.  This
+must not be an ordinary browser profile directory."
+  :type 'directory
+  :group 'chirp-x)
+
+(defcustom chirp-x-bearer-token
+  (concat "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+          "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
+  "Public X web bearer token used for authenticated web requests.
+
+Set `CHIRP_X_BEARER_TOKEN' to override this value when X rotates its web
+client token.  This is not an account credential."
+  :type 'string
+  :group 'chirp-x)
+
+(defcustom chirp-x-query-id-overrides nil
+  "Persisted GraphQL query IDs that override Chirp's built-in operation IDs.
+
+Each entry has the form (OPERATION-NAME . QUERY-ID).  Overrides take precedence
+over dynamically refreshed read IDs and built-in fallbacks."
+  :type '(repeat (cons (string :tag "Operation")
+                       (string :tag "Query ID")))
+  :group 'chirp-x)
+
+(defcustom chirp-x-user-agent
+  (concat "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+  "User agent sent with X web API requests."
+  :type 'string
+  :group 'chirp-x)
+
+;;; Errors
+
 (define-error 'chirp-x--callback-error "X callback failed")
+
+;;; Constants
 
 (defconst chirp-x--api-base-url "https://x.com/i/api/graphql"
   "Trusted X web GraphQL endpoint that receives session credentials.")
@@ -87,6 +136,8 @@
 (defconst chirp-x--write-response-limit (* 4 1024 1024)
   "Maximum accepted response body size for one authenticated X write.")
 
+;;; Variables
+
 (defvar chirp-x--browser-session-process nil
   "Current asynchronous browser-session capture process, or nil.")
 
@@ -99,48 +150,7 @@
 (defvar chirp-x--query-id-refresh-listeners nil
   "Callbacks awaiting the current query ID registry refresh.")
 
-(defcustom chirp-x-auth-file
-  (locate-user-emacs-file "chirp/auth.json")
-  "Private file holding Chirp's browser-imported X session.
-
-`chirp-login' creates this file from an explicit browser-session capture."
-  :type 'file
-  :group 'chirp-x)
-
-(defcustom chirp-x-browser-session-profile-root
-  (locate-user-emacs-file "chirp/browser-session/")
-  "Root for Chirp's persistent isolated X login profiles.
-
-`browser-session' creates a browser-specific profile below this root.  This
-must not be an ordinary browser profile directory."
-  :type 'directory
-  :group 'chirp-x)
-
-(defcustom chirp-x-bearer-token
-  (concat "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
-          "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
-  "Public X web bearer token used for authenticated web requests.
-
-Set `CHIRP_X_BEARER_TOKEN' to override this value when X rotates its web
-client token.  This is not an account credential."
-  :type 'string
-  :group 'chirp-x)
-
-(defcustom chirp-x-query-id-overrides nil
-  "Persisted GraphQL query IDs that override Chirp's built-in operation IDs.
-
-Each entry has the form (OPERATION-NAME . QUERY-ID).  Overrides take precedence
-over dynamically refreshed read IDs and built-in fallbacks."
-  :type '(repeat (cons (string :tag "Operation")
-                       (string :tag "Query ID")))
-  :group 'chirp-x)
-
-(defcustom chirp-x-user-agent
-  (concat "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
-  "User agent sent with X web API requests."
-  :type 'string
-  :group 'chirp-x)
+;;; Authentication
 
 (defun chirp-x--nonblank-string (value)
   "Return VALUE when it is a nonblank string, otherwise nil."
@@ -231,6 +241,8 @@ client token, not an account credential."
     (list :auth-token auth-token
           :ct0 ct0
           :bearer-token bearer-token)))
+
+;;;; Browser Session
 
 (defun chirp-x--browser-session-capture-file ()
   "Create and return a private temporary browser-session capture file."
@@ -362,6 +374,8 @@ This does not sign out of X in the browser."
   (chirp-stop)
   (message "Chirp browser session removed"))
 
+;;; Operation Metadata
+
 (defun chirp-x--operation-string (operation property label)
   "Return nonblank string PROPERTY from OPERATION, or signal for LABEL."
   (let ((value (chirp-x--nonblank-string (plist-get operation property))))
@@ -407,6 +421,8 @@ This does not sign out of X in the browser."
     (unless (or (null field-toggles) (listp field-toggles))
       (error "X GraphQL field toggles are invalid: %S" field-toggles))
     field-toggles))
+
+;;; Request Encoding
 
 (defun chirp-x--json-encode (value)
   "Encode VALUE as compact JSON."
@@ -550,6 +566,8 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
              (eq (nth 1 error-data) 'http)
              (integerp (nth 2 error-data))
              (nth 2 error-data)))))
+
+;;; Query-ID Refresh
 
 (defun chirp-x--query-id-table (body)
   "Parse bounded registry BODY into a validated read-operation ID table."
@@ -699,6 +717,8 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
          (display-warning 'chirp error-message :error)
        (message "Refreshed %d X query IDs" (plist-get result :count))))))
 
+;;; Response Handling
+
 (defun chirp-x--stale-query-error-p (message)
   "Return non-nil when MESSAGE definitively reports a stale query ID."
   (and (stringp message)
@@ -808,6 +828,8 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
                   (chirp-x-unknown-write-outcome message)
                 message))))
      (t (list :success payload)))))
+
+;;; Request Lifecycle
 
 (defvar-local chirp-x--request-handle nil
   "Appkit lifecycle handle for the current X retrieval buffer.")
@@ -1078,6 +1100,8 @@ CANCEL-MESSAGE overrides that cancellation error."
                           (list callback-error)))))))
          nil)))))
 
+;;; REST and GraphQL Requests
+
 (cl-defun chirp-x-api-request
     (service path callback &key (method 'get) query form errback owner)
   "Request an authenticated X API PATH from SERVICE asynchronously.
@@ -1109,6 +1133,8 @@ readable error string.  OWNER optionally owns the transport lifecycle."
       (error
        (funcall error-fn (error-message-string err))
        nil))))
+
+;;;; GraphQL Requests
 
 (cl-defun chirp-x--graphql-request-attempt
     (operation variables callback &key errback owner retried-p)
@@ -1203,6 +1229,8 @@ URL retrieval buffer when the request starts, or nil when setup fails."
       (error "X GraphQL error callback is not callable"))
     (chirp-x--graphql-request-attempt
      operation variables callback :errback error-fn :owner owner)))
+
+;;; Media Upload
 
 (defun chirp-x--upload-media-type (file)
   "Return the supported X media MIME type for FILE."

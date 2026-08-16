@@ -16,6 +16,8 @@
 (require 'chirp-media)
 (require 'chirp-render)
 
+;;; Projection
+
 (defun chirp-edit-history--rows (tweets)
   "Return projected edit-history rows for normalized TWEETS."
   (cl-loop for tweet in tweets
@@ -75,6 +77,8 @@
     (chirp-clear-status buffer)
     (chirp-media-prefetch-tweets tweets buffer)))
 
+;;; Requests
+
 (defun chirp-edit-history--request (view)
   "Fetch and present the versions owned by edit-history VIEW."
   (let* ((state (appkit-view-state view))
@@ -93,6 +97,8 @@
                            (plist-get state :refresh)
                            message))))
     buffer))
+
+;;; Commands
 
 (defun chirp-edit-history-open (tweet-id)
   "Open the edit history for TWEET-ID."

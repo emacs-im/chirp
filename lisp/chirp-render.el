@@ -41,6 +41,37 @@
 (require 'chirp-media)
 (require 'nerd-icons nil t)
 
+;;; Options
+
+(defcustom chirp-tweet-separator "- - - - - - - - - - - -"
+  "Separator text inserted between tweets in list views.
+
+Set this to nil or an empty string to disable tweet separators."
+  :type '(choice (const :tag "No separator" nil)
+                 (string :tag "Separator text"))
+  :group 'chirp)
+
+(defcustom chirp-tweet-separator-indent 6
+  "Number of leading spaces before tweet list separators."
+  :type 'integer
+  :group 'chirp)
+
+;;; Constants
+
+(defconst chirp-render-list-reply-prefix "  "
+  "Indentation used for direct replies to the previous visible tweet.")
+
+(defconst chirp-render--reply-control-labels
+  '(("byinvitation" . "Accounts %s mentioned can reply")
+    ("community" . "Accounts %s follows or mentioned can reply")
+    ("followers" . "Accounts following or mentioned by %s can reply")
+    ("mynetwork" . "Accounts %s follows, who they follow, or mentioned can reply")
+    ("subscribers" . "Accounts subscribed to or mentioned by %s can reply")
+    ("verified" . "Verified accounts or accounts mentioned by %s can reply"))
+  "Known X reply-control modes and their display templates.")
+
+;;; Faces
+
 (defface chirp-author-face
   '((t :inherit (bold font-lock-keyword-face)))
   "Face used for author names."
@@ -124,21 +155,10 @@
   "Face used for related-tweet context lines in thread views."
   :group 'chirp)
 
-(defconst chirp-render-list-reply-prefix "  "
-  "Indentation used for direct replies to the previous visible tweet.")
-
 (defface chirp-social-context-face
   '((t :inherit shadow))
   "Face used for home/following social context lines."
   :group 'chirp)
-(defconst chirp-render--reply-control-labels
-  '(("byinvitation" . "Accounts %s mentioned can reply")
-    ("community" . "Accounts %s follows or mentioned can reply")
-    ("followers" . "Accounts following or mentioned by %s can reply")
-    ("mynetwork" . "Accounts %s follows, who they follow, or mentioned can reply")
-    ("subscribers" . "Accounts subscribed to or mentioned by %s can reply")
-    ("verified" . "Verified accounts or accounts mentioned by %s can reply"))
-  "Known X reply-control modes and their display templates.")
 
 (defface chirp-thread-divider-face
   '((t :inherit shadow))
@@ -148,19 +168,6 @@
 (defface chirp-tweet-separator-face
   '((t :inherit chirp-thread-divider-face))
   "Face used for separators between tweet list entries."
-  :group 'chirp)
-
-(defcustom chirp-tweet-separator "- - - - - - - - - - - -"
-  "Separator text inserted between tweets in list views.
-
-Set this to nil or an empty string to disable tweet separators."
-  :type '(choice (const :tag "No separator" nil)
-                 (string :tag "Separator text"))
-  :group 'chirp)
-
-(defcustom chirp-tweet-separator-indent 6
-  "Number of leading spaces before tweet list separators."
-  :type 'integer
   :group 'chirp)
 
 (defface chirp-profile-view-active-face
@@ -220,6 +227,8 @@ Set this to nil or an empty string to disable tweet separators."
     (t :inherit chirp-active-metric-face))
   "Face used for bookmarked tweet metrics."
   :group 'chirp)
+
+;;; Text Properties and Actions
 
 (defun chirp-render--metric-face (label active)
   "Return the face used for metric LABEL.
@@ -389,6 +398,8 @@ CURRENT-MODE marks the active entry."
   "Insert MESSAGE for an empty state."
   (insert message)
   (insert "\n"))
+
+;;; Text
 
 (defun chirp-render--insert-prefix (prefix &optional face)
   "Insert PREFIX using FACE.
@@ -619,6 +630,8 @@ Precede each line with PREFIX using PREFIX-FACE when provided."
           (chirp-render--apply-wrap-prefix start (point) prefix prefix-face)
           (chirp-render--mark-url-region start end url))))))
 
+;;; Articles and Link Cards
+
 (defun chirp-render--insert-article-preview (tweet &optional detailp prefix prefix-face)
   "Insert article metadata for TWEET.
 
@@ -800,6 +813,8 @@ Precede each card with PREFIX using PREFIX-FACE when provided."
   (dolist (card (chirp-media-link-cards-for-tweet tweet))
     (chirp-render--insert-link-card card prefix prefix-face)))
 
+;;; Quoted Tweets and Replies
+
 (defvar chirp-render--quoted-tweet-depth 0
   "Dynamic nesting depth while rendering quoted tweets.")
 
@@ -887,6 +902,8 @@ Precede the line with PREFIX using PREFIX-FACE when provided."
                      (or (equal conversation-id previous-id)
                          (equal conversation-id previous-conversation-id))))
         previous))))
+
+;;; Media
 
 (defun chirp-render--insert-avatar (url &optional handle)
   "Insert an avatar for URL when possible.
@@ -1008,6 +1025,8 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
                  do (chirp-render--insert-media-text-cell media media-list index prefix prefix-face))
       (chirp-render--insert-media-grid media-list prefix prefix-face))
     (insert "\n\n")))
+
+;;; Tweets
 
 (cl-defun chirp-render--insert-tweet-heading
     (tweet &key prefix prefix-face avatar-p (time-p t) (time-format 'compact)
@@ -1293,6 +1312,10 @@ tweet content and actions."
                        'chirp-entry-start t)
     span))
 
+;;; Rows and Users
+
+;;;; Tweet Rows
+
 (defun chirp-render--tweet-separator-line ()
   "Return the tweet separator line, or nil when disabled."
   (when (and (stringp chirp-tweet-separator)
@@ -1327,6 +1350,8 @@ projections can replace it as one unit."
       (chirp-render-insert-tweet-row tweet previous)
       (setq previous tweet))))
 
+
+;;;; User Rows
 
 (defun chirp-render-insert-user-summary (user)
   "Insert USER summary."

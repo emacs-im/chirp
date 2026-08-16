@@ -21,6 +21,17 @@
 (declare-function chirp-xchat-native-prepare-text
                   "chirp-xchat-native" (conversation-id text))
 
+;;; Options
+
+(defcustom chirp-backend-read-cache-ttl 15
+  "Seconds to keep successful thread/profile/article reads in memory.
+
+When zero or negative, the in-memory read cache is disabled."
+  :type 'number
+  :group 'chirp)
+
+;;; Constants
+
 (defconst chirp-backend--lists-cache-key '(:lists)
   "Cache key for the authenticated account's list catalog.")
 
@@ -138,6 +149,8 @@
     ("creator_subscriptions_tweet_preview_api_enabled" . t)
     ("responsive_web_graphql_timeline_navigation_enabled" . t))
   "Feature switches used to resolve an X profile.")
+
+;;; Operations
 
 (defconst chirp-backend--operations
   `((home
@@ -266,12 +279,7 @@
   (or (cdr (assq key chirp-backend--operations))
       (error "Unknown X operation: %S" key)))
 
-(defcustom chirp-backend-read-cache-ttl 15
-  "Seconds to keep successful thread/profile/article reads in memory.
-
-When zero or negative, the in-memory read cache is disabled."
-  :type 'number
-  :group 'chirp)
+;;; Read Cache
 
 (defun chirp-backend-clear-cache ()
   "Clear the current session's completed in-memory read cache."
@@ -397,6 +405,8 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
                (chirp-backend--dispatch-read-error
                 requesters
                 (error-message-string err))))))))))
+
+;;; Tweet Length
 
 (defun chirp-backend--codepoint-in-ranges-p (codepoint ranges)
   "Return non-nil when CODEPOINT belongs to one of RANGES."
@@ -532,6 +542,8 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
     (+ weight
        (chirp-backend--weighted-text-segment
         normalized cursor (length normalized)))))
+
+;;; Compose
 
 (defun chirp-backend--created-tweet-id (payload)
   "Return a created tweet identifier from GraphQL PAYLOAD, or nil."
@@ -754,6 +766,8 @@ mutations are never retried automatically."
       (error "Compose text cannot be empty"))
     (chirp-backend--validate-attachments attachments)))
 
+;;; Unsent Posts
+
 (defun chirp-backend--validate-unsent (kind items)
   "Validate compose KIND and ITEMS."
   (unless (memq kind '(post reply quote))
@@ -933,6 +947,8 @@ ERRBACK match `chirp-backend-save-draft'."
       (error
        (funcall error-fn (error-message-string err))
        nil))))
+
+;;; Unsent Reads and Deletion
 
 (defun chirp-backend--json-list (value)
   "Return VALUE as a list when it is a JSON array."
@@ -1163,6 +1179,8 @@ automatically."
        (funcall error-fn (error-message-string err))
        nil))))
 
+;;; Actions
+
 (defun chirp-backend--mutation-request (args)
   "Return a direct X mutation request for legacy action ARGS, or nil."
   (pcase (car args)
@@ -1236,6 +1254,8 @@ ERRBACK receives a single human-readable string."
             :errback error-fn)
          (funcall error-fn
                   (format "Unknown Chirp backend action: %s" (car args))))))))
+
+;;; Direct Messages
 
 (defun chirp-backend-envelope-next-cursor (envelope)
   "Return the next pagination cursor from ENVELOPE, or nil."
@@ -1475,6 +1495,8 @@ oldest-first order and a pagination envelope."
        :errback error-fn
        :owner owner)))))
 
+;;; Timelines
+
 (defun chirp-backend--timeline-limit (max-results)
   "Return a valid positive timeline limit from MAX-RESULTS."
   (let ((limit (or max-results chirp-default-max-results)))
@@ -1625,6 +1647,8 @@ pagination, and OWNER optionally owns the transport lifecycle."
      '(("data" "home" "home_timeline_urt"))
      limit callback :errback errback :label "a home timeline" :owner owner)))
 
+;;; Notifications
+
 (defconst chirp-backend--notification-kinds
   '(("heart_icon" . "like")
     ("person_icon" . "follow")
@@ -1692,6 +1716,8 @@ ERRBACK handles failures and MAX-RESULTS limits the response."
                               (("nextCursor" . ,next-cursor)))))))
          (funcall error-fn "X did not return a notification timeline")))
      :errback error-fn)))
+
+;;; Search and Translation
 
 (defun chirp-backend-bookmarks (callback &optional errback)
   "Fetch bookmarks and call CALLBACK, or ERRBACK on failure."
@@ -1794,6 +1820,8 @@ ERRBACK receives request failures."
                           (format "X did not return a translation (%s)" state)
                         "X did not return a translation")))))
        :errback error-fn))))
+
+;;; Profiles and Lists
 
 (defun chirp-backend-whoami (callback &optional errback)
   "Fetch the authenticated user profile and call CALLBACK, or ERRBACK on failure."
@@ -1962,6 +1990,8 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
        ("count" . ,limit))
      '(("data" "list" "tweets_timeline" "timeline"))
      limit callback :errback errback :label "the list timeline")))
+
+;;; Tweet Reads
 
 (defun chirp-backend--tweet-matches-id-p (tweet tweet-id)
   "Return non-nil when TWEET or its raw wrapper identifies TWEET-ID."

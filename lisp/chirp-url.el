@@ -13,6 +13,8 @@
 (require 'url-parse)
 (require 'url-util)
 
+;;; URL Grammar
+
 (defconst chirp-url--trusted-hosts
   '("x.com" "www.x.com" "twitter.com" "www.twitter.com")
   "HTTPS hosts accepted as X URL targets.")
@@ -21,6 +23,8 @@
   (concat "\\`https://" (regexp-opt chirp-url--trusted-hosts)
           "\\(?:[/:?#]\\|\\'\\)")
   "Regexp suitable for routing X URLs through `browse-url-handlers'.")
+
+;;; Parsing
 
 (defun chirp-url--query-value (query name)
   "Return NAME's first decoded value from QUERY, or nil."
@@ -83,6 +87,8 @@ HTTPS URLs on X or legacy Twitter hosts are accepted."
              (mapcar #'url-unhex-string (split-string path "/" t))
              query)))
       (error nil))))
+
+;;; Tweet Targets
 
 (defun chirp-url-tweet-id (value)
   "Return the tweet ID represented by VALUE, or nil."
