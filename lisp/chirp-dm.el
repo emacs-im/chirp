@@ -26,6 +26,7 @@
 (require 'chirp-time)
 (require 'chirp-backend)
 (require 'chirp-media)
+(require 'chirp-x)
 
 (declare-function chirp-xchat-native-load "chirp-xchat-native" ())
 (declare-function chirp-xchat-native-recovery-active-p
@@ -132,7 +133,7 @@
          (request (gethash request-key table)))
     (remhash request-key table)
     (when request
-      (chirp-backend-cancel-request request))))
+      (chirp-x-cancel-request request))))
 
 (defun chirp-dm--make-inbox-state (instance)
   "Return canonical inbox state for INSTANCE."

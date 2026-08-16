@@ -298,18 +298,6 @@ commands still work, and displays alt text when the backend provides it."
   (make-symbol "chirp-quoted-tweet-fetch-failed")
   "Sentinel value used when quoted tweet enrichment fails.")
 
-(defun chirp--tweet-state-table ()
-  "Return the current session's tweet-state override table."
-  (chirp--session-tweet-state-overrides (chirp--session)))
-
-(defun chirp--quoted-tweet-cache ()
-  "Return the current session's quoted-tweet cache."
-  (chirp--session-quoted-tweet-cache (chirp--session)))
-
-(defun chirp--quoted-tweet-pending ()
-  "Return the current session's pending quoted-tweet table."
-  (chirp--session-quoted-tweet-pending (chirp--session)))
-
 (defvar chirp-view-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") #'chirp-refresh)
@@ -1629,7 +1617,9 @@ When MAX-COUNT is non-nil, return at most that many images."
                 (t nil))))
     (or (and-let* ((quoted-id (chirp-first-nonblank
                                (chirp-get quoted "rest_id" "id_str" "id")))
-                   (cached (gethash quoted-id (chirp--quoted-tweet-cache)))
+                   (cached (gethash quoted-id
+                                    (chirp--session-quoted-tweet-cache
+                                     (chirp--session))))
                    ((not (eq cached chirp--quoted-tweet-fetch-failed))))
          cached)
         (chirp-normalize-tweet quoted))))
@@ -1640,7 +1630,7 @@ When MAX-COUNT is non-nil, return at most that many images."
 
 (defun chirp--dispatch-quoted-tweet-callbacks (tweet-id payload)
   "Run pending callbacks for TWEET-ID with PAYLOAD."
-  (let* ((pending (chirp--quoted-tweet-pending))
+  (let* ((pending (chirp--session-quoted-tweet-pending (chirp--session)))
          (callbacks (prog1 (gethash tweet-id pending)
                       (remhash tweet-id pending))))
     (dolist (callback callbacks)
@@ -1656,8 +1646,9 @@ When MAX-COUNT is non-nil, return at most that many images."
 
 (defun chirp--request-quoted-tweet (tweet-id callback)
   "Fetch quoted tweet TWEET-ID and run CALLBACK with the result."
-  (let* ((cache (chirp--quoted-tweet-cache))
-         (pending (chirp--quoted-tweet-pending))
+  (let* ((session (chirp--session))
+         (cache (chirp--session-quoted-tweet-cache session))
+         (pending (chirp--session-quoted-tweet-pending session))
          (cached (gethash tweet-id cache)))
     (cond
      ((eq cached chirp--quoted-tweet-fetch-failed)
@@ -1756,7 +1747,7 @@ When MAX-COUNT is non-nil, return at most that many images."
 (defun chirp-set-tweet-state-override (tweet-id prop value)
   "Store VALUE as local PROP override for TWEET-ID."
   (when tweet-id
-    (let* ((table (chirp--tweet-state-table))
+    (let* ((table (chirp--session-tweet-state-overrides (chirp--session)))
            (state (copy-sequence (gethash tweet-id table))))
       (setq state (plist-put state prop value))
       (puthash tweet-id state table))))
@@ -1764,7 +1755,7 @@ When MAX-COUNT is non-nil, return at most that many images."
 (defun chirp-clear-tweet-state-overrides (tweet-id)
   "Clear local state overrides for TWEET-ID."
   (when tweet-id
-    (remhash tweet-id (chirp--tweet-state-table))))
+    (remhash tweet-id (chirp--session-tweet-state-overrides (chirp--session)))))
 
 (defun chirp--map-buffer-tweets (buffer fn)
   "Call FN for each distinct tweet entry visible in BUFFER."
@@ -2634,7 +2625,11 @@ over the card's `t.co` permalink."
               (equal (chirp-get legacy "limited_actions")
                      "limited_replies")))
          (edit-metadata (chirp--tweet-edit-metadata object))
-         (state-overrides (and id (gethash id (chirp--tweet-state-table)))))
+         (state-overrides
+          (and id
+               (gethash id
+                        (chirp--session-tweet-state-overrides
+                         (chirp--session))))))
     (when (or id (not (string-empty-p display-text)))
       (list :kind 'tweet
             :id id

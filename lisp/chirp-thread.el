@@ -475,7 +475,7 @@ buffer."
     (appkit-view-buffer view)))
 
 (defun chirp-thread-open (tweet-id)
-  "Open a thread focused on numeric TWEET-ID."
+  "Open a thread focused on TWEET-ID."
   (interactive "sTweet ID: ")
   (chirp-thread--open tweet-id))
 
@@ -487,10 +487,7 @@ buffer."
   (chirp-thread--open (plist-get tweet :id) tweet))
 
 (defun chirp-thread--open (tweet-id &optional seed-tweet)
-  "Open numeric TWEET-ID, optionally rendering normalized SEED-TWEET first."
-  (unless (and (stringp tweet-id)
-               (string-match-p "\\`[0-9]+\\'" tweet-id))
-    (user-error "Need a numeric tweet ID; use M-x chirp-open-url for an X URL"))
+  "Open TWEET-ID, optionally rendering normalized SEED-TWEET first."
   (let* ((title (chirp-thread--title tweet-id))
          (refresh (lambda ()
                     (chirp-backend-invalidate-thread tweet-id)

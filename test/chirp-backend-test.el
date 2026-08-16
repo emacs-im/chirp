@@ -113,13 +113,16 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
   "Restarting Chirp should use new completed and in-flight cache tables."
   (let ((chirp--app nil))
     (unwind-protect
-        (let ((old-cache (chirp-backend--read-cache))
-              (old-pending (chirp-backend--pending-reads)))
+        (let ((old-cache (chirp--session-backend-read-cache (chirp--session)))
+              (old-pending (chirp--session-backend-pending-reads
+                            (chirp--session))))
           (puthash '(thread "1") 'cached old-cache)
           (puthash '(thread "2") '(callback) old-pending)
           (chirp-stop)
-          (let ((new-cache (chirp-backend--read-cache))
-                (new-pending (chirp-backend--pending-reads)))
+          (let ((new-cache
+                 (chirp--session-backend-read-cache (chirp--session)))
+                (new-pending
+                 (chirp--session-backend-pending-reads (chirp--session))))
             (should-not (eq old-cache new-cache))
             (should-not (eq old-pending new-pending))
             (should (zerop (hash-table-count new-cache)))
@@ -748,8 +751,8 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal path "friends/list.json"))
     (should (equal (plist-get (car users) :handle) "alice"))))
 
-(ert-deftest chirp-backend-list-passes-a-numeric-id-to-direct-x-graphql ()
-  "List requests should pass their numeric ID to direct X GraphQL."
+(ert-deftest chirp-backend-list-passes-id-to-direct-x-graphql ()
+  "List requests should pass their ID to direct X GraphQL."
   (let (operation variables)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback &rest _options)
@@ -763,34 +766,6 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal (plist-get operation :name) "ListLatestTweetsTimeline"))
     (should (equal (alist-get "listId" variables nil nil #'string=)
                    "1956792682412345678"))))
-
-(ert-deftest chirp-backend-list-rejects-a-url-target ()
-  "List requests should reject URLs before dispatching GraphQL."
-  (let (failure requested)
-    (cl-letf (((symbol-function 'chirp-x-graphql-request)
-               (lambda (&rest _args)
-                 (setq requested t))))
-      (chirp-backend-list
-       "https://x.com/i/lists/1956792682412345678"
-       #'ignore
-       (lambda (message)
-         (setq failure message))))
-    (should (equal failure "List ID must be numeric"))
-    (should-not requested)))
-
-(ert-deftest chirp-backend-thread-rejects-a-url-target ()
-  "Thread requests should reject URLs before dispatching GraphQL."
-  (let (failure requested)
-    (cl-letf (((symbol-function 'chirp-x-graphql-request)
-               (lambda (&rest _args)
-                 (setq requested t))))
-      (chirp-backend-thread
-       "https://x.com/alice/status/123"
-       #'ignore
-       (lambda (message)
-         (setq failure message))))
-    (should (equal failure "Tweet ID must be numeric"))
-    (should-not requested)))
 
 (ert-deftest chirp-backend-thread-passes-explicit-max-results ()
   "Thread requests should pass Chirp's explicit limit and focus id to X."
@@ -985,14 +960,14 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                    '(("rest_id" . "123")))))))
       (chirp-backend-compose
        :kind 'post :text "hello" :attachments nil
-       :callback (lambda (created raw-envelope)
-                   (setq result created
+       :callback (lambda (created-tweet-id raw-envelope)
+                   (setq result created-tweet-id
                          envelope raw-envelope))
        :errback (lambda (message)
                   (setq failure message))))
     (should-not failure)
     (should (equal (plist-get operation :name) "CreateTweet"))
-    (should (equal (plist-get result :id) "123"))
+    (should (equal result "123"))
     (should envelope)
     (should (equal (alist-get "tweet_text" variables nil nil #'string=)
                    "hello"))
@@ -1115,10 +1090,10 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
               (chirp-backend-compose
                :kind kind :text "hello" :target-id "99"
                :attachments (list file)
-               :callback (lambda (created _envelope)
-                           (setq result created))))
+               :callback (lambda (created-tweet-id _envelope)
+                           (setq result created-tweet-id))))
             (should uploaded)
-            (should (equal (plist-get result :id) "456"))
+            (should (equal result "456"))
             (let* ((entities
                     (chirp-get-in variables '("media" "media_entities")))
                    (entity (aref entities 0)))
@@ -1153,11 +1128,11 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                    '(("rest_id" . "789")))))))
       (chirp-backend-compose
        :kind 'post :text (make-string 141 ?你) :attachments nil
-       :callback (lambda (created _envelope)
-                   (setq result created))))
+       :callback (lambda (created-tweet-id _envelope)
+                   (setq result created-tweet-id))))
     (should (equal (plist-get operation :name) "CreateNoteTweet"))
     (should (assoc-string "disallowed_reply_options" variables t))
-    (should (equal (plist-get result :id) "789"))
+    (should (equal result "789"))
     (should (assoc-string
              "longform_notetweets_creation_enabled"
              (plist-get operation :features) t))))
@@ -1212,10 +1187,10 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        :kind 'post
        :items (list (list :text "Nice" :attachments nil)
                     (list :text "Two Nices" :attachments nil))
-       :callback (lambda (created _envelope)
-                   (setq result created))))
+       :callback (lambda (saved-draft-id _envelope)
+                   (setq result saved-draft-id))))
     (should (equal (plist-get operation :name) "CreateDraftTweet"))
-    (should (equal (plist-get result :id) "7"))
+    (should (equal result "7"))
     (let ((request (chirp-get variables "post_tweet_request")))
       (should (equal (chirp-get request "status") "Nice"))
       (should (equal (chirp-get request "auto_populate_reply_metadata")
@@ -1331,10 +1306,10 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
        :kind 'post
        :items (list (list :text "later" :attachments nil))
        :execute-at 1786700000
-       :callback (lambda (created _envelope)
-                   (setq result created))))
+       :callback (lambda (scheduled-tweet-id _envelope)
+                   (setq result scheduled-tweet-id))))
     (should (equal (plist-get operation :name) "CreateScheduledTweet"))
-    (should (equal (plist-get result :id) "8"))
+    (should (equal result "8"))
     (should (equal (chirp-get variables "execute_at") 1786700000))
     (should (equal (chirp-get-in variables '("post_tweet_request" "status"))
                    "later"))))

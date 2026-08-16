@@ -273,7 +273,7 @@
           (cl-letf (((symbol-function 'chirp-backend-feed)
                      (lambda (&rest _args)
                        (list 'request (cl-incf request-count))))
-                    ((symbol-function 'chirp-backend-cancel-request)
+                    ((symbol-function 'chirp-x-cancel-request)
                      (lambda (request)
                        (setq canceled request)))
                     ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
@@ -308,7 +308,7 @@
                      (lambda (success &rest _args)
                        (setq callbacks (append callbacks (list success)))
                        (list 'request (length callbacks))))
-                    ((symbol-function 'chirp-backend-cancel-request) #'ignore)
+                    ((symbol-function 'chirp-x-cancel-request) #'ignore)
                     ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                     ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
             (setq buffer (chirp-timeline-open-home))
@@ -816,12 +816,6 @@
           (should (equal installed
                          '("List: 1956792682412345678" ((:id "1"))))))
       (chirp-stop))))
-
-(ert-deftest chirp-timeline-open-list-rejects-a-url-target ()
-  "List view commands should direct URL input to `chirp-open-url'."
-  (should-error
-   (chirp-timeline-open-list "https://x.com/i/lists/1956792682412345678")
-   :type 'user-error))
 
 (ert-deftest chirp-request-rerender-coalesces-primary-view-invalidations ()
   "Repeated background updates should produce one Appkit view sync."

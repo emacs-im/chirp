@@ -210,7 +210,7 @@
     (article
      :query-id "GZsN2Pc4knAoit6pXa4HSA" :name "TweetResultByRestId"
      :features ,(cons '("articles_preview_enabled" . t)
-                     chirp-backend--tweet-features)
+                      chirp-backend--tweet-features)
      :field-toggles ,chirp-backend--tweet-field-toggles)
     (edit-history
      :query-id "1izbuOcH_QpuMcyCxOXkAg" :name "TweetEditHistory"
@@ -273,22 +273,10 @@ When zero or negative, the in-memory read cache is disabled."
   :type 'number
   :group 'chirp)
 
-(defun chirp-backend--read-cache ()
-  "Return the current session's completed read cache."
-  (chirp--session-backend-read-cache (chirp--session)))
-
-(defun chirp-backend--pending-reads ()
-  "Return the current session's in-flight read callback table."
-  (chirp--session-backend-pending-reads (chirp--session)))
-
 (defun chirp-backend-clear-cache ()
   "Clear the current session's completed in-memory read cache."
   (interactive)
-  (clrhash (chirp-backend--read-cache)))
-
-(defun chirp-backend-cancel-request (request)
-  "Cancel active backend REQUEST exactly once."
-  (chirp-x-cancel-request request))
+  (clrhash (chirp--session-backend-read-cache (chirp--session))))
 
 (defun chirp-backend--clone-data (value)
   "Return VALUE copied deeply enough for safe cache reuse."
@@ -300,71 +288,34 @@ When zero or negative, the in-memory read cache is disabled."
   "Return HANDLE normalized for cache lookup."
   (downcase (string-remove-prefix "@" (format "%s" handle))))
 
-(defun chirp-backend--numeric-id-p (value)
-  "Return non-nil when VALUE is a numeric X identifier."
-  (and (stringp value)
-       (string-match-p "\\`[0-9]+\\'" value)))
-
-(defun chirp-backend--thread-cache-key (tweet-id)
-  "Return the cache key for thread TWEET-ID."
-  (list :thread tweet-id))
-
-(defun chirp-backend--article-cache-key (tweet-id)
-  "Return the cache key for TWEET-ID article fetches."
-  (list :article (format "%s" tweet-id)))
-
-(defun chirp-backend--edit-history-cache-key (tweet-id)
-  "Return the cache key for TWEET-ID edit history."
-  (list :edit-history (format "%s" tweet-id)))
-
-(defun chirp-backend--user-cache-key (handle)
-  "Return the cache key for HANDLE profile metadata."
-  (list :user (chirp-backend--normalize-handle handle)))
-
-(defun chirp-backend--user-posts-cache-key (handle)
-  "Return the cache key for HANDLE recent posts."
-  (list :user-posts (chirp-backend--normalize-handle handle)))
-
-(defun chirp-backend--profile-timeline-cache-key (handle mode)
-  "Return the cache key for HANDLE profile timeline MODE."
-  (list :profile-timeline
-        (chirp-backend--normalize-handle handle)
-        mode))
-
-(defun chirp-backend--followers-cache-key (handle)
-  "Return the cache key for HANDLE followers."
-  (list :followers (chirp-backend--normalize-handle handle)))
-
-(defun chirp-backend--following-users-cache-key (handle)
-  "Return the cache key for HANDLE following users."
-  (list :following-users (chirp-backend--normalize-handle handle)))
-
 (defun chirp-backend-invalidate-thread (tweet-id)
   "Drop cached thread and article data for TWEET-ID."
-  (remhash (chirp-backend--thread-cache-key tweet-id)
-           (chirp-backend--read-cache))
+  (remhash (list :thread tweet-id)
+           (chirp--session-backend-read-cache (chirp--session)))
   (chirp-backend-invalidate-article tweet-id))
 
 (defun chirp-backend-invalidate-article (tweet-id)
   "Drop cached article data for TWEET-ID."
-  (let ((key (chirp-backend--article-cache-key tweet-id)))
-    (remhash key (chirp-backend--read-cache))))
+  (remhash (list :article tweet-id)
+           (chirp--session-backend-read-cache (chirp--session))))
 
 (defun chirp-backend-invalidate-edit-history (tweet-id)
   "Drop cached edit history for TWEET-ID."
-  (remhash (chirp-backend--edit-history-cache-key tweet-id)
-           (chirp-backend--read-cache)))
+  (remhash (list :edit-history tweet-id)
+           (chirp--session-backend-read-cache (chirp--session))))
 
 (defun chirp-backend-invalidate-user (handle)
   "Drop cached profile metadata and posts for HANDLE."
-  (dolist (key (list (chirp-backend--user-cache-key handle)
-                     (chirp-backend--user-posts-cache-key handle)
-                     (chirp-backend--profile-timeline-cache-key handle 'replies)
-                     (chirp-backend--profile-timeline-cache-key handle 'highlights)
-                     (chirp-backend--profile-timeline-cache-key handle 'media)
-                     (chirp-backend--followers-cache-key handle)
-                     (chirp-backend--following-users-cache-key handle)))
-    (remhash key (chirp-backend--read-cache))))
+  (let ((cache (chirp--session-backend-read-cache (chirp--session)))
+        (handle (chirp-backend--normalize-handle handle)))
+    (dolist (key (list (list :user handle)
+                       (list :user-posts handle)
+                       (list :profile-timeline handle 'replies)
+                       (list :profile-timeline handle 'highlights)
+                       (list :profile-timeline handle 'media)
+                       (list :followers handle)
+                       (list :following-users handle)))
+      (remhash key cache))))
 
 (defun chirp-backend--cache-entry-live-p (entry now)
   "Return non-nil when cached ENTRY is still fresh at NOW."
@@ -404,8 +355,9 @@ When zero or negative, the in-memory read cache is disabled."
   "Fetch KEY via FETCHER and serve CALLBACK from the short-lived read cache.
 
 ERRBACK handles failures.  FETCHER is called with success and error callbacks."
-  (let ((cache (chirp-backend--read-cache))
-        (pending-table (chirp-backend--pending-reads)))
+  (let* ((session (chirp--session))
+         (cache (chirp--session-backend-read-cache session))
+         (pending-table (chirp--session-backend-pending-reads session)))
     (if-let* ((entry (chirp-backend--cached-result key cache)))
         (funcall callback
                  (chirp-backend--clone-data (plist-get entry :value))
@@ -621,7 +573,7 @@ REPLY-AUDIENCE is a post or quote conversation-control symbol, or nil."
              variables))
       ('quote
        (push `("attachment_url" . ,(format "https://x.com/i/status/%s"
-                                            target-id))
+                                           target-id))
              variables)))
     (when note-tweet-p
       (push '("disallowed_reply_options" . nil) variables))
@@ -718,10 +670,10 @@ KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
 quotes.  ATTACHMENTS are file paths or plists with `:path' or `:media-id'
 and optional `:description' alt text.  REPLY-AUDIENCE is a post or quote
 conversation-control symbol; `everyone' and nil omit the rule, and replies
-ignore it.  CALLBACK receives a plist containing the created tweet ID and the
-raw GraphQL envelope.  ERRBACK receives upload or create failures.  PROGRESS
-and OWNER are forwarded to media upload and the create request.  Create and
-upload mutations are never retried automatically."
+ignore it.  CALLBACK receives the created tweet ID and the raw GraphQL
+envelope.  ERRBACK receives upload or create failures.  PROGRESS and OWNER
+are forwarded to media upload and the create request.  Create and upload
+mutations are never retried automatically."
   (unless (functionp callback)
     (error "Compose callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
@@ -733,12 +685,6 @@ upload mutations are never retried automatically."
             (error "Compose kind is invalid: %S" kind))
           (unless (and (stringp text) (not (string-blank-p text)))
             (error "Compose text cannot be empty"))
-          (when (memq kind '(reply quote))
-            (unless (and target-id
-                         (string-match-p "\\`[0-9]+\\'"
-                                         (format "%s" target-id)))
-              (error "%s requires a numeric target tweet ID"
-                     (capitalize (symbol-name kind)))))
           (chirp-backend--validate-attachments attachments)
           (chirp-backend--upload-compose-media
            attachments
@@ -752,7 +698,7 @@ upload mutations are never retried automatically."
                      (if note-tweet-p 'create-note-tweet 'create-tweet))
                     (variables
                      (chirp-backend--compose-variables
-                      kind text (and target-id (format "%s" target-id))
+                      kind text target-id
                       media-ids note-tweet-p reply-audience)))
                (chirp-x-graphql-request
                 (chirp-backend--operation operation-key)
@@ -760,7 +706,7 @@ upload mutations are never retried automatically."
                 (lambda (payload)
                   (if-let* ((tweet-id
                              (chirp-backend--created-tweet-id payload)))
-                      (funcall callback (list :id tweet-id) payload)
+                      (funcall callback tweet-id payload)
                     (funcall error-fn
                              (format "X did not return a created tweet ID (%s)"
                                      (plist-get
@@ -808,22 +754,14 @@ upload mutations are never retried automatically."
       (error "Compose text cannot be empty"))
     (chirp-backend--validate-attachments attachments)))
 
-(defun chirp-backend--validate-unsent (kind target-id items existing-id)
-  "Validate KIND, TARGET-ID, ITEMS, and optional EXISTING-ID."
+(defun chirp-backend--validate-unsent (kind items)
+  "Validate compose KIND and ITEMS."
   (unless (memq kind '(post reply quote))
     (error "Compose kind is invalid: %S" kind))
-  (when (memq kind '(reply quote))
-    (unless (and target-id
-                 (string-match-p "\\`[0-9]+\\'" (format "%s" target-id)))
-      (error "%s requires a numeric target tweet ID"
-             (capitalize (symbol-name kind)))))
   (unless (and (listp items) items (cl-every #'listp items))
     (error "Unsent items cannot be empty"))
   (dolist (item items)
-    (chirp-backend--validate-compose-item item))
-  (when existing-id
-    (unless (string-match-p "\\`[0-9]+\\'" (format "%s" existing-id))
-      (error "Unsent post ID is invalid"))))
+    (chirp-backend--validate-compose-item item)))
 
 (defun chirp-backend--unsent-media-ids (item)
   "Return ITEM's uploaded media IDs as a JSON array."
@@ -839,16 +777,16 @@ upload mutations are never retried automatically."
 
 TARGET-ID is the reply or quote tweet.  ITEMS are uploaded compose items."
   (let* ((root (car items))
-         (target (and target-id (format "%s" target-id)))
+         (target target-id)
          (request
-          `(("status" . ,(plist-get root :text))
-            ("media_ids" . ,(chirp-backend--unsent-media-ids root))
-            ("exclude_reply_user_ids" . [])
-            ("auto_populate_reply_metadata"
-             . ,(if (eq kind 'reply) t :json-false))
-            ("thread_tweets"
-             . ,(vconcat (mapcar #'chirp-backend--unsent-thread-tweet
-                                 (cdr items)))))))
+           `(("status" . ,(plist-get root :text))
+             ("media_ids" . ,(chirp-backend--unsent-media-ids root))
+             ("exclude_reply_user_ids" . [])
+             ("auto_populate_reply_metadata"
+              . ,(if (eq kind 'reply) t :json-false))
+             ("thread_tweets"
+              . ,(vconcat (mapcar #'chirp-backend--unsent-thread-tweet
+                                  (cdr items)))))))
     (pcase kind
       ('reply
        (push `("in_reply_to_status_id" . ,target) request))
@@ -901,11 +839,11 @@ PROGRESS and OWNER are forwarded to each item upload."
 KIND and TARGET-ID describe the root item.  EXISTING-ID selects edit
 operations.  EXECUTE-AT is a Unix timestamp in seconds, or nil for a
 draft.  PROGRESS and OWNER are forwarded to upload and the GraphQL write."
-  (chirp-backend--validate-unsent kind target-id items existing-id)
+  (chirp-backend--validate-unsent kind items)
   (when execute-at
     (unless (and (integerp execute-at) (> execute-at 0))
       (error "Schedule time is invalid")))
-  (let ((existing (and existing-id (format "%s" existing-id))))
+  (let ((existing existing-id))
     (chirp-backend--upload-unsent-items
      items
      (lambda (uploaded)
@@ -922,7 +860,7 @@ draft.  PROGRESS and OWNER are forwarded to upload and the GraphQL write."
                (append
                 `(("post_tweet_request"
                    . ,(chirp-backend--post-tweet-request
-                       kind (and target-id (format "%s" target-id))
+                       kind target-id
                        uploaded)))
                 (when existing
                   (if scheduled-p
@@ -936,7 +874,7 @@ draft.  PROGRESS and OWNER are forwarded to upload and the GraphQL write."
           (lambda (payload)
             (if-let* ((identifier
                        (or (chirp-backend--unsent-id payload) existing)))
-                (funcall callback (list :id identifier) payload)
+                (funcall callback identifier payload)
               (funcall
                errback
                (format "X did not return a %s ID (%s)"
@@ -955,10 +893,10 @@ draft.  PROGRESS and OWNER are forwarded to upload and the GraphQL write."
 
 KIND is `post', `reply', or `quote'.  TARGET-ID is required for replies and
 quotes.  ITEMS are plists with `:text' and optional `:attachments'.
-DRAFT-ID selects EditDraftTweet when non-nil.  CALLBACK receives a plist
-containing the draft ID and the raw GraphQL envelope.  ERRBACK receives
-upload or save failures.  PROGRESS and OWNER are forwarded to upload and
-the save request.  Save mutations are never retried automatically."
+DRAFT-ID selects EditDraftTweet when non-nil.  CALLBACK receives the saved
+draft ID and the raw GraphQL envelope.  ERRBACK receives upload or save
+failures.  PROGRESS and OWNER are forwarded to upload and the save request.
+Save mutations are never retried automatically."
   (unless (functionp callback)
     (error "Draft callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
@@ -1207,24 +1145,20 @@ automatically."
     (unless (functionp error-fn)
       (error "Unsent delete error callback is not callable"))
     (condition-case err
-        (progn
-          (unless (and (stringp id)
-                       (string-match-p "\\`[0-9]+\\'" id))
-            (error "Unsent post ID is invalid"))
-          (let ((operation
-                 (pcase kind
-                   ('draft 'delete-draft-tweet)
-                   ('scheduled 'delete-scheduled-tweet)
-                   (_ (error "Unsent kind is invalid: %S" kind))))
-                (key (if (eq kind 'scheduled)
-                         "scheduled_tweet_id"
-                       "draft_tweet_id")))
-            (chirp-x-graphql-request
-             (chirp-backend--operation operation)
-             `((,key . ,id))
-             (lambda (payload)
-               (funcall callback payload nil))
-             :errback error-fn)))
+        (let ((operation
+               (pcase kind
+                 ('draft 'delete-draft-tweet)
+                 ('scheduled 'delete-scheduled-tweet)
+                 (_ (error "Unsent kind is invalid: %S" kind))))
+              (key (if (eq kind 'scheduled)
+                       "scheduled_tweet_id"
+                     "draft_tweet_id")))
+          (chirp-x-graphql-request
+           (chirp-backend--operation operation)
+           `((,key . ,id))
+           (lambda (payload)
+             (funcall callback payload nil))
+           :errback error-fn))
       (error
        (funcall error-fn (error-message-string err))
        nil))))
@@ -1822,16 +1756,11 @@ ERRBACK receives request failures."
 (defun chirp-backend-translate (tweet-id language callback &optional errback)
   "Translate TWEET-ID into LANGUAGE and call CALLBACK, or ERRBACK on failure."
   (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
-    (cond
-     ((not (and (stringp tweet-id)
-                (string-match-p "\\`[0-9]+\\'" tweet-id)))
-      (funcall error-fn "Tweet translation requires a numeric tweet ID"))
-     ((not (and (stringp language)
-                (string-match-p
-                 "\\`[[:alpha:]]\\{2,3\\}\\(?:-[[:alnum:]]\\{2,8\\}\\)*\\'"
-                 language)))
-      (funcall error-fn "Tweet translation requires an ISO language code"))
-     (t
+    (if (not (and (stringp language)
+                  (string-match-p
+                   "\\`[[:alpha:]]\\{2,3\\}\\(?:-[[:alnum:]]\\{2,8\\}\\)*\\'"
+                   language)))
+        (funcall error-fn "Tweet translation requires an ISO language code")
       (chirp-x-api-request
        'legacy
        (format
@@ -1848,7 +1777,7 @@ ERRBACK receives request failures."
               callback
               (append
                `(("id" . ,(or (chirp-first-nonblank
-                                (chirp-get payload "id_str" "id"))
+                               (chirp-get payload "id_str" "id"))
                               tweet-id))
                  ("translation" . ,translation))
                (cl-loop for key in '("sourceLanguage"
@@ -1864,7 +1793,7 @@ ERRBACK receives request failures."
                       (if state
                           (format "X did not return a translation (%s)" state)
                         "X did not return a translation")))))
-       :errback error-fn)))))
+       :errback error-fn))))
 
 (defun chirp-backend-whoami (callback &optional errback)
   "Fetch the authenticated user profile and call CALLBACK, or ERRBACK on failure."
@@ -1927,10 +1856,10 @@ ERRBACK receives request failures."
                     ("screenName" . ,(or (chirp-get owner "screen_name") ""))
                     ("profileImageUrl" .
                      ,(or (chirp-get owner "profile_image_url_https"
-                                    "profile_image_url")
+                                     "profile_image_url")
                           ""))))
         ("following" . ,(chirp-boolean-value
-                          (chirp-get item "following")))
+                         (chirp-get item "following")))
         ("sources" . (,source))))))
 
 (defun chirp-backend--request-list-collection
@@ -2026,16 +1955,13 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
 
 (defun chirp-backend-list (list-id callback &optional errback)
   "Fetch LIST-ID timeline data and call CALLBACK, or ERRBACK on failure."
-  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
-    (if (not (chirp-backend--numeric-id-p list-id))
-        (funcall error-fn "List ID must be numeric")
-      (let ((limit (chirp-backend--timeline-limit nil)))
-        (chirp-backend--request-timeline
-         'list
-         `(("listId" . ,list-id)
-           ("count" . ,limit))
-         '(("data" "list" "tweets_timeline" "timeline"))
-         limit callback :errback error-fn :label "the list timeline")))))
+  (let ((limit (chirp-backend--timeline-limit nil)))
+    (chirp-backend--request-timeline
+     'list
+     `(("listId" . ,list-id)
+       ("count" . ,limit))
+     '(("data" "list" "tweets_timeline" "timeline"))
+     limit callback :errback errback :label "the list timeline")))
 
 (defun chirp-backend--tweet-matches-id-p (tweet tweet-id)
   "Return non-nil when TWEET or its raw wrapper identifies TWEET-ID."
@@ -2046,43 +1972,40 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
 
 (defun chirp-backend-thread (tweet-id callback &optional errback)
   "Fetch TWEET-ID thread data and call CALLBACK, or ERRBACK on failure."
-  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
-    (if (not (chirp-backend--numeric-id-p tweet-id))
-        (funcall error-fn "Tweet ID must be numeric")
-      (let ((limit (chirp-backend--timeline-limit chirp-thread-max-results)))
-        (chirp-backend--cached-read
-         (chirp-backend--thread-cache-key tweet-id)
-         (lambda (success error)
-           (chirp-backend--request-timeline
-             'thread
-             `(("focalTweetId" . ,tweet-id)
-               ("count" . ,limit)
-               ("referrer" . "tweet")
-               ("with_rux_injections" . :json-false)
-               ("includePromotedContent" . t)
-               ("rankingMode" . "Relevance")
-               ("withCommunity" . :json-false)
-               ("withQuickPromoteEligibilityTweetFields" . :json-false)
-               ("withBirdwatchNotes" . :json-false)
-               ("withVoice" . :json-false))
-             '(("data" "tweetResult" "result" "timeline")
-               ("data" "threaded_conversation_with_injections_v2"))
-             limit
-             (lambda (tweets envelope)
-               (if-let* ((focus (cl-find-if
-                                 (lambda (tweet)
-                                   (chirp-backend--tweet-matches-id-p
-                                    tweet tweet-id))
-                                 tweets)))
-                   (funcall success
-                            (cons focus (cl-remove focus tweets :test #'eq))
-                            envelope)
-                 (funcall error
-                          (format "X did not return tweet %s in its thread"
-                                  tweet-id))))
-             :errback error :label "the tweet conversation"))
-         callback
-         error-fn)))))
+  (let ((limit (chirp-backend--timeline-limit chirp-thread-max-results)))
+    (chirp-backend--cached-read
+     (list :thread tweet-id)
+     (lambda (success error)
+       (chirp-backend--request-timeline
+        'thread
+        `(("focalTweetId" . ,tweet-id)
+          ("count" . ,limit)
+          ("referrer" . "tweet")
+          ("with_rux_injections" . :json-false)
+          ("includePromotedContent" . t)
+          ("rankingMode" . "Relevance")
+          ("withCommunity" . :json-false)
+          ("withQuickPromoteEligibilityTweetFields" . :json-false)
+          ("withBirdwatchNotes" . :json-false)
+          ("withVoice" . :json-false))
+        '(("data" "tweetResult" "result" "timeline")
+          ("data" "threaded_conversation_with_injections_v2"))
+        limit
+        (lambda (tweets envelope)
+          (if-let* ((focus (cl-find-if
+                            (lambda (tweet)
+                              (chirp-backend--tweet-matches-id-p
+                               tweet tweet-id))
+                            tweets)))
+              (funcall success
+                       (cons focus (cl-remove focus tweets :test #'eq))
+                       envelope)
+            (funcall error
+                     (format "X did not return tweet %s in its thread"
+                             tweet-id))))
+        :errback error :label "the tweet conversation"))
+     callback
+     errback)))
 
 (defun chirp-backend-tweet (tweet-id callback &optional errback)
   "Fetch TWEET-ID and call CALLBACK, or ERRBACK on failure."
@@ -2101,31 +2024,28 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
 
 (defun chirp-backend-edit-history (tweet-id callback &optional errback)
   "Fetch TWEET-ID edit history and call CALLBACK, or ERRBACK on failure."
-  (let ((tweet-id (format "%s" tweet-id)))
-    (chirp-backend--cached-read
-     (chirp-backend--edit-history-cache-key tweet-id)
-     (lambda (success error)
-       (if (not (string-match-p "\\`[0-9]+\\'" tweet-id))
-           (funcall error "Tweet edit history requires a numeric tweet ID")
-         (chirp-x-graphql-request
-          (chirp-backend--operation 'edit-history)
-          `(("tweetId" . ,tweet-id)
-            ("withQuickPromoteEligibilityTweetFields" . t))
-          (lambda (payload)
-            (condition-case err
-                (funcall success
-                         (chirp-backend--edit-history-tweets payload)
-                         nil)
-              (error
-               (funcall error (error-message-string err)))))
-          :errback error)))
-     callback
-     errback)))
+  (chirp-backend--cached-read
+   (list :edit-history tweet-id)
+   (lambda (success error)
+     (chirp-x-graphql-request
+      (chirp-backend--operation 'edit-history)
+      `(("tweetId" . ,tweet-id)
+        ("withQuickPromoteEligibilityTweetFields" . t))
+      (lambda (payload)
+        (condition-case err
+            (funcall success
+                     (chirp-backend--edit-history-tweets payload)
+                     nil)
+          (error
+           (funcall error (error-message-string err)))))
+      :errback error))
+   callback
+   errback))
 
 (defun chirp-backend-article (tweet-id callback &optional errback)
   "Fetch article content for TWEET-ID and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--cached-read
-   (chirp-backend--article-cache-key tweet-id)
+   (list :article tweet-id)
    (lambda (success error)
      (chirp-x-graphql-request
       (chirp-backend--operation 'article)
@@ -2150,7 +2070,7 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
   "Fetch profile data for HANDLE and call CALLBACK, or ERRBACK on failure."
   (let ((clean-handle (string-remove-prefix "@" handle)))
     (chirp-backend--cached-read
-     (chirp-backend--user-cache-key clean-handle)
+     (list :user (chirp-backend--normalize-handle clean-handle))
      (lambda (success error)
        (chirp-x-graphql-request
         (chirp-backend--operation 'user)
@@ -2242,7 +2162,7 @@ MAX-RESULTS limits the response, and CURSOR bypasses the initial-page cache."
 ERRBACK handles failures and MAX-RESULTS limits the response.  When CURSOR is
 non-nil, continue from it without using the short-lived read cache."
   (chirp-backend--profile-timeline
-   'user-tweets (chirp-backend--user-posts-cache-key handle)
+   'user-tweets (list :user-posts (chirp-backend--normalize-handle handle))
    handle callback errback max-results cursor))
 
 (defun chirp-backend-user-replies (handle callback &optional errback max-results cursor)
@@ -2251,7 +2171,8 @@ non-nil, continue from it without using the short-lived read cache."
 ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
 pagination."
   (chirp-backend--profile-timeline
-   'user-replies (chirp-backend--profile-timeline-cache-key handle 'replies)
+   'user-replies
+   (list :profile-timeline (chirp-backend--normalize-handle handle) 'replies)
    handle callback errback max-results cursor))
 
 (defun chirp-backend-user-highlights (handle callback &optional errback max-results cursor)
@@ -2261,7 +2182,7 @@ ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
 pagination."
   (chirp-backend--profile-timeline
    'user-highlights
-   (chirp-backend--profile-timeline-cache-key handle 'highlights)
+   (list :profile-timeline (chirp-backend--normalize-handle handle) 'highlights)
    handle callback errback max-results cursor))
 
 (defun chirp-backend-user-media (handle callback &optional errback max-results cursor)
@@ -2270,7 +2191,8 @@ pagination."
 ERRBACK handles failures, MAX-RESULTS limits the response, and CURSOR continues
 pagination."
   (chirp-backend--profile-timeline
-   'user-media (chirp-backend--profile-timeline-cache-key handle 'media)
+   'user-media
+   (list :profile-timeline (chirp-backend--normalize-handle handle) 'media)
    handle callback errback max-results cursor))
 
 (defun chirp-backend--collect-users (data)
@@ -2322,13 +2244,13 @@ ERRBACK receives transport or response failures."
 (defun chirp-backend-followers (handle callback &optional errback)
   "Fetch followers for HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--user-collection
-   'followers (chirp-backend--followers-cache-key handle)
+   'followers (list :followers (chirp-backend--normalize-handle handle))
    handle callback errback))
 
 (defun chirp-backend-following-users (handle callback &optional errback)
   "Fetch accounts followed by HANDLE and call CALLBACK, or ERRBACK on failure."
   (chirp-backend--user-collection
-   'following (chirp-backend--following-users-cache-key handle)
+   'following (list :following-users (chirp-backend--normalize-handle handle))
    handle callback errback))
 
 (provide 'chirp-backend)

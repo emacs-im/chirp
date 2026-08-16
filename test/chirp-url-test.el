@@ -113,11 +113,6 @@
   (should-error (chirp-open-url "https://x.com/notifications")
                 :type 'user-error))
 
-(ert-deftest chirp-thread-rejects-url-input ()
-  "Thread commands should direct URL input to `chirp-open-url'."
-  (should-error (chirp-thread "https://x.com/alice/status/123")
-                :type 'user-error))
-
 (provide 'chirp-url-test)
 
 ;;; chirp-url-test.el ends here

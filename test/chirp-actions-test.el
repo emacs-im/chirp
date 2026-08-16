@@ -35,7 +35,8 @@
        :parts-function #'chirp-compose--parts))
     (cons compose source)))
 
-(defun chirp-test--open-compose-from-foreign-current-buffer (kind &optional tweet)
+(defun chirp-test--open-compose-from-foreign-current-buffer
+    (kind &optional target-id target-handle)
   "Open compose KIND while `current-buffer' is not the displayed source buffer.
 
 Return a list of (compose source foreign)."
@@ -47,7 +48,9 @@ Return a list of (compose source foreign)."
       (setq-local chirp--view-title "For You"))
     (switch-to-buffer source)
     (with-current-buffer foreign
-      (chirp-compose-open kind tweet)
+      (chirp-compose-open kind
+                          :target-id target-id
+                          :target-handle target-handle)
       (setq compose (current-buffer)))
     (list compose source foreign)))
 
@@ -165,7 +168,7 @@ Return a list of (compose source foreign)."
                      (lambda (&rest draft)
                        (push draft requests)
                        (funcall (plist-get draft :callback)
-                                (list :id "2087") nil))))
+                                "2087" nil))))
             (with-current-buffer compose
               (chirp-compose-save)
               (should (buffer-live-p compose))
@@ -196,7 +199,7 @@ Return a list of (compose source foreign)."
                      (lambda (&rest draft)
                        (setq captured draft)
                        (funcall (plist-get draft :callback)
-                                (list :id "1") nil))))
+                                "1" nil))))
             (with-current-buffer compose
               (chirp-compose-add-post)
               (insert "second")
@@ -221,7 +224,7 @@ Return a list of (compose source foreign)."
                      (lambda (&rest draft)
                        (setq captured draft)
                        (funcall (plist-get draft :callback)
-                                (list :id "9") nil))))
+                                "9" nil))))
             (with-current-buffer compose
               (chirp-compose-schedule 1786700000))
             (should (eq (plist-get captured :kind) 'post))
@@ -253,7 +256,7 @@ Return a list of (compose source foreign)."
                      (lambda (&rest draft)
                        (push draft requests)
                        (funcall (plist-get draft :callback)
-                                (list :id (format "%d" (length requests)))
+                                (format "%d" (length requests))
                                 nil))))
             (with-current-buffer compose
               (chirp-compose-add-post)
@@ -347,7 +350,7 @@ Return a list of (compose source foreign)."
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
                          (funcall (plist-get draft :callback)
-                                  (list :id "1") nil)))
+                                  "1" nil)))
                       ((symbol-function 'chirp-backend-delete-unsent)
                        (lambda (kind id callback &optional _errback)
                          (setq deleted (list kind id))
@@ -799,15 +802,18 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-compose-open-uses-displayed-source-buffer-for-post-reply-and-quote ()
   "Compose buffers should capture the displayed Chirp view as their source."
-  (dolist (case `((post nil)
-                  (reply ,(list :kind 'tweet :id "123" :author-handle "alice"))
-                  (quote ,(list :kind 'tweet :id "123" :author-handle "alice"))))
-    (pcase-let* ((`(,kind ,tweet) case)
+  (dolist (case '((post nil nil)
+                  (reply "123" "alice")
+                  (quote "123" "alice")))
+    (pcase-let* ((`(,kind ,target-id ,target-handle) case)
                  (`(,compose ,source ,foreign)
-                  (chirp-test--open-compose-from-foreign-current-buffer kind tweet)))
+                  (chirp-test--open-compose-from-foreign-current-buffer
+                   kind target-id target-handle)))
       (unwind-protect
           (with-current-buffer compose
-            (should (eq chirp-compose-source-buffer source)))
+            (should (eq chirp-compose-source-buffer source))
+            (should (equal chirp-compose-target-id target-id))
+            (should (equal chirp-compose-target-handle target-handle)))
         (dolist (buffer (list compose source foreign))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
@@ -846,10 +852,8 @@ Return a list of (compose source foreign)."
   (pcase-let* ((`(,compose ,source ,foreign)
                 (chirp-test--open-compose-from-foreign-current-buffer
                  'quote
-                 (list :kind 'tweet
-                       :id "123"
-                       :author-handle "alice"
-                       :url "https://x.com/alice/status/123"))))
+                 "123"
+                 "alice")))
     (let (captured-draft)
       (unwind-protect
           (progn
@@ -1078,7 +1082,7 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-toggle-like-at-point-uses-like-and-unlike-commands ()
   "Toggle like should choose the backend command from the current local state."
-  (clrhash (chirp--tweet-state-table))
+  (clrhash (chirp--session-tweet-state-overrides (chirp--session)))
   (let (captured-args rerendered)
     (unwind-protect
         (progn
@@ -1114,7 +1118,7 @@ Return a list of (compose source foreign)."
                (should rerendered)
                (should-not (plist-get (chirp-entry-at-point) :liked-p))
                (should (= (plist-get (chirp-entry-at-point) :like-count) 9))))))
-      (clrhash (chirp--tweet-state-table)))))
+      (clrhash (chirp--session-tweet-state-overrides (chirp--session))))))
 
 (ert-deftest chirp-delete-at-point-removes-primary-canonical-state ()
   "Successful deletion should remove primary state without a feed refresh."
@@ -1180,7 +1184,7 @@ Return a list of (compose source foreign)."
 
 (ert-deftest chirp-translate-at-point-caches-and-renders-result ()
   "Translation should be stored on the current tweet and trigger a rerender."
-  (clrhash (chirp--tweet-state-table))
+  (clrhash (chirp--session-tweet-state-overrides (chirp--session)))
   (let ((chirp-translation-language "zh")
         rerendered)
     (unwind-protect
@@ -1203,10 +1207,13 @@ Return a list of (compose source foreign)."
              (should (equal (plist-get (chirp-entry-at-point) :translation)
                             "你好"))
              (should (equal
-                      (plist-get (gethash "123" (chirp--tweet-state-table))
+                      (plist-get
+                       (gethash "123"
+                                (chirp--session-tweet-state-overrides
+                                 (chirp--session)))
                                  :translation-language)
                       "zh")))))
-      (clrhash (chirp--tweet-state-table)))))
+      (clrhash (chirp--session-tweet-state-overrides (chirp--session))))))
 
 (ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
   "The Chirp transient should expose only the intended action bindings."
