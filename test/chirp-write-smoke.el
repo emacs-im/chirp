@@ -53,7 +53,7 @@
               :callback success
               :errback failure))
            240))
-         (tweet-id (plist-get (car values) :id)))
+         (tweet-id (car values)))
     (unless (and (stringp tweet-id)
                  (string-match-p "\\`[0-9]+\\'" tweet-id))
       (error "Write smoke create returned an invalid tweet ID"))

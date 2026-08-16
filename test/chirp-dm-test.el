@@ -1788,7 +1788,7 @@
                      (lambda (_id callback &rest _options)
                        (setq refresh-callback callback)
                        'refresh-request))
-                    ((symbol-function 'chirp-backend-cancel-request)
+                    ((symbol-function 'chirp-x-cancel-request)
                      (lambda (request)
                        (push request canceled))))
             (let* ((current

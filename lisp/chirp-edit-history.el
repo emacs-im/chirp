@@ -95,7 +95,7 @@
     buffer))
 
 (defun chirp-edit-history-open (tweet-id)
-  "Open the edit history for numeric TWEET-ID."
+  "Open the edit history for TWEET-ID."
   (chirp-edit-history--open tweet-id tweet-id))
 
 (defun chirp-edit-history-open-tweet (tweet)
@@ -110,11 +110,6 @@
 
 (defun chirp-edit-history--open (tweet-id initial-id)
   "Open TWEET-ID's edit history whose initial version is INITIAL-ID."
-  (unless (and (stringp tweet-id)
-               (string-match-p "\\`[0-9]+\\'" tweet-id)
-               (stringp initial-id)
-               (string-match-p "\\`[0-9]+\\'" initial-id))
-    (user-error "Tweet edit history requires numeric tweet IDs"))
   (let* ((title (format "Edit history: %s" initial-id))
          (refresh
           (lambda ()

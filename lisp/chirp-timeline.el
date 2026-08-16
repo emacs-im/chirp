@@ -18,6 +18,7 @@
 (require 'chirp-backend)
 (require 'chirp-media)
 (require 'chirp-render)
+(require 'chirp-x)
 
 (declare-function chirp-profile-load-more "chirp-profile" (&optional anchor-id))
 
@@ -261,7 +262,7 @@
          (request (gethash chirp-timeline--request-key table)))
     (remhash chirp-timeline--request-key table)
     (when request
-      (chirp-backend-cancel-request request))))
+      (chirp-x-cancel-request request))))
 
 (defun chirp-timeline--interrupt-state-request (state)
   "Retire STATE's interrupted request generation, if any."
@@ -672,11 +673,7 @@ When LIST-ID is nil, prompt from the authenticated account's lists."
                (kill-buffer buffer))
              (message "Chirp list lookup failed: %s" message))))
         buffer)
-    (let ((clean-id (and (stringp list-id)
-                         (string-trim list-id))))
-      (unless (and clean-id
-                   (string-match-p "\\`[0-9]+\\'" clean-id))
-        (user-error "Need a numeric list ID; use M-x chirp-open-url for an X URL"))
+    (let ((clean-id (string-trim list-id)))
       (let* ((title (chirp-timeline--list-title clean-id))
              (refresh (lambda () (chirp-timeline-open-list clean-id))))
         (chirp-timeline--fetch-collection

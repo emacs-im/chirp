@@ -1301,10 +1301,10 @@ the submit chain, and SUCCESS-MESSAGE is shown when it finishes."
        :attachments (plist-get item :attachments)
        :reply-audience (and root-p (plist-get draft :reply-audience))
        :callback
-       (lambda (created _envelope)
+       (lambda (created-tweet-id _envelope)
          (chirp-compose--send-next
           compose-buffer source-buffer draft items (1+ index)
-          (plist-get created :id) temp-attachments success-message))
+          created-tweet-id temp-attachments success-message))
        :errback
        (lambda (message)
          (chirp-compose--fail-send
@@ -1372,10 +1372,6 @@ the submit chain, and SUCCESS-MESSAGE is shown when it finishes."
         (user-error "Schedule time must be in the future"))
       unix)))
 
-(defun chirp-compose--lock (label)
-  "Mark the current compose buffer as submitting with LABEL."
-  (chirp-compose--begin-submit label))
-
 (defun chirp-compose-save ()
   "Save the current draft on X and keep the compose buffer open."
   (interactive)
@@ -1388,7 +1384,7 @@ the submit chain, and SUCCESS-MESSAGE is shown when it finishes."
     (user-error "Save canceled"))
   (let* ((compose-buffer (current-buffer))
          (draft (chirp-compose--draft)))
-    (chirp-compose--lock "Saving draft...")
+    (chirp-compose--begin-submit "Saving draft...")
     (condition-case err
         (apply
          #'chirp-backend-save-draft
@@ -1397,13 +1393,13 @@ the submit chain, and SUCCESS-MESSAGE is shown when it finishes."
          :items (plist-get draft :items)
          :draft-id (plist-get draft :draft-id)
          :callback
-         (lambda (created _envelope)
+         (lambda (draft-id _envelope)
            (when (buffer-live-p compose-buffer)
              (with-current-buffer compose-buffer
                (appkit-compose-finish-submit)
                (setq-local chirp-compose--abort nil)
                (setq-local chirp-compose--submit-label nil)
-               (setq-local chirp-compose-draft-id (plist-get created :id))
+               (setq-local chirp-compose-draft-id draft-id)
                (setq-local buffer-read-only nil)
                (set-buffer-modified-p nil)
                (appkit-compose-refresh)))
@@ -1436,7 +1432,7 @@ prompt for a local date and time."
          (draft (chirp-compose--draft))
          (temp-attachments (chirp-compose--take-temp-attachments)))
     (setq-local chirp-compose--submit-temps temp-attachments)
-    (chirp-compose--lock "Scheduling post...")
+    (chirp-compose--begin-submit "Scheduling post...")
     (condition-case err
         (progn
           (apply
@@ -1528,19 +1524,21 @@ prompt for a local date and time."
         selected
         current)))
 
-(defun chirp-compose-open (kind &optional tweet)
+(cl-defun chirp-compose-open
+    (kind &key target-id target-handle target-url)
   "Open a compose buffer for KIND.
 
-When TWEET is non-nil, use it as the reply or quote target."
+TARGET-ID, TARGET-HANDLE, and TARGET-URL describe an optional reply or quote
+target."
   (let* ((source (chirp-compose--source-buffer))
          (buffer (generate-new-buffer "*chirp compose*")))
     (pop-to-buffer buffer)
     (with-current-buffer buffer
       (chirp-compose-mode)
       (setq-local chirp-compose-kind kind)
-      (setq-local chirp-compose-target-id (plist-get tweet :id))
-      (setq-local chirp-compose-target-handle (plist-get tweet :author-handle))
-      (setq-local chirp-compose-target-url (plist-get tweet :url))
+      (setq-local chirp-compose-target-id target-id)
+      (setq-local chirp-compose-target-handle target-handle)
+      (setq-local chirp-compose-target-url target-url)
       (setq-local chirp-compose-source-buffer source)
       (setq-local chirp-compose-items (list (list :attachments nil)))
       (setq-local chirp-compose-temp-attachments nil)
@@ -1597,9 +1595,8 @@ When TWEET is non-nil, use it as the reply or quote target."
     (error "Unsent entry has no ID"))
   (chirp-compose-open
    (or (plist-get entry :compose-kind) 'post)
-   (and (plist-get entry :target-id)
-        (list :id (plist-get entry :target-id)
-              :url (plist-get entry :target-url))))
+   :target-id (plist-get entry :target-id)
+   :target-url (plist-get entry :target-url))
   (chirp-compose--apply-unsent entry))
 
 (defun chirp-compose-add-post ()
@@ -1641,12 +1638,21 @@ When TWEET is non-nil, use it as the reply or quote target."
   (let ((tweet (chirp-actions--tweet-at-point)))
     (when (plist-get tweet :reply-limited-p)
       (user-error "You cannot reply to this conversation"))
-    (chirp-compose-open 'reply tweet)))
+    (chirp-compose-open
+     'reply
+     :target-id (plist-get tweet :id)
+     :target-handle (plist-get tweet :author-handle)
+     :target-url (plist-get tweet :url))))
 
 (defun chirp-quote-at-point ()
   "Open a compose buffer to quote the tweet at point."
   (interactive)
-  (chirp-compose-open 'quote (chirp-actions--tweet-at-point)))
+  (let ((tweet (chirp-actions--tweet-at-point)))
+    (chirp-compose-open
+     'quote
+     :target-id (plist-get tweet :id)
+     :target-handle (plist-get tweet :author-handle)
+     :target-url (plist-get tweet :url))))
 
 (defun chirp-copy-fixupx-url-at-point ()
   "Copy the current tweet URL as a fixupx.com link."

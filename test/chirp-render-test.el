@@ -320,7 +320,7 @@
 
 (ert-deftest chirp-render-insert-tweet-shows-cached-translation ()
   "A cached translation should render directly below the original text."
-  (clrhash (chirp--tweet-state-table))
+  (clrhash (chirp--session-tweet-state-overrides (chirp--session)))
   (unwind-protect
       (progn
         (chirp-set-tweet-state-override "123" :translation "你好")
@@ -334,7 +334,7 @@
             (chirp-render-insert-tweet tweet)
             (should (string-match-p "Hello\nTranslation · zh\n你好"
                                     (buffer-string))))))
-    (clrhash (chirp--tweet-state-table))))
+    (clrhash (chirp--session-tweet-state-overrides (chirp--session)))))
 
 (ert-deftest chirp-article-segments-split-inline-images-out-of-body-text ()
   "Article helpers should split Markdown image paragraphs into media items."
@@ -2076,13 +2076,14 @@
                      (error "quoted-tweet callback failed"))
                    (lambda (payload)
                      (setq later-payload payload)))
-             (chirp--quoted-tweet-pending))
+             (chirp--session-quoted-tweet-pending (chirp--session)))
     (cl-letf (((symbol-function 'display-warning)
                (lambda (type message &rest _args)
                  (setq warning (list type message)))))
       (chirp--dispatch-quoted-tweet-callbacks "456" :payload))
     (should (eq later-payload :payload))
-    (should-not (gethash "456" (chirp--quoted-tweet-pending)))
+    (should-not
+     (gethash "456" (chirp--session-quoted-tweet-pending (chirp--session))))
     (should (eq (car warning) 'chirp-core))
     (should (string-match-p "Quoted-tweet callback failed for 456"
                             (cadr warning)))

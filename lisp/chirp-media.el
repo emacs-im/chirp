@@ -250,10 +250,6 @@ When nil, Chirp falls back to a text placeholder for video-like media."
       ('link-card (chirp-media--runtime-link-card-pending runtime))
       (_ (error "Unknown Chirp media task kind: %S" kind)))))
 
-(defun chirp-media--link-card-cache ()
-  "Return the current session's link-card cache."
-  (chirp-media--runtime-link-card-cache (chirp-media--runtime)))
-
 (defun chirp-media--task-queue (kind limit)
   "Return the current session's task queue for KIND and LIMIT."
   (let* ((runtime (chirp-media--runtime))
@@ -637,7 +633,7 @@ HELP-ECHO customize the accessible image action."
          (callbacks (prog1 (gethash url pending)
                       (remhash url pending))))
     (puthash url (or card chirp-media--link-card-fetch-failed)
-             (chirp-media--link-card-cache))
+             (chirp-media--runtime-link-card-cache (chirp-media--runtime)))
     (chirp-media--invalidate-resource url)
     (dolist (callback callbacks)
       (when callback
@@ -883,7 +879,9 @@ Use FALLBACK-EXT when URL has no recognizable extension."
 
 (defun chirp-media-link-card (url)
   "Return the current session's cached link-card for URL, or nil."
-  (let ((card (gethash url (chirp-media--link-card-cache))))
+  (let ((card (gethash url
+                       (chirp-media--runtime-link-card-cache
+                        (chirp-media--runtime)))))
     (unless (eq card chirp-media--link-card-fetch-failed)
       card)))
 
@@ -948,7 +946,8 @@ cached Open Graph fetches for tweets that have no card payload."
   "Prefetch external link-card metadata for URL and update BUFFER when ready."
   (when (and (chirp-media--link-card-enabled-p)
              (chirp-media--link-card-candidate-p url))
-    (let* ((cache (chirp-media--link-card-cache))
+    (let* ((cache (chirp-media--runtime-link-card-cache
+                   (chirp-media--runtime)))
            (pending (chirp-media--pending-table 'link-card))
            (cached (gethash url cache)))
       (cond
