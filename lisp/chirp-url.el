@@ -18,13 +18,9 @@
   "HTTPS hosts accepted as X URL targets.")
 
 (defconst chirp-url-browse-regexp
-  "\\`https://\\(?:www\\.\\)?\\(?:x\\.com\\|twitter\\.com\\)\\(?:[/:?#]\\|\\'\\)"
+  (concat "\\`https://" (regexp-opt chirp-url--trusted-hosts)
+          "\\(?:[/:?#]\\|\\'\\)")
   "Regexp suitable for routing X URLs through `browse-url-handlers'.")
-
-(defun chirp-url--segments (path)
-  "Return decoded nonempty path segments from PATH."
-  (mapcar #'url-unhex-string
-          (split-string path "/" t)))
 
 (defun chirp-url--query-value (query name)
   "Return NAME's first decoded value from QUERY, or nil."
@@ -41,26 +37,19 @@
                  (text (string-trim text))
                  ((not (string-empty-p text))))
        (list :kind 'search :query text)))
-    (`("i" "status" ,id . ,_)
-     (when (string-match-p "\\`[0-9]+\\'" id)
-       (list :kind 'tweet :id id)))
     (`("i" "web" "status" ,id . ,_)
      (when (string-match-p "\\`[0-9]+\\'" id)
        (list :kind 'tweet :id id)))
-    (`(,handle "status" ,id "history")
+    (`(,_handle "status" ,id "history")
      (when (string-match-p "\\`[0-9]+\\'" id)
-       (list :kind 'edit-history :id id :handle handle)))
-    (`(,handle "status" ,id . ,_)
+       (list :kind 'edit-history :id id)))
+    (`(,_handle "status" ,id . ,_)
      (when (string-match-p "\\`[0-9]+\\'" id)
-       (list :kind 'tweet :id id :handle handle)))
-    (`("i" ,list-word ,id)
+       (list :kind 'tweet :id id)))
+    (`(,_owner ,list-word ,id)
      (when (and (member list-word '("list" "lists"))
                 (string-match-p "\\`[0-9]+\\'" id))
        (list :kind 'list :id id)))
-    (`(,owner ,list-word ,id)
-     (when (and (member list-word '("list" "lists"))
-                (string-match-p "\\`[0-9]+\\'" id))
-       (list :kind 'list :id id :owner owner)))
     (`(,handle "followers")
      (list :kind 'followers :handle handle))
     (`(,handle "following")
@@ -90,12 +79,15 @@ HTTPS URLs on X or legacy Twitter hosts are accepted."
                      (null (url-user parsed))
                      (or (null (url-port parsed))
                          (= (url-port parsed) 443)))
-            (chirp-url--parse-path (chirp-url--segments path) query)))
+            (chirp-url--parse-path
+             (mapcar #'url-unhex-string (split-string path "/" t))
+             query)))
       (error nil))))
 
 (defun chirp-url-tweet-id (value)
   "Return the tweet ID represented by VALUE, or nil."
   (cond
+   ((null value) nil)
    ((and (stringp value)
          (string-match-p "\\`[0-9]+\\'" value))
     value)
@@ -106,17 +98,6 @@ HTTPS URLs on X or legacy Twitter hosts are accepted."
    ((listp value)
     (or (plist-get value :id)
         (chirp-url-tweet-id (plist-get value :url))))))
-
-(defun chirp-url-list-id (value)
-  "Return the list ID represented by VALUE, or nil."
-  (cond
-   ((and (stringp value)
-         (string-match-p "\\`[0-9]+\\'" value))
-    value)
-   ((stringp value)
-    (when-let* ((target (chirp-url-parse value))
-                ((eq (plist-get target :kind) 'list)))
-      (plist-get target :id)))))
 
 (provide 'chirp-url)
 

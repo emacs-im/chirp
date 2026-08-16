@@ -10,7 +10,7 @@
 (require 'time-date)
 (require 'chirp-thread)
 
-(ert-deftest chirp-thread-open-renders-seed-focus-tweet-before-network-thread-load ()
+(ert-deftest chirp-thread-open-tweet-renders-seed-before-network-thread-load ()
   "Opening a thread from a visible tweet should render that tweet immediately."
   (let ((buffer (generate-new-buffer " *chirp-thread-seed-test*"))
         thread-callback
@@ -32,12 +32,10 @@
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
                   ((symbol-function 'chirp-display-buffer) #'ignore))
-          (chirp-thread-open
+          (chirp-thread-open-tweet
            '(:kind tweet
              :id "123"
-             :text "Focus tweet")
-           "123"
-           buffer)
+             :text "Focus tweet"))
           (should (functionp thread-callback))
           (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                                  (car (last renders)))
@@ -272,7 +270,7 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest chirp-thread-open-prefetched-article-is-applied-before-first-render ()
+(ert-deftest chirp-thread-open-tweet-applies-prefetched-article-before-first-render ()
   "Article enrichment should overlap thread loading and feed the first render."
   (let ((buffer (generate-new-buffer " *chirp-thread-test*"))
         article-callback
@@ -297,14 +295,12 @@
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
                   ((symbol-function 'chirp-display-buffer) #'ignore))
-          (chirp-thread-open
+          (chirp-thread-open-tweet
            '(:kind tweet
              :id "123"
              :article-title "Article"
              :text ""
-             :urls ("https://example.com/article"))
-           "123"
-           buffer)
+             :urls ("https://example.com/article")))
           (should (functionp article-callback))
           (should (functionp thread-callback))
           (funcall article-callback
@@ -327,7 +323,7 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest chirp-thread-open-filters-keyword-spam-replies ()
+(ert-deftest chirp-thread-open-tweet-filters-keyword-spam-replies ()
   "Thread loading should hide matching replies without hiding the focus tweet."
   (let ((buffer (generate-new-buffer " *chirp-thread-spam-test*"))
         (chirp-thread-spam-keywords '("dm me" "t.me/" "推广昵称" "  "))
@@ -351,10 +347,8 @@
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
                   ((symbol-function 'chirp-display-buffer) #'ignore))
-          (chirp-thread-open
-           '(:kind tweet :id "123" :text "DM me is quoted in the focus")
-           "123"
-           buffer)
+          (chirp-thread-open-tweet
+           '(:kind tweet :id "123" :text "DM me is quoted in the focus"))
           (should (functionp thread-callback))
           (funcall thread-callback
                    (list

@@ -16,22 +16,6 @@
 (require 'chirp-media)
 (require 'chirp-render)
 
-(defun chirp-edit-history--target-id (tweet-or-id)
-  "Return the tweet ID represented by TWEET-OR-ID."
-  (let ((id (if (listp tweet-or-id)
-                (plist-get tweet-or-id :id)
-              tweet-or-id)))
-    (unless (and (stringp id)
-                 (string-match-p "\\`[0-9]+\\'" id))
-      (user-error "Tweet edit history requires a numeric tweet ID"))
-    id))
-
-(defun chirp-edit-history--initial-id (tweet-or-id target-id)
-  "Return TWEET-OR-ID's initial version ID, defaulting to TARGET-ID."
-  (or (and (listp tweet-or-id)
-           (plist-get tweet-or-id :edit-history-initial-id))
-      target-id))
-
 (defun chirp-edit-history--rows (tweets)
   "Return projected edit-history rows for normalized TWEETS."
   (cl-loop for tweet in tweets
@@ -110,15 +94,32 @@
                            message))))
     buffer))
 
-(defun chirp-edit-history-open (tweet-or-id)
-  "Open the edit history represented by TWEET-OR-ID."
-  (let* ((tweet-id (chirp-edit-history--target-id tweet-or-id))
-         (initial-id (chirp-edit-history--initial-id tweet-or-id tweet-id))
-         (title (format "Edit history: %s" initial-id))
+(defun chirp-edit-history-open (tweet-id)
+  "Open the edit history for numeric TWEET-ID."
+  (chirp-edit-history--open tweet-id tweet-id))
+
+(defun chirp-edit-history-open-tweet (tweet)
+  "Open the edit history for normalized TWEET."
+  (unless (and (listp tweet)
+               (eq (plist-get tweet :kind) 'tweet))
+    (user-error "Need a normalized tweet"))
+  (let ((tweet-id (plist-get tweet :id)))
+    (chirp-edit-history--open
+     tweet-id
+     (or (plist-get tweet :edit-history-initial-id) tweet-id))))
+
+(defun chirp-edit-history--open (tweet-id initial-id)
+  "Open TWEET-ID's edit history whose initial version is INITIAL-ID."
+  (unless (and (stringp tweet-id)
+               (string-match-p "\\`[0-9]+\\'" tweet-id)
+               (stringp initial-id)
+               (string-match-p "\\`[0-9]+\\'" initial-id))
+    (user-error "Tweet edit history requires numeric tweet IDs"))
+  (let* ((title (format "Edit history: %s" initial-id))
          (refresh
           (lambda ()
             (chirp-backend-invalidate-edit-history tweet-id)
-            (chirp-edit-history-open tweet-or-id)))
+            (chirp-edit-history--open tweet-id initial-id)))
          (view
           (chirp-open-projection-view
            :id (list 'edit-history initial-id)
@@ -144,7 +145,7 @@
     (unless (and (eq (plist-get tweet :kind) 'tweet)
                  (plist-get tweet :edited-p))
       (user-error "Current tweet has no edit history"))
-    (chirp-edit-history-open tweet)))
+    (chirp-edit-history-open-tweet tweet)))
 
 (provide 'chirp-edit-history)
 

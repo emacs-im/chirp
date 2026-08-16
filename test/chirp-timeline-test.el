@@ -810,12 +810,18 @@
                            (list (plist-get (appkit-view-state view) :title)
                                  tweets)))))
           (chirp-timeline-open-list
-           "https://x.com/i/lists/1956792682412345678")
+           "1956792682412345678")
           (should (equal captured-target
-                         "https://x.com/i/lists/1956792682412345678"))
+                         "1956792682412345678"))
           (should (equal installed
                          '("List: 1956792682412345678" ((:id "1"))))))
       (chirp-stop))))
+
+(ert-deftest chirp-timeline-open-list-rejects-a-url-target ()
+  "List view commands should direct URL input to `chirp-open-url'."
+  (should-error
+   (chirp-timeline-open-list "https://x.com/i/lists/1956792682412345678")
+   :type 'user-error))
 
 (ert-deftest chirp-request-rerender-coalesces-primary-view-invalidations ()
   "Repeated background updates should produce one Appkit view sync."

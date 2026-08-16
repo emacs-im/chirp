@@ -748,8 +748,8 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal path "friends/list.json"))
     (should (equal (plist-get (car users) :handle) "alice"))))
 
-(ert-deftest chirp-backend-list-normalizes-list-urls ()
-  "List requests should pass a URL's numeric id to direct X GraphQL."
+(ert-deftest chirp-backend-list-passes-a-numeric-id-to-direct-x-graphql ()
+  "List requests should pass their numeric ID to direct X GraphQL."
   (let (operation variables)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback &rest _options)
@@ -759,10 +759,38 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                   callback
                   (chirp-backend-test--timeline-payload
                    '("data" "list" "tweets_timeline" "timeline") nil)))))
-      (chirp-backend-list "https://x.com/i/lists/1956792682412345678" #'ignore))
+      (chirp-backend-list "1956792682412345678" #'ignore))
     (should (equal (plist-get operation :name) "ListLatestTweetsTimeline"))
     (should (equal (alist-get "listId" variables nil nil #'string=)
                    "1956792682412345678"))))
+
+(ert-deftest chirp-backend-list-rejects-a-url-target ()
+  "List requests should reject URLs before dispatching GraphQL."
+  (let (failure requested)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (&rest _args)
+                 (setq requested t))))
+      (chirp-backend-list
+       "https://x.com/i/lists/1956792682412345678"
+       #'ignore
+       (lambda (message)
+         (setq failure message))))
+    (should (equal failure "List ID must be numeric"))
+    (should-not requested)))
+
+(ert-deftest chirp-backend-thread-rejects-a-url-target ()
+  "Thread requests should reject URLs before dispatching GraphQL."
+  (let (failure requested)
+    (cl-letf (((symbol-function 'chirp-x-graphql-request)
+               (lambda (&rest _args)
+                 (setq requested t))))
+      (chirp-backend-thread
+       "https://x.com/alice/status/123"
+       #'ignore
+       (lambda (message)
+         (setq failure message))))
+    (should (equal failure "Tweet ID must be numeric"))
+    (should-not requested)))
 
 (ert-deftest chirp-backend-thread-passes-explicit-max-results ()
   "Thread requests should pass Chirp's explicit limit and focus id to X."

@@ -45,11 +45,14 @@ history remains available in Git.
 
 ### Breaking Changes
 
+- `M-x chirp-thread` and `M-x chirp-list` now accept numeric IDs only. Use `M-x chirp-open-url` for supported X or Twitter URLs.
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
 - Chirp now requires Appkit 0.2.16 or newer for gapless inline image slices, inline action spans, compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, point-safe line metrics, and pre-heading discussion context.
 
 ### Fixed
+
+- X post permalinks opened through `chirp-open-url` now keep the linked post as the discussion focus, matching RET from a rendered post and keeping ancestor rows in the same order.
 
 - Thread related/retweet attribution now uses Appkit's pre-heading context slot, preserving Chirp's context, author, and body order in discussion rows.
 

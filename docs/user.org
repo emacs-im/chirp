@@ -46,13 +46,15 @@ features remain usable when it is absent.
 | ~M-x chirp-bookmarks~ | bookmarks |
 | ~M-x chirp-likes~ | the account's Likes |
 | ~M-x chirp-me~ | the authenticated profile |
-| ~M-x chirp-list~ | one of your lists |
+| ~M-x chirp-list~ | one of your lists, or a list by ID |
 | ~M-x chirp-search~ | search |
-| ~M-x chirp-thread~ | a thread |
+| ~M-x chirp-thread~ | a thread by post ID |
 | ~M-x chirp-profile~ | a user profile |
 | ~M-x chirp-profile-followers~ | followers |
 | ~M-x chirp-profile-following-users~ | following |
 | ~M-x chirp-open-url~ | a supported ~x.com~ or ~twitter.com~ URL |
+
+Commands that accept a post or list ID intentionally do not parse URLs. Use ~M-x chirp-open-url~ for a supported X or Twitter URL.
 
 To route those links from ~browse-url~:
 

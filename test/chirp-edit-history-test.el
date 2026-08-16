@@ -47,7 +47,7 @@
                   ((symbol-function 'chirp-media-avatar-image)
                    (lambda (&rest _args) nil))
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore))
-          (let ((first (chirp-edit-history-open tweet))
+          (let ((first (chirp-edit-history-open-tweet tweet))
                 second)
             (push first buffers)
             (setq second (chirp-edit-history-open "100"))
@@ -82,7 +82,7 @@
         (insert (propertize "Edited"
                             'chirp-entry-item tweet)))
       (goto-char (point-min))
-      (cl-letf (((symbol-function 'chirp-edit-history-open)
+      (cl-letf (((symbol-function 'chirp-edit-history-open-tweet)
                  (lambda (value) (setq opened value))))
         (chirp-edit-history-open-at-point))
       (should (eq opened tweet)))))
