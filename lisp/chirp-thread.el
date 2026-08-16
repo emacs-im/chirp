@@ -20,6 +20,8 @@
 (require 'chirp-render)
 (require 'chirp-spam-rules)
 
+;;; Spam Rules
+
 (defcustom chirp-thread-spam-keywords
   (copy-tree chirp-spam-rules-default)
   "Keywords used to hide replies in thread views.
@@ -157,6 +159,8 @@ display name or handle instead."
   (let ((file (expand-file-name chirp-thread-spam-rules-file)))
     (make-directory (file-name-directory file) t)
     (find-file file)))
+
+;;; Discussion Model
 
 (defun chirp-thread--key (tweet)
   "Return a stable key for TWEET."
@@ -356,6 +360,8 @@ protected."
               (chirp-thread--spam-reply-p tweet rules)))
        tweets))))
 
+;;; Article Enrichment
+
 (defun chirp-thread--title (tweet-id)
   "Return a display title for TWEET-ID."
   (format "Thread: %s" tweet-id))
@@ -385,6 +391,8 @@ protected."
                   tweet))
               tweets)
     tweets))
+
+;;; Rendering
 
 (defun chirp-thread--print-row (row)
   "Insert one projected discussion ROW."
@@ -473,6 +481,8 @@ buffer."
     (when display-p
       (chirp-display-buffer (appkit-view-buffer view)))
     (appkit-view-buffer view)))
+
+;;; Commands
 
 (defun chirp-thread-open (tweet-id)
   "Open a thread focused on TWEET-ID."

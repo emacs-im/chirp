@@ -50,83 +50,11 @@
 (declare-function chirp-xchat-native-session-destroy
                   "chirp-xchat-native-module" (session))
 
+;;; Options
+
 (defgroup chirp nil
   "Browse X/Twitter from Emacs."
   :group 'applications)
-
-(appkit-define-app-kind chirp :shutdown #'chirp--shutdown-app)
-
-(cl-defstruct (chirp--session (:constructor chirp--session-create))
-  "State owned by one Chirp application session."
-  tweet-state-overrides
-  quoted-tweet-cache
-  quoted-tweet-pending
-  backend-read-cache
-  backend-pending-reads
-  primary-feed-states
-  media-runtime
-  xchat-native-session
-  xchat-native-epoch
-  xchat-recovery
-  xchat-user-id)
-
-(defun chirp--shutdown-app (app)
-  "Destroy native state owned by stopped Chirp APP."
-  (let* ((state (appkit-app-state app))
-         (native-session
-          (and (chirp--session-p state)
-               (chirp--session-xchat-native-session state))))
-    (when native-session
-      (setf (chirp--session-xchat-native-session state) nil
-            (chirp--session-xchat-native-epoch state) nil
-            (chirp--session-xchat-recovery state) nil)
-      (unless (fboundp 'chirp-xchat-native-session-destroy)
-        (error "Chirp lost the loaded XChat native module"))
-      (chirp-xchat-native-session-destroy native-session))))
-
-(defvar chirp--app nil
-  "Lazy Appkit application session owned by Chirp.")
-
-(defun chirp--make-session ()
-  "Return initialized state for a new Chirp application session."
-  (chirp--session-create
-   :tweet-state-overrides (make-hash-table :test #'equal)
-   :quoted-tweet-cache (make-hash-table :test #'equal)
-   :quoted-tweet-pending (make-hash-table :test #'equal)
-   :backend-read-cache (make-hash-table :test #'equal)
-   :backend-pending-reads (make-hash-table :test #'equal)
-   :primary-feed-states (make-hash-table :test #'eq)))
-
-(defun chirp-app ()
-  "Return Chirp's live Appkit application session, creating it when needed."
-  (unless (appkit-app-live-p chirp--app)
-    (setq chirp--app
-          (appkit-start-app
-           'chirp :id 'default :state (chirp--make-session))))
-  chirp--app)
-
-(defun chirp--session ()
-  "Return state for Chirp's current application session."
-  (appkit-app-state (chirp-app)))
-
-(defun chirp-stop ()
-  "Stop Chirp's runtime and cancel its owned asynchronous work."
-  (interactive)
-  (unwind-protect
-      (progn
-        (dolist (buffer (buffer-list))
-          (when (buffer-live-p buffer)
-            (with-current-buffer buffer
-              (when (and (derived-mode-p 'appkit-compose-mode)
-                         (fboundp 'appkit-compose-submitting-p)
-                         (appkit-compose-submitting-p))
-                (ignore-errors (appkit-compose-cancel-submit))
-                (when (fboundp 'appkit-compose-finish-submit)
-                  (appkit-compose-finish-submit))
-                (setq-local buffer-read-only nil)))))
-        (when (appkit-app-live-p chirp--app)
-          (appkit-stop-app chirp--app)))
-    (setq chirp--app nil)))
 
 (defcustom chirp-buffer-name "*chirp*"
   "Base buffer name used for newly created Chirp views."
@@ -212,6 +140,84 @@ commands still work, and displays alt text when the backend provides it."
   :type 'boolean
   :group 'chirp)
 
+;;; Session
+
+(appkit-define-app-kind chirp :shutdown #'chirp--shutdown-app)
+
+(cl-defstruct (chirp--session (:constructor chirp--session-create))
+  "State owned by one Chirp application session."
+  tweet-state-overrides
+  quoted-tweet-cache
+  quoted-tweet-pending
+  backend-read-cache
+  backend-pending-reads
+  primary-feed-states
+  media-runtime
+  xchat-native-session
+  xchat-native-epoch
+  xchat-recovery
+  xchat-user-id)
+
+(defun chirp--shutdown-app (app)
+  "Destroy native state owned by stopped Chirp APP."
+  (let* ((state (appkit-app-state app))
+         (native-session
+          (and (chirp--session-p state)
+               (chirp--session-xchat-native-session state))))
+    (when native-session
+      (setf (chirp--session-xchat-native-session state) nil
+            (chirp--session-xchat-native-epoch state) nil
+            (chirp--session-xchat-recovery state) nil)
+      (unless (fboundp 'chirp-xchat-native-session-destroy)
+        (error "Chirp lost the loaded XChat native module"))
+      (chirp-xchat-native-session-destroy native-session))))
+
+(defvar chirp--app nil
+  "Lazy Appkit application session owned by Chirp.")
+
+(defun chirp--make-session ()
+  "Return initialized state for a new Chirp application session."
+  (chirp--session-create
+   :tweet-state-overrides (make-hash-table :test #'equal)
+   :quoted-tweet-cache (make-hash-table :test #'equal)
+   :quoted-tweet-pending (make-hash-table :test #'equal)
+   :backend-read-cache (make-hash-table :test #'equal)
+   :backend-pending-reads (make-hash-table :test #'equal)
+   :primary-feed-states (make-hash-table :test #'eq)))
+
+(defun chirp-app ()
+  "Return Chirp's live Appkit application session, creating it when needed."
+  (unless (appkit-app-live-p chirp--app)
+    (setq chirp--app
+          (appkit-start-app
+           'chirp :id 'default :state (chirp--make-session))))
+  chirp--app)
+
+(defun chirp--session ()
+  "Return state for Chirp's current application session."
+  (appkit-app-state (chirp-app)))
+
+(defun chirp-stop ()
+  "Stop Chirp's runtime and cancel its owned asynchronous work."
+  (interactive)
+  (unwind-protect
+      (progn
+        (dolist (buffer (buffer-list))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when (and (derived-mode-p 'appkit-compose-mode)
+                         (fboundp 'appkit-compose-submitting-p)
+                         (appkit-compose-submitting-p))
+                (ignore-errors (appkit-compose-cancel-submit))
+                (when (fboundp 'appkit-compose-finish-submit)
+                  (appkit-compose-finish-submit))
+                (setq-local buffer-read-only nil)))))
+        (when (appkit-app-live-p chirp--app)
+          (appkit-stop-app chirp--app)))
+    (setq chirp--app nil)))
+
+;;; Variables
+
 (defvar-local chirp--refresh-function nil
   "Function used to refresh the current Chirp buffer.")
 
@@ -294,9 +300,7 @@ commands still work, and displays alt text when the backend provides it."
 (put 'chirp--status-start-time 'permanent-local t)
 (put 'chirp--status-timer 'permanent-local t)
 
-(defconst chirp--quoted-tweet-fetch-failed
-  (make-symbol "chirp-quoted-tweet-fetch-failed")
-  "Sentinel value used when quoted tweet enrichment fails.")
+;;; View Mode
 
 (defvar chirp-view-mode-map
   (let ((map (make-sparse-keymap)))
@@ -352,6 +356,8 @@ commands still work, and displays alt text when the backend provides it."
       (kbd "o") #'chirp-browse-at-point)))
 
 (chirp--setup-evil)
+
+;;; Status
 
 (defun chirp--status-face (kind)
   "Return a mode-line face for status KIND."
@@ -411,6 +417,8 @@ commands still work, and displays alt text when the backend provides it."
         (setq-local chirp--status-timer nil)
         (force-mode-line-update t)))))
 
+;;; Buffers
+
 (defun chirp--base-buffer-stem ()
   "Return the display stem used for Chirp buffer names."
   (let ((name chirp-buffer-name))
@@ -469,6 +477,8 @@ revisited later."
   (interactive)
   (quit-window (not (chirp--persistent-timeline-buffer-p))))
 
+;;; Requests
+
 (defun chirp-begin-background-request (buffer title)
   "Start an async request for BUFFER titled TITLE without displaying it yet."
   (chirp-set-status buffer (format "Loading %s..." title))
@@ -486,6 +496,8 @@ revisited later."
   (and (buffer-live-p buffer)
        (with-current-buffer buffer
          (eq chirp--request-token token))))
+
+;;; Projection Views
 
 (defun chirp--live-projection-view (&optional buffer)
   "Return BUFFER's live Appkit projection view, or nil."
@@ -651,6 +663,8 @@ current line metrics."
           (chirp-request-rerender target delay))
       (chirp-request-rerender target delay))))
 
+;;; Navigation and Commands
+
 (defun chirp--text-property-at-point (property)
   "Return PROPERTY at point or immediately before point."
   (or (get-text-property (point) property)
@@ -714,6 +728,8 @@ current line metrics."
   (if chirp--refresh-function
       (funcall chirp--refresh-function)
     (user-error "No refresh function for this buffer")))
+
+;;;; Entry Navigation
 
 (defun chirp--entry-position-forward (start)
   "Return the next entry start at or after START."
@@ -893,6 +909,8 @@ current line metrics."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'chirp-entry-url))))
 
+;;;; Entry Actions
+
 (defun chirp--expanded-tweet-table (&optional buffer)
   "Return the expanded-tweet table for BUFFER, or nil."
   (or (plist-get (chirp--projection-state buffer) :expanded-tweet-ids)
@@ -975,6 +993,8 @@ current line metrics."
         (browse-url url)
       (user-error "No URL available at point"))))
 
+;;; Data Access
+
 (defun chirp-object-p (value)
   "Return non-nil when VALUE looks like an alist-style JSON object."
   (and (listp value)
@@ -1032,6 +1052,8 @@ current line metrics."
                      (not (string-blank-p value)))
            return value))
 
+;;; Text Normalization
+
 (defun chirp-decode-html-entities (text)
   "Decode XML/HTML entities in TEXT using `xml-substitute-special'."
   (if (and (stringp text) (not (string-empty-p text)))
@@ -1064,6 +1086,8 @@ current line metrics."
   (chirp--display-text-range
    (or (chirp-get object "display_text_range" "displayTextRange")
        (chirp-get legacy "display_text_range" "displayTextRange"))))
+
+;;;; URLs
 
 (defconst chirp--short-url-regexp "https?://t\\.co/[[:alnum:]]+"
   "Regexp that matches short X/Twitter URLs in tweet text.")
@@ -1109,6 +1133,8 @@ current line metrics."
    (chirp-get-in object '("entities" "urls"))
    (and legacy
         (chirp-get-in legacy '("entities" "urls")))))
+
+;;;; Text Entities
 
 (defun chirp--entity-indices (value)
   "Return VALUE's code-point (START . END) indices, or nil."
@@ -1208,6 +1234,8 @@ URLs, media, and timestamps.  Each item keeps its code-point `indices'."
      (chirp--entities-of entities "urls" 'url)
      (chirp--entities-of entities "media" 'media)
      (chirp--entities-of entities "timestamps" 'timestamp))))
+
+;;;; Visible Text
 
 (defun chirp--note-tweet-result (object)
   "Return OBJECT's note-tweet result, or nil."
@@ -1406,6 +1434,8 @@ SPAN offsets are Emacs character positions in DISPLAY."
                     copy))))
             spans)))))
 
+;;;; URL Presentation
+
 (defun chirp-tweet-candidate-urls (tweet)
   "Return likely canonical URLs for TWEET."
   (let ((id (plist-get tweet :id))
@@ -1537,6 +1567,8 @@ says leftover placeholders should be omitted from the visible body."
         (setq start end)))
     (nreverse items)))
 
+;;;; Article Preview
+
 (defun chirp--normalize-markdown-summary (text)
   "Flatten markdown-ish TEXT into a readable single paragraph."
   (let ((summary (or text "")))
@@ -1606,6 +1638,12 @@ When MAX-COUNT is non-nil, return at most that many images."
              (>= max-count 0))
         (cl-subseq images 0 (min max-count (length images)))
       images)))
+
+;;; Quoted Tweets
+
+(defconst chirp--quoted-tweet-fetch-failed
+  (make-symbol "chirp-quoted-tweet-fetch-failed")
+  "Sentinel value used when quoted tweet enrichment fails.")
 
 (defun chirp-normalize-quoted-tweet (value)
   "Normalize VALUE into a quoted-tweet plist, or nil."
@@ -1687,6 +1725,10 @@ When MAX-COUNT is non-nil, return at most that many images."
            (chirp-request-tweet-rerender
             (plist-get tweet :id) buffer)))))))
 
+;;; Tweet State
+
+;;;; Counts
+
 (defun chirp--count-value (&rest values)
   "Return the first scalar count in VALUES or their `count' members."
   (cl-loop for value in values
@@ -1719,6 +1761,8 @@ When MAX-COUNT is non-nil, return at most that many images."
         (max 0 (+ number delta))
       value)))
 
+;;;; Identity and Merging
+
 (defun chirp-tweet-key (tweet)
   "Return a stable merge key for normalized TWEET."
   (or (plist-get tweet :id)
@@ -1738,6 +1782,8 @@ When MAX-COUNT is non-nil, return at most that many images."
           (push tweet additions))))
     (append current (nreverse additions))))
 
+;;;; State Overrides
+
 (defun chirp-plist-override (plist prop fallback)
   "Return PROP from PLIST when present, otherwise FALLBACK."
   (if (plist-member plist prop)
@@ -1756,6 +1802,8 @@ When MAX-COUNT is non-nil, return at most that many images."
   "Clear local state overrides for TWEET-ID."
   (when tweet-id
     (remhash tweet-id (chirp--session-tweet-state-overrides (chirp--session)))))
+
+;;;; Feed Updates
 
 (defun chirp--map-buffer-tweets (buffer fn)
   "Call FN for each distinct tweet entry visible in BUFFER."
@@ -1844,6 +1892,8 @@ Return non-nil when BUFFER currently projects a primary feed."
           (appkit-request-sync
            view :structure t :part 'frame :position t))))
     (and active-state t)))
+
+;;; Tweet Fields
 
 (defun chirp-user-like-p (object)
   "Return non-nil when OBJECT resembles a user payload."
@@ -1983,6 +2033,10 @@ Return non-nil when BUFFER currently projects a primary feed."
       (walk value))
     result))
 
+;;; Normalized Objects
+
+;;;; Users
+
 (defun chirp-extract-user-object (object)
   "Extract the most relevant user object from OBJECT."
   (let ((direct (or (chirp-get object "user" "author")
@@ -2087,6 +2141,8 @@ Return non-nil when BUFFER currently projects a primary feed."
                                       (string-remove-prefix "@" handle)))
             :raw object))))
 
+;;;; Media
+
 (defun chirp-normalize-media-variant (object)
   "Normalize media variant OBJECT into a plist."
   (let ((url (chirp-first-nonblank (chirp-get object "url")))
@@ -2100,6 +2156,8 @@ Return non-nil when BUFFER currently projects a primary feed."
   (if (listp value)
       (delq nil (mapcar #'chirp-normalize-media-variant value))
     nil))
+
+;;;; Link Cards
 
 (defun chirp--tweet-card (object)
   "Return OBJECT's card object, or nil."
@@ -2286,6 +2344,8 @@ over the card's `t.co` permalink."
       (delq nil (mapcar #'chirp-normalize-media-item value))
     nil))
 
+;;;; Articles
+
 (defun chirp--article-find-string (value keys &optional predicate)
   "Find a string below VALUE under KEYS that satisfies PREDICATE."
   (cond
@@ -2457,6 +2517,8 @@ over the card's `t.co` permalink."
                     (_ text))
                   parts)))))
     (and parts (string-join (nreverse parts) "\n\n"))))
+
+;;;; Tweets
 
 (defun chirp-normalize-tweet (object)
   "Normalize OBJECT into a tweet plist."
@@ -2697,6 +2759,10 @@ over the card's `t.co` permalink."
                          (chirp-get object "view_count" "views")
                          (chirp-get metrics "views"))
             :raw wrapper))))
+
+;;; Collections
+
+;;;; Visibility
 
 (defun chirp-tweet-visible-p (tweet)
   "Return non-nil when TWEET should be shown in Chirp."

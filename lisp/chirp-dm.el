@@ -42,6 +42,8 @@
 (declare-function chirp-xchat-native-cancel-recovery
                   "chirp-xchat-native" ())
 
+;;; Options
+
 (defcustom chirp-dm-inbox-page-size 20
   "Number of XChat conversations requested per inbox page, up to 100."
   :type '(integer 1 100)
@@ -52,8 +54,12 @@
   :type '(integer 1 200)
   :group 'chirp)
 
+;;; Variables
+
 (defvar chirp-dm--next-instance 0
   "Monotonic identity source for fresh direct-message views.")
+
+;;; Constants
 
 (defconst chirp-dm--inbox-request-key 'dm-inbox
   "Request-table key for one inbox view's active transport.")
@@ -69,6 +75,8 @@
 
 (defconst chirp-dm--refresh-bridge-page-limit 10
   "Maximum history pages fetched to join one focused refresh fragment.")
+
+;;; Inbox
 
 (defun chirp-dm--one-line (text)
   "Return TEXT collapsed into one trimmed display line."
@@ -143,6 +151,8 @@
         :page (list :next-cursor nil :exhausted-p nil)
         :status (list :phase 'initial :message nil)
         :generation nil))
+
+;;;; Projection
 
 (defun chirp-dm--inbox-status-entry (state)
   "Return the passive status directory entry for inbox STATE, or nil."
@@ -249,6 +259,8 @@
    :activate-function #'chirp-dm--activate-inbox-item)
   (appkit-invalidate view :structure t :part 'entries :position t)
   (appkit-sync-invalidations view))
+
+;;;; Requests
 
 (defun chirp-dm--append-unique (current fetched key-function)
   "Append unique FETCHED values to CURRENT using KEY-FUNCTION."
@@ -385,6 +397,8 @@ VIEW and STATE identify the inbox whose request is completing."
          (t
           (chirp-dm--request-inbox view 'older))))
     (user-error "Current view is not a direct-message inbox")))
+
+;;; Decryption and Recovery
 
 (defun chirp-dm--decrypt-current-p (view state generation)
   "Return non-nil when GENERATION still owns decryption in VIEW and STATE."
@@ -738,6 +752,8 @@ view has no conversation-key event."
       (message "Canceling XChat recovery; its remote outcome may be uncertain")
     (user-error "No XChat key recovery is active")))
 
+;;; Inbox Mode
+
 (defvar chirp-dm--inbox-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map appkit-directory-mode-map)
@@ -804,6 +820,8 @@ view has no conversation-key event."
     (chirp-dm--start-unlock)
     nil)))
 
+;;; Conversation
+
 (defun chirp-dm--make-conversation-state (instance conversation)
   "Return canonical state for INSTANCE and normalized CONVERSATION."
   (list :type 'dm-conversation
@@ -821,6 +839,8 @@ view has no conversation-key event."
         :send-generation nil
         :send-error nil
         :composer-reset-p nil))
+
+;;;; Rendering
 
 (defun chirp-dm--conversation-header (state)
   "Return generated header text for conversation STATE."
@@ -1026,6 +1046,8 @@ view has no conversation-key event."
                (plist-get attachment :resource-key))
              (plist-get event :attachments)))))
 
+;;;; Composer
+
 (defun chirp-dm--composer-prompt (state)
   "Return the Appkit composer prompt for conversation STATE."
   (if (plist-get state :send-generation) "…> " ">>> "))
@@ -1118,6 +1140,8 @@ view has no conversation-key event."
     (chirp-dm--prefetch-event-media view (plist-get state :events))
     (appkit-invalidate view :structure t :parts '(frame timeline) :position t)
     (appkit-sync-invalidations view)))
+
+;;;; Requests
 
 (defun chirp-dm--conversation-owner-current-p (view state generation)
   "Return non-nil when GENERATION owns VIEW's history request for STATE."
@@ -1430,6 +1454,8 @@ Disjoint focused fragments are bridged through older history before merging."
        "XChat conversation request did not start")))
     request))
 
+;;;; Sending
+
 (defun chirp-dm--send-current-p (view state generation)
   "Return non-nil when GENERATION owns the active send in VIEW and STATE."
   (and (appkit-view-live-p view)
@@ -1458,6 +1484,8 @@ Disjoint focused fragments are bridged through older history before merging."
     (appkit-request-sync view :part 'frame :position t)
     (chirp-dm--request-conversation view 'refresh)
     (message "Direct message sent")))
+
+;;;; Commands
 
 (defun chirp-dm-submit ()
   "Encrypt and send the current plain-text XChat composer input once."
@@ -1571,6 +1599,8 @@ Disjoint focused fragments are bridged through older history before merging."
   "Move to the previous visible direct-message event."
   (interactive)
   (chirp-dm--move-message -1))
+
+;;; Conversation Modes
 
 (defvar chirp-dm--timeline-mode-map
   (let ((map (make-sparse-keymap)))

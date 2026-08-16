@@ -17,14 +17,21 @@
 (require 'chirp-render)
 (require 'chirp-timeline)
 
+;;; Constants
+
 (defconst chirp-profile--base-modes '(posts replies highlights media)
   "Profile subviews shown for all profiles.")
+
+;;; Variables
+
 (defvar-local chirp-profile--user nil
   "Buffer-local cached profile plist for the active profile view.")
 (defvar-local chirp-profile--tweets nil
   "Buffer-local cached tweet list for the active profile view.")
 (defvar-local chirp-profile--available-modes chirp-profile--base-modes
   "Buffer-local list of available profile subview modes.")
+
+;;; Labels and Projection
 
 (defun chirp-profile--list-title (kind handle)
   "Return a title for KIND list belonging to HANDLE."
@@ -151,6 +158,8 @@
       (setq-local chirp--timeline-loading-more
                   (plist-get state :loading-more)))))
 
+;;; Views
+
 (defun chirp-profile--ensure-view (handle title refresh mode)
   "Open or reuse HANDLE's profile view titled TITLE.
 REFRESH reloads the selected MODE."
@@ -256,6 +265,8 @@ pagination and empty-state chrome."
       (chirp-display-buffer (appkit-view-buffer view)))
     (appkit-view-buffer view)))
 
+;;; Pagination
+
 (defun chirp-profile-load-more (&optional _anchor-id)
   "Load older items for the current profile view."
   (interactive)
@@ -309,6 +320,8 @@ pagination and empty-state chrome."
          chirp-profile-post-limit
          cursor))))))
 
+;;; Requests
+
 (defun chirp-profile--fetch-content (mode handle callback errback &optional max-results cursor)
   "Fetch profile MODE content for HANDLE and call CALLBACK.
 
@@ -344,6 +357,8 @@ When TARGET is `:next', cycle through the available profile modes."
                    target))))
     (unless (eq mode (with-current-buffer buffer chirp--profile-view-mode))
       (chirp-profile-open handle buffer mode))))
+
+;;; Commands
 
 (defun chirp-profile-open (handle &optional _buffer mode)
   "Open HANDLE's profile.

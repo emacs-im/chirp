@@ -29,6 +29,8 @@
 (require 'appkit-task-queue)
 (require 'chirp-core)
 
+;;; Options
+
 (defcustom chirp-cache-directory
   (locate-user-emacs-file "chirp/")
   "Directory used for cached Chirp media files."
@@ -170,6 +172,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
   :type 'number
   :group 'chirp)
 
+;;; View State
+
 (defvar-local chirp--media-list nil
   "Media list displayed by the current Chirp media buffer.")
 
@@ -187,6 +191,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 
 (defvar-local chirp--media-source-window-state nil
   "Saved source window state used when closing the current media buffer.")
+
+;;; Runtime
 
 (cl-defstruct (chirp-media--runtime
                (:constructor chirp-media--runtime-create))
@@ -288,6 +294,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
             (when source-anchor
               (chirp-restore-point-anchor source-anchor)))))))
 
+;;; Modes
+
 (defvar chirp-media-view-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -344,6 +352,8 @@ When nil, Chirp falls back to a text placeholder for video-like media."
       (kbd "o") #'chirp-media-browse)))
 
 (chirp-media--setup-evil)
+
+;;; Media Identity and Cache
 
 (defun chirp-media-video-like-p (media)
   "Return non-nil when MEDIA is video-like."
@@ -469,6 +479,8 @@ Use FALLBACK-EXT when URL has no recognizable extension."
        chirp-media-prefetch-command
        (> chirp-link-card-prefetch-concurrency 0)))
 
+;;; Image Resources
+
 (defun chirp-media--finish-image-resource
     (app resource-key entry status &optional file)
   "Finish APP image ENTRY for RESOURCE-KEY with STATUS and optional FILE."
@@ -579,6 +591,8 @@ HELP-ECHO customize the accessible image action."
      ((eq status 'ready) 'failed)
      (status status)
      (t 'missing))))
+
+;;; Task Scheduling
 
 (defun chirp-media--add-pending-callback (key callback table)
   "Add CALLBACK for KEY to pending callback TABLE."
@@ -809,6 +823,8 @@ Use FALLBACK-EXT when URL has no recognizable extension."
            (signal (car err) (cdr err))))
         path)))))
 
+;;; Link Cards
+
 (defun chirp-media--legacy-buffer-p (buffer)
   "Return non-nil when BUFFER needs callback-driven media redraws."
   (not (chirp--live-projection-view buffer)))
@@ -979,6 +995,8 @@ cached Open Graph fetches for tweets that have no card payload."
            (remhash url pending)
            (signal (car err) (cdr err)))))))))
 
+;;; Media Prefetch
+
 (defun chirp-media--prefetch-callback (buffer)
   "Return a callback that requests a redraw of legacy BUFFER."
   (when (chirp-media--legacy-buffer-p buffer)
@@ -1113,6 +1131,8 @@ When FALLBACK is non-nil, call it if remote extraction fails."
   (when (chirp-media--prefetch-enabled-p)
     (when chirp-show-avatars
       (chirp-media-prefetch-avatar (plist-get user :avatar-url) buffer))))
+
+;;; Image and Video Display
 
 (defun chirp-media--scaled-image (file max-width max-height)
   "Create a FILE image descriptor constrained by MAX-WIDTH and MAX-HEIGHT."
@@ -1281,6 +1301,8 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
             (url (plist-get media :url)))
       (browse-url url)
     (user-error "No media URL available")))
+
+;;; Downloads and Playback
 
 (defun chirp-media--highest-bitrate-variant-url (media)
   "Return the highest bitrate variant URL for MEDIA, or nil."
@@ -1594,6 +1616,8 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
             (or (and (file-exists-p thumbnail-file)
                      thumbnail-file)
                 (chirp-media--extract-video-thumbnail video-file thumbnail-file)))))))
+
+;;; Media Viewer
 
 (defun chirp-media--render-image-buffer (buffer media-list index title)
   "Render photo MEDIA-LIST at INDEX into BUFFER using `image-mode'."

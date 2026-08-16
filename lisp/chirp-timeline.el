@@ -22,12 +22,16 @@
 
 (declare-function chirp-profile-load-more "chirp-profile" (&optional anchor-id))
 
+;;; Primary Timeline
+
 (defun chirp-timeline--title (kind)
   "Return the buffer title for timeline KIND."
-  (pcase kind
+(pcase kind
     ('home "For You")
     ('following "Following")
     (_ "Timeline")))
+
+;;;; Constants
 
 (defconst chirp-timeline--primary-view-id 'primary-timeline
   "Stable Appkit view identity shared by Home and Following.")
@@ -42,6 +46,7 @@
   phase
   settled-p)
 
+;;;; State and Mode
 
 (define-derived-mode chirp-timeline--mode chirp-view-mode "Chirp-Timeline"
   "Major mode for Appkit-owned primary timeline buffers."
@@ -101,6 +106,8 @@
               ((memq (plist-get (plist-get state :query) :kind)
                      '(home following))))
     view))
+
+;;;; Projection
 
 (defun chirp-timeline--row-key (tweet)
   "Return the stable projection key for TWEET."
@@ -177,6 +184,8 @@
      view invalidations
      (chirp-timeline--project-rows (plist-get state :items))
      (chirp-timeline--frame-text state))))
+
+;;;; Requests
 
 (defun chirp-timeline--generation-current-p (view state generation)
   "Return non-nil when GENERATION may still update STATE in VIEW."
@@ -409,6 +418,8 @@
       (chirp-timeline--request view 'refresh)
     (user-error "Current view is not a primary timeline")))
 
+;;; Collections
+
 (defun chirp-timeline--likes-title (handle)
   "Return the buffer title for liked tweets by HANDLE."
   (if (and handle (not (string-empty-p handle)))
@@ -564,6 +575,8 @@ REFRESH retries the request after failure."
          (chirp-show-error buffer title refresh message))))
     buffer))
 
+;;; Primary Commands
+
 (defun chirp-timeline-open-home ()
   "Open Chirp's unique Appkit-owned home timeline."
   (interactive)
@@ -600,6 +613,8 @@ REFRESH retries the request after failure."
     (chirp-profile-load-more))
    (t
     (user-error "Current view does not support loading more posts"))))
+
+;;; Collection Commands
 
 (defun chirp-timeline-open-bookmarks (&optional _buffer)
   "Open bookmarks."
@@ -681,6 +696,8 @@ When LIST-ID is nil, prompt from the authenticated account's lists."
          title refresh
          (lambda (success errback)
            (chirp-backend-list clean-id success errback)))))))
+
+;;; Search Commands
 
 (defun chirp-timeline-open-search (query &optional _buffer)
   "Open search results for QUERY."

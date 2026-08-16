@@ -16,6 +16,8 @@
 (require 'url-parse)
 (require 'chirp-core)
 
+;;; Constants
+
 (defconst chirp-xchat-max-inbox-items 100
   "Maximum number of conversations accepted in one XChat inbox page.")
 
@@ -83,6 +85,8 @@
     (15 . set-verified-status)
     (16 . call-started))
   "Map serialized XChat MessageEntryContents field IDs to kinds.")
+
+;;; Thrift Decoding
 
 (cl-defstruct (chirp-xchat--thrift-state
                (:constructor chirp-xchat--thrift-state-create))
@@ -218,6 +222,8 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
   (when-let* ((bytes (chirp-xchat--thrift-field struct field-id 11)))
     (chirp-xchat--text bytes label)))
 
+;;; Message Events
+
 (defun chirp-xchat--decode-event (encoded)
   "Decode one Base64 ENCODED XChat MessageEvent."
   (unless (and (stringp encoded)
@@ -321,6 +327,8 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                           'conversation-key-change))
               (list :encoded-event encoded)))))
 
+;;;; Sending
+
 (defun chirp-xchat--send-base64-p (value limit)
   "Return non-nil when VALUE is bounded Base64 no longer than LIMIT."
   (and (stringp value)
@@ -400,6 +408,8 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                      conversation-id sender-id)))
         (error "XChat send acknowledgement does not match the message"))
       event)))
+
+;;; Timeline and Inbox
 
 (defun chirp-xchat--numeric-string-less-p (left right)
   "Return non-nil when numeric string LEFT is less than RIGHT."
@@ -678,6 +688,8 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
                  (,@(when cursor `(("nextCursor" . ,cursor)))
                   ("complete" . ,(not cursor))))))))))
 
+;;; Recovery
+
 (defun chirp-xchat--required (object key label)
   "Return OBJECT's required KEY described by LABEL."
   (let ((cell (and (chirp-object-p object)
@@ -947,6 +959,8 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
                     ,(plist-get key :identity-public-key-signature))))
                (or (gethash user-id table)
                    (error "XChat signing keys are missing")))))))
+
+;;; Query Adapters
 
 (defun chirp-xchat-query-settings (inbox-limit event-limit)
   "Return XChat query settings for INBOX-LIMIT and EVENT-LIMIT."

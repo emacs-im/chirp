@@ -31,6 +31,8 @@
 (declare-function chirp-unsent-scheduled "chirp-unsent" ())
 (declare-function chirp-edit-history-open-at-point "chirp-edit-history" ())
 
+;;; Options
+
 (defcustom chirp-compose-temporary-directory
   (expand-file-name "compose/" (locate-user-emacs-file "chirp/"))
   "Directory used for temporary clipboard image attachments.
@@ -44,6 +46,17 @@ cancelled, the attachment is removed, or the send completes."
   "Language code used by `chirp-translate-at-point'."
   :type 'string
   :group 'chirp)
+
+;;; Constants
+
+(defconst chirp-compose--reply-audience-choices
+  '((everyone . "Everyone")
+    (community . "People you follow")
+    (verified . "Verified accounts")
+    (byinvitation . "Accounts you mention"))
+  "Reply audience symbols and their compose status labels.")
+
+;;; Variables
 
 (defvar-local chirp-compose-kind nil
   "Compose action kind for the current Chirp compose buffer.")
@@ -96,13 +109,6 @@ Appkit compose parts until the draft is snapshotted for send.")
 
 `everyone' omits a conversation-control rule.  Replies leave this nil.")
 
-(defconst chirp-compose--reply-audience-choices
-  '((everyone . "Everyone")
-    (community . "People you follow")
-    (verified . "Verified accounts")
-    (byinvitation . "Accounts you mention"))
-  "Reply audience symbols and their compose status labels.")
-
 (defvar-local chirp-compose--mention-cache nil
   "User completion results keyed by query in the current draft.")
 
@@ -117,6 +123,8 @@ Appkit compose parts until the draft is snapshotted for send.")
 
 (defvar-local chirp-compose--chrome-timer nil
   "Idle timer that refreshes compose status after body edits.")
+
+;;; Compose Mode
 
 (defvar chirp-compose-mode-map
   (let ((map (make-sparse-keymap)))
@@ -158,6 +166,8 @@ Appkit compose parts until the draft is snapshotted for send.")
       (evil-set-initial-state 'chirp-compose-mode 'insert))))
 
 (chirp-compose--setup-evil)
+
+;;;; Mention Completion
 
 (defun chirp-compose--mention-bounds ()
   "Return handle bounds at point when composing an @mention."
@@ -291,6 +301,8 @@ Appkit compose parts until the draft is snapshotted for send.")
     (make-directory dir t)
     dir))
 
+;;; Actions
+
 (defun chirp-actions--tweet-at-point ()
   "Return the tweet entry at point, or signal a user error."
   (let ((entry (chirp-entry-at-point)))
@@ -347,6 +359,8 @@ Appkit compose parts until the draft is snapshotted for send.")
                    (eq (plist-get (chirp-entry-at-point) :kind) 'user))))
     (chirp-actions--refresh-buffer buffer)))
 
+;;;; Dispatch
+
 (defun chirp-actions--perform (args on-success &optional on-error)
   "Run backend action ARGS and call ON-SUCCESS with the decoded payload.
 
@@ -358,6 +372,8 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
      (funcall on-success data envelope))
    (or on-error
        #'chirp-actions--show-error)))
+
+;;;; Tweet State
 
 (defun chirp-actions--apply-state (buffer tweet-id state-key state-value count-key)
   "Update tweet state in BUFFER for TWEET-ID.
@@ -523,6 +539,8 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
            (chirp-actions--refresh-buffer buffer))
          (message "Tweet deleted."))))))
 
+;;; Compose State
+
 (defun chirp-compose--buffer-name ()
   "Return a compose buffer name for the current draft."
   (pcase chirp-compose-kind
@@ -647,6 +665,8 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
         (with-current-buffer buffer
           (chirp-compose--owner))))
 
+;;;; Reply Audience
+
 (defun chirp-compose--reply-audience-label (audience)
   "Return the status-field label for reply AUDIENCE."
   (or (alist-get (or audience 'everyone) chirp-compose--reply-audience-choices)
@@ -681,6 +701,8 @@ When called interactively, prompt for AUDIENCE."
     (appkit-compose-refresh)
     (set-buffer-modified-p t)
     choice))
+
+;;;; Items and Attachments
 
 (defun chirp-compose--current-index ()
   "Return the compose item index that contains point."
@@ -870,6 +892,8 @@ When called interactively, prompt for AUDIENCE."
                                 (format "Post %d/%d" index total))
                     :attachments (chirp-compose--attachments-section item)))
             items)))
+
+;;;; Attachment Input
 
 (defun chirp-compose--video-path-p (path)
   "Return non-nil when PATH is an MP4 file."
@@ -1164,6 +1188,8 @@ When PATH is nil, prompt for one attached image."
                         (file-name-absolute-p path))
                    (file-name-nondirectory path)
                  path)))))
+
+;;;; Submission
 
 (defun chirp-compose--snapshot-items ()
   "Return draft items with text copied from the Appkit compose parts."
@@ -1460,6 +1486,8 @@ prompt for a local date and time."
        (chirp-compose--unlock compose-buffer temp-attachments)
        (signal (car err) (cdr err))))))
 
+;;; Compose Buffer Lifecycle
+
 (defun chirp-compose--other-window-showing-buffer (buffer &optional except-window)
   "Return a live window showing BUFFER other than EXCEPT-WINDOW, or nil."
   (cl-find-if
@@ -1503,6 +1531,8 @@ prompt for a local date and time."
   (interactive)
   (unless (appkit-compose-cancel-submit)
     (chirp-compose--close (current-buffer) chirp-compose-source-buffer)))
+
+;;; Compose Entry Points
 
 (defun chirp-compose--view-buffer-p (buffer)
   "Return non-nil when BUFFER is a live Chirp view buffer."
@@ -1599,6 +1629,8 @@ target."
    :target-url (plist-get entry :target-url))
   (chirp-compose--apply-unsent entry))
 
+;;; Point Commands
+
 (defun chirp-compose-add-post ()
   "Insert an empty post after the current draft item."
   (interactive)
@@ -1653,6 +1685,8 @@ target."
      :target-id (plist-get tweet :id)
      :target-handle (plist-get tweet :author-handle)
      :target-url (plist-get tweet :url))))
+
+;;; Miscellaneous Actions
 
 (defun chirp-copy-fixupx-url-at-point ()
   "Copy the current tweet URL as a fixupx.com link."

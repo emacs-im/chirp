@@ -36,6 +36,8 @@
 (declare-function chirp-xchat-native-recovery-cancel
                   "chirp-xchat-native-module" (session job-id epoch))
 
+;;; Options
+
 (defcustom chirp-xchat-native-module-file nil
   "Absolute file name of Chirp's optional XChat dynamic module.
 
@@ -44,11 +46,17 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
   :type '(choice (const :tag "Disabled" nil) file)
   :group 'chirp)
 
+;;; Constants
+
 (defconst chirp-xchat-native--expected-version "0.2.2/chat-xdk-0.4.3"
   "Native adapter and official XChat SDK version required by Chirp.")
 
+;;; Variables
+
 (defvar chirp-xchat-native--next-epoch 0
   "Monotonic identity source for native sessions in this Emacs process.")
+
+;;; Loading
 
 (defun chirp-xchat-native--validate-loaded ()
   "Validate the loaded native module and return non-nil."
@@ -91,6 +99,8 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
      (user-error "XChat decryption module is unavailable: %s"
                  (error-message-string err)))))
 
+;;;; Session
+
 (defun chirp-xchat-native--session ()
   "Return the native session owned by Chirp's current Appkit session."
   (chirp-xchat-native-load)
@@ -104,6 +114,8 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
             (chirp--session-xchat-native-epoch state)
             (cl-incf chirp-xchat-native--next-epoch))
       session)))
+
+;;; Recovery
 
 (defun chirp-xchat-native-discard-recovery-input (input)
   "Erase realm tokens carried by normalized recovery INPUT."
@@ -168,6 +180,8 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
          (chirp-xchat-native--settle-recovery
           recovery nil (error-message-string err)))))))
 
+;;; Cryptographic Operations
+
 (defun chirp-xchat-native-unlocked-p ()
   "Return non-nil when the current Chirp session has recovered XChat keys."
   (and (appkit-app-live-p chirp--app)
@@ -231,6 +245,8 @@ The native session supplies the sender identity bound during key recovery."
         (clear-string input-json))
       (when (stringp output-json)
         (clear-string output-json)))))
+
+;;; Recovery Commands
 
 (defun chirp-xchat-native-recovery-active-p ()
   "Return non-nil when the current Chirp session is recovering XChat keys."
