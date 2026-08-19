@@ -111,8 +111,8 @@
 
 (defun chirp-timeline--row-key (tweet)
   "Return the stable projection key for TWEET."
-  (when-let* ((id (plist-get tweet :id)))
-    (list 'tweet id)))
+  (when-let* ((key (chirp-tweet-key tweet)))
+    (list 'tweet key)))
 
 (defun chirp-timeline--project-rows (tweets)
   "Project normalized TWEETS into keyed Appkit rows."

@@ -1764,8 +1764,11 @@ When MAX-COUNT is non-nil, return at most that many images."
 ;;;; Identity and Merging
 
 (defun chirp-tweet-key (tweet)
-  "Return a stable merge key for normalized TWEET."
-  (or (plist-get tweet :id)
+  "Return a stable merge key for normalized TWEET.
+
+Retweets use their wrapper ID so the wrapper and original remain distinct."
+  (or (plist-get tweet :retweet-id)
+      (plist-get tweet :id)
       (plist-get tweet :url)
       (plist-get tweet :text)))
 
@@ -2529,12 +2532,16 @@ over the card's `t.co` permalink."
                        wrapper-legacy '("retweeted_status_result" "result")))
          (retweet (and raw-retweet
                        (or (chirp-get raw-retweet "tweet") raw-retweet)))
+         (retweet-p (and retweet (chirp-tweet-like-p retweet)))
+         (retweet-id
+          (and retweet-p
+               (chirp-first-nonblank
+                (chirp-get wrapper "rest_id" "id_str" "id")
+                (chirp-get wrapper-legacy "id_str"))))
          (retweeter (and retweet
                          (chirp-normalize-user
                           (chirp-extract-user-object wrapper))))
-         (object (if (and retweet (chirp-tweet-like-p retweet))
-                     retweet
-                   wrapper))
+         (object (if retweet-p retweet wrapper))
          (legacy (chirp-get object "legacy"))
          (metrics (chirp-get object "metrics"))
          (author (chirp-extract-user-object object))
@@ -2695,6 +2702,7 @@ over the card's `t.co` permalink."
     (when (or id (not (string-empty-p display-text)))
       (list :kind 'tweet
             :id id
+            :retweet-id retweet-id
             :text display-text
             :raw-text full-text
             :created-at (chirp-first-nonblank
