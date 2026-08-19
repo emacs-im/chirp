@@ -664,6 +664,37 @@
                                                  ("name" . "Brand")))))))
                    '("1")))))
 
+(ert-deftest chirp-collect-top-level-tweets-keeps-retweet-identity ()
+  "Self-retweets and their originals should remain distinct timeline entries."
+  (let* ((retweeter
+          '(("rest_id" . "10")
+            ("legacy" . (("screen_name" . "alice")
+                         ("name" . "Alice")))))
+         (author
+          '(("rest_id" . "20")
+            ("legacy" . (("screen_name" . "bob")
+                         ("name" . "Bob")))))
+         (original
+          `(("rest_id" . "200")
+            ("core" . (("user_results" . (("result" . ,author)))))
+            ("legacy" . (("full_text" . "Original post")))))
+         (retweet
+          `(("rest_id" . "100")
+            ("core" . (("user_results" . (("result" . ,retweeter)))))
+            ("legacy" .
+             (("full_text" . "RT @bob: Original post")
+              ("retweeted_status_result" . (("result" . ,original)))))))
+         (tweets (chirp-collect-top-level-tweets
+                  (list retweet original))))
+    (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                           tweets)
+                   '("200" "200")))
+    (should (equal (mapcar (lambda (tweet) (plist-get tweet :retweet-id))
+                           tweets)
+                   '("100" nil)))
+    (should (equal (mapcar #'chirp-timeline--row-key tweets)
+                   '((tweet "100") (tweet "200"))))))
+
 (ert-deftest chirp-collect-top-level-tweets-can-keep-promoted-posts ()
   "Promoted tweets should remain visible when filtering is disabled."
   (let ((chirp-hide-promoted-posts nil))

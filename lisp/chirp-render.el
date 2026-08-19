@@ -246,8 +246,8 @@ When ACTIVE is non-nil, prefer the action-specific face for LABEL."
   "Return a stable domain key for ENTRY, or nil."
   (pcase (plist-get entry :kind)
     ('tweet
-     (when-let* ((id (plist-get entry :id)))
-       (list 'tweet id)))
+     (when-let* ((key (chirp-tweet-key entry)))
+       (list 'tweet key)))
     ('user
      (when-let* ((handle (plist-get entry :handle)))
        (list 'user handle)))))
