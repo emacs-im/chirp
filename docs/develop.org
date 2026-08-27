@@ -36,9 +36,12 @@ relationship lists, translation, follow state, and multipart media
 upload use allowlisted REST roots.
 
 Appkit owns session lifecycle, view identity, keyed reconciliation,
-history windows, composer state, and bounded media queues.  X
-protocol state, request semantics, cache paths, tweet rendering, and
-media geometry remain Chirp-owned.
+history windows, mode-neutral compose operations, chat-compose item
+geometry, and bounded media queues.  Chirp owns X draft fields,
+attachments, transport requests, cache paths, tweet rendering, and
+write-outcome meaning.  The ordered post sequence has one owner:
+~appkit-chat-compose-items~; Chirp snapshots that sequence rather than
+mirroring it in a second buffer-local list.
 
 Post, reply, quote, media INIT/APPEND/FINALIZE, and other writes are
 never retried automatically.  Authenticated POST retrievals disable

@@ -19,20 +19,18 @@
       (chirp-compose-mode)
       (setq-local chirp-compose-kind 'post)
       (setq-local chirp-compose-source-buffer source)
-      (setq-local chirp-compose-items (list (list :attachments nil)))
       (setq-local chirp-compose-temp-attachments nil)
       (setq-local chirp-compose-draft-id nil)
       (setq-local chirp-compose-scheduled-id nil)
       (setq-local chirp-compose-execute-at nil)
-      (setq-local chirp-compose-unknown-outcome nil)
       (setq-local chirp-compose-reply-audience 'everyone)
-      (erase-buffer)
-      (insert body)
-      (appkit-compose-setup
+      (appkit-chat-compose-setup
        :app (chirp-app)
        :context-function #'chirp-compose--header-string
        :status-fields-function #'chirp-compose--status-fields
-       :parts-function #'chirp-compose--parts))
+       :parts-function #'chirp-compose--parts)
+      (appkit-chat-compose-set-items
+       (list (list :text body :attachments nil))))
     (cons compose source)))
 
 (defun chirp-test--open-compose-from-foreign-current-buffer
@@ -60,15 +58,14 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello")))
     (unwind-protect
         (with-current-buffer compose
-          (setq-local chirp-compose-items
-                      (list (list :attachments '("/tmp/photo.png"))))
-          (appkit-compose-refresh)
+          (chirp-compose--set-current-item
+           '(:attachments ("/tmp/photo.png")))
           (should (string-match-p "Audience: Everyone"
-                                  (appkit-compose-display-string)))
+                                  (appkit-chat-compose-display-string)))
           (should (string-match-p "Length: 5/280"
-                                  (appkit-compose-display-string)))
+                                  (appkit-chat-compose-display-string)))
           (should (string-match-p "Media: 1/4"
-                                  (appkit-compose-display-string))))
+                                  (appkit-chat-compose-display-string))))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -87,7 +84,7 @@ Return a list of (compose source foreign)."
             (with-current-buffer compose
               (chirp-compose-attach-image video)
               (should (string-match-p "Media: 1 video"
-                                      (appkit-compose-display-string)))
+                                      (appkit-chat-compose-display-string)))
               (should (chirp-compose--video-attachment-p
                        (car (chirp-compose--item-attachments))))
               (should-error (chirp-compose-attach-image photo)
@@ -107,9 +104,9 @@ Return a list of (compose source foreign)."
         (with-current-buffer compose
           (setq-local chirp-compose-kind 'reply)
           (setq-local chirp-compose-reply-audience nil)
-          (appkit-compose-refresh)
+          (appkit-chat-compose-refresh)
           (should-not (string-match-p "Audience:"
-                                      (appkit-compose-display-string)))
+                                      (appkit-chat-compose-display-string)))
           (should-not (plist-member (chirp-compose--draft) :reply-audience)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
@@ -123,9 +120,9 @@ Return a list of (compose source foreign)."
     (unwind-protect
         (with-current-buffer compose
           (chirp-compose-add-post)
-          (should (= (length chirp-compose-items) 2))
-          (should (string-match-p "Posts: 2" (appkit-compose-display-string)))
-          (should (string-match-p "Post 1/2" (appkit-compose-display-string)))
+          (should (= (length (appkit-chat-compose-items)) 2))
+          (should (string-match-p "Posts: 2" (appkit-chat-compose-display-string)))
+          (should (string-match-p "Post 1/2" (appkit-chat-compose-display-string)))
           (insert "second")
           (let ((items (plist-get (chirp-compose--draft) :items)))
             (should (equal (mapcar (lambda (item) (plist-get item :text))
@@ -144,15 +141,15 @@ Return a list of (compose source foreign)."
         (with-current-buffer compose
           (chirp-compose-add-post)
           (insert "third")
-          (appkit-compose-goto-part 0)
+          (appkit-chat-compose-goto-part 0)
           (chirp-compose-add-post)
           (insert "second")
-          (should (equal (appkit-compose-bodies)
+          (should (equal (appkit-chat-compose-bodies)
                          '("first" "second" "third")))
-          (appkit-compose-goto-part 1)
+          (appkit-chat-compose-goto-part 1)
           (chirp-compose-remove-post)
-          (should (equal (appkit-compose-bodies) '("first" "third")))
-          (should (eq (appkit-compose-current-part-index) 1)))
+          (should (equal (appkit-chat-compose-bodies) '("first" "third")))
+          (should (eq (appkit-chat-compose-current-part-index) 1)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -172,9 +169,10 @@ Return a list of (compose source foreign)."
             (with-current-buffer compose
               (chirp-compose-save)
               (should (buffer-live-p compose))
-              (should-not (appkit-compose-submitting-p))
+              (should-not (appkit-compose-operation-active-p))
               (should (equal chirp-compose-draft-id "2087"))
               (should-not buffer-read-only)
+              (should-not (buffer-modified-p))
               (chirp-compose-save))
             (setq requests (nreverse requests))
             (should (= (length requests) 2))
@@ -281,9 +279,9 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer (make-string 141 ?你))))
     (unwind-protect
         (with-current-buffer compose
-          (appkit-compose-refresh)
+          (appkit-chat-compose-refresh)
           (should (string-match-p "Length: 282 long"
-                                  (appkit-compose-display-string))))
+                                  (appkit-chat-compose-display-string))))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -303,7 +301,7 @@ Return a list of (compose source foreign)."
                          "a black cat")))
               (chirp-compose-describe-image path))
             (should (string-match-p "Alt: a black cat"
-                                    (appkit-compose-display-string)))
+                                    (appkit-chat-compose-display-string)))
             (should (equal (chirp-compose--attachment-description
                             (car (chirp-compose--item-attachments)))
                            "a black cat")))
@@ -318,11 +316,11 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello")))
     (unwind-protect
         (with-current-buffer compose
-          (setq-local chirp-compose-items
-                      (list (list :attachments
-                                  (list (list :media-id "2087"
-                                              :preview-url
-                                              "https://pbs.twimg.com/media/x.jpg")))))
+          (chirp-compose--set-current-item
+           (list :attachments
+                 (list (list :media-id "2087"
+                             :preview-url
+                             "https://pbs.twimg.com/media/x.jpg"))))
           (cl-letf (((symbol-function 'read-string)
                      (lambda (_prompt &optional _initial)
                        "restored cat")))
@@ -373,7 +371,7 @@ Return a list of (compose source foreign)."
           (chirp-compose-set-reply-audience 'community)
           (should (eq chirp-compose-reply-audience 'community))
           (should (string-match-p "Audience: People you follow"
-                                  (appkit-compose-display-string)))
+                                  (appkit-chat-compose-display-string)))
           (should (eq (plist-get (chirp-compose--draft) :reply-audience)
                       'community)))
       (when (buffer-live-p compose)
@@ -400,7 +398,7 @@ Return a list of (compose source foreign)."
                                   (:handle "emacslife"))
                                 nil))))
             (with-current-buffer compose
-              (goto-char (appkit-compose-body-end-position))
+              (goto-char (appkit-chat-compose-body-end-position))
               (let ((point-before (point)))
                 (run-hooks 'post-command-hook)
                 (let ((completion
@@ -424,7 +422,7 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "mail emacs@example")))
     (unwind-protect
         (with-current-buffer compose
-          (goto-char (appkit-compose-body-end-position))
+          (goto-char (appkit-chat-compose-body-end-position))
           (should-not (chirp-compose-mention-completion-at-point)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
@@ -443,7 +441,7 @@ Return a list of (compose source foreign)."
                          (setq captured-draft draft))))
               (with-current-buffer compose
                 (chirp-compose-send)
-                (should (appkit-compose-submitting-p))
+                (should (appkit-compose-operation-active-p))
                 (should buffer-read-only))
               (should (buffer-live-p compose))
               (should (eq (plist-get captured-draft :kind) 'post))
@@ -485,8 +483,8 @@ Return a list of (compose source foreign)."
       (unwind-protect
           (progn
             (with-current-buffer compose
-              (setq-local chirp-compose-items
-                          (list (list :attachments (list temp-file))))
+              (chirp-compose--set-current-item
+               (list :attachments (list temp-file)))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
@@ -515,8 +513,8 @@ Return a list of (compose source foreign)."
       (unwind-protect
           (progn
             (with-current-buffer compose
-              (setq-local chirp-compose-items
-                          (list (list :attachments (list temp-file))))
+              (chirp-compose--set-current-item
+               (list :attachments (list temp-file)))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
@@ -526,11 +524,11 @@ Return a list of (compose source foreign)."
                          (setq reported message))))
               (with-current-buffer compose
                 (chirp-compose-send)
-                (should (appkit-compose-submitting-p))
+                (should (appkit-compose-operation-active-p))
                 (funcall error-callback "upload failed")
                 (should (buffer-live-p compose))
-                (should-not (appkit-compose-submitting-p))
-                (should-not chirp-compose-unknown-outcome)
+                (should-not (appkit-compose-operation-active-p))
+                (should-not chirp-compose-write-outcome)
                 (should-not buffer-read-only)
                 (should (member temp-file chirp-compose-temp-attachments))
                 (should (file-exists-p temp-file))
@@ -553,8 +551,8 @@ Return a list of (compose source foreign)."
           (progn
             (write-region "png" nil temp-file nil 'silent)
             (with-current-buffer compose
-              (setq-local chirp-compose-items
-                          (list (list :attachments (list temp-file))))
+              (chirp-compose--set-current-item
+               (list :attachments (list temp-file)))
               (setq-local chirp-compose-temp-attachments (list temp-file)))
             (cl-letf (((symbol-function 'chirp-x--request)
                        (lambda (_url _method callback &rest _options)
@@ -575,8 +573,8 @@ Return a list of (compose source foreign)."
               (chirp-stop)
               (should (buffer-live-p compose))
               (with-current-buffer compose
-                (should-not (appkit-compose-submitting-p))
-                (should chirp-compose-unknown-outcome)
+                (should-not (appkit-compose-operation-active-p))
+                (should (eq 'unknown chirp-compose-write-outcome))
                 (should (member temp-file chirp-compose-temp-attachments)))
               (should (file-exists-p temp-file))
               (should (string-prefix-p "X write outcome is unknown" reported))))
@@ -603,7 +601,7 @@ Return a list of (compose source foreign)."
                        (setq confirmed t)
                        nil)))
             (with-current-buffer compose
-              (setq-local chirp-compose-unknown-outcome t)
+              (setq-local chirp-compose-write-outcome 'unknown)
               (should-error (chirp-compose-send) :type 'user-error)
               (should confirmed)
               (should (= request-count 0))
@@ -615,7 +613,7 @@ Return a list of (compose source foreign)."
                 (chirp-compose-send)
                 (should confirmed)
                 (should (= request-count 1))
-                (should-not chirp-compose-unknown-outcome))))
+                (should (eq 'submitting (appkit-compose-operation-kind))))))
         (when (buffer-live-p compose)
           (kill-buffer compose))
         (when (buffer-live-p source)
@@ -659,19 +657,22 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "video post")))
     (unwind-protect
         (with-current-buffer compose
-          (chirp-compose--begin-submit "Sending post...")
-          (chirp-compose--upload-progress
-           compose
-           (list :phase 'append
-                 :media-type "video/mp4"
-                 :index 2
-                 :count 4
-                 :progress 0.25))
-          (should (string-match-p "Uploading video 2/4"
-                                  (appkit-compose-display-string)))
-          (should (string-match-p "25%" (appkit-compose-display-string)))
-          (appkit-compose-finish-submit)
-          (setq-local buffer-read-only nil))
+          (let ((owner
+                 (chirp-compose--begin-operation
+                  'submitting "Sending post...")))
+            (chirp-compose--upload-progress
+             compose owner
+             (list :phase 'append
+                   :media-type "video/mp4"
+                   :index 2
+                   :count 4
+                   :progress 0.25))
+            (should (string-match-p "Uploading video 2/4"
+                                    (appkit-chat-compose-display-string)))
+            (should (string-match-p
+                     "25%" (appkit-chat-compose-display-string)))
+            (appkit-compose-operation-finish owner)
+            (setq-local buffer-read-only nil)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -686,10 +687,10 @@ Return a list of (compose source foreign)."
           (cl-letf (((symbol-function 'chirp-backend-compose)
                      (lambda (&rest _args) 'pending)))
             (chirp-compose-send)
-            (should (appkit-compose-submitting-p))
+            (should (appkit-compose-operation-active-p))
             (chirp-compose-cancel)
             (should (buffer-live-p compose))
-            (should-not (appkit-compose-submitting-p))
+            (should-not (appkit-compose-operation-active-p))
             (should-not buffer-read-only)))
       (when (buffer-live-p compose)
         (kill-buffer compose))
@@ -754,22 +755,23 @@ Return a list of (compose source foreign)."
         (with-current-buffer buffer
           (chirp-compose-mode)
           (setq-local chirp-compose-kind 'post)
-          (setq-local chirp-compose-items (list (list :attachments nil)))
           (setq-local chirp-compose-temp-attachments nil)
-          (appkit-compose-setup
+          (appkit-chat-compose-setup
            :context-function #'chirp-compose--header-string
            :status-fields-function #'chirp-compose--status-fields
            :parts-function #'chirp-compose--parts)
-          (let ((display (appkit-compose-display-string)))
+          (appkit-chat-compose-set-items
+           (list (list :text "" :attachments nil)))
+          (let ((display (appkit-chat-compose-display-string)))
             (should-not (string-match-p "Compose a new post" display))
             (should-not (string-match-p "No images attached" display))
             (should-not (string-match-p "C-c C-a attach" display))
             (should-not (string-match-p "Posts:" display)))
-          (goto-char (appkit-compose-body-start-position))
+          (goto-char (appkit-chat-compose-body-start-position))
           (insert "abc")
-          (should (equal (appkit-compose-body) "abc"))
+          (should (equal (appkit-chat-compose-body) "abc"))
           (delete-char -1)
-          (should (equal (appkit-compose-body) "ab")))
+          (should (equal (appkit-chat-compose-body) "ab")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -789,12 +791,12 @@ Return a list of (compose source foreign)."
                (chirp-test--make-compose-buffer "hello")))
     (unwind-protect
         (with-current-buffer compose
-          (appkit-compose-refresh)
-          (goto-char (appkit-compose-body-end-position))
+          (appkit-chat-compose-refresh)
+          (goto-char (appkit-chat-compose-body-end-position))
           (insert "!")
-          (should (equal (appkit-compose-body) "hello!"))
+          (should (equal (appkit-chat-compose-body) "hello!"))
           (delete-char -1)
-          (should (equal (appkit-compose-body) "hello")))
+          (should (equal (appkit-chat-compose-body) "hello")))
       (when (buffer-live-p compose)
         (kill-buffer compose))
       (when (buffer-live-p source)
@@ -861,7 +863,7 @@ Return a list of (compose source foreign)."
                        (lambda (&rest draft)
                          (setq captured-draft draft))))
               (with-current-buffer compose
-                (goto-char (appkit-compose-body-start-position))
+                (goto-char (appkit-chat-compose-body-start-position))
                 (insert "hello quote")
                 (chirp-compose-send)))
             (should (buffer-live-p compose))
@@ -895,16 +897,14 @@ Return a list of (compose source foreign)."
               (chirp-compose-mode)
               (setq-local chirp-compose-kind 'post)
               (setq-local chirp-compose-source-buffer source)
-              (setq-local chirp-compose-items (list (list :attachments nil)))
               (setq-local chirp-compose-temp-attachments nil)
-              (setq-local chirp-compose-unknown-outcome nil)
               (setq-local chirp-compose-reply-audience 'everyone)
-              (erase-buffer)
-              (insert "hello world")
-              (appkit-compose-setup
+              (appkit-chat-compose-setup
                :context-function #'chirp-compose--header-string
                :status-fields-function #'chirp-compose--status-fields
-               :parts-function #'chirp-compose--parts))
+               :parts-function #'chirp-compose--parts)
+              (appkit-chat-compose-set-items
+               (list (list :text "hello world" :attachments nil))))
             (let (success-callback)
               (cl-letf (((symbol-function 'chirp-backend-compose)
                          (lambda (&rest draft)
