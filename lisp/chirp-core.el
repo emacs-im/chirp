@@ -24,9 +24,8 @@
 (require 'appkit-view)
 (require 'chirp-url)
 
-(declare-function appkit-compose-cancel-submit "appkit-compose" ())
-(declare-function appkit-compose-finish-submit "appkit-compose" ())
-(declare-function appkit-compose-submitting-p "appkit-compose" ())
+(declare-function appkit-compose-cancel-operation "appkit-compose" ())
+(declare-function appkit-compose-operation-active-p "appkit-compose" ())
 
 (declare-function chirp-backend-tweet "chirp-backend"
                   (tweet-id callback &optional errback))
@@ -205,13 +204,10 @@ commands still work, and displays alt text when the backend provides it."
         (dolist (buffer (buffer-list))
           (when (buffer-live-p buffer)
             (with-current-buffer buffer
-              (when (and (derived-mode-p 'appkit-compose-mode)
-                         (fboundp 'appkit-compose-submitting-p)
-                         (appkit-compose-submitting-p))
-                (ignore-errors (appkit-compose-cancel-submit))
-                (when (fboundp 'appkit-compose-finish-submit)
-                  (appkit-compose-finish-submit))
-                (setq-local buffer-read-only nil)))))
+              (when (and (derived-mode-p 'appkit-chat-compose-mode)
+                         (fboundp 'appkit-compose-operation-active-p)
+                         (appkit-compose-operation-active-p))
+                (ignore-errors (appkit-compose-cancel-operation))))))
         (when (appkit-app-live-p chirp--app)
           (appkit-stop-app chirp--app)))
     (setq chirp--app nil)))
