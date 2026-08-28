@@ -1269,6 +1269,10 @@
               (should (eq major-mode 'chirp-dm--conversation-mode))
               (should-not (derived-mode-p 'special-mode))
               (should-not buffer-read-only)
+              (should appkit-chatbuf-owns-wrap-prefix-p)
+              (should visual-line-mode)
+              (should word-wrap)
+              (should-not truncate-lines)
               (should (appkit-chatbuf-prompt-start-position))
               (should (appkit-chatbuf-input-start-position))
               (should-not
