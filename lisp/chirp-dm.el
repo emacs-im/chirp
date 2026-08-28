@@ -1643,13 +1643,10 @@ Disjoint focused fragments are bridged through older history before merging."
 
 (define-derived-mode chirp-dm--conversation-mode appkit-chatbuf-mode "Chirp-DM"
   "Major mode for one XChat conversation with a plain-text composer."
-  (setq-local truncate-lines nil)
-  (setq-local word-wrap t)
   (setq-local line-spacing 0)
   (add-hook 'chirp-dm--timeline-mode-hook
             #'appkit-evil-normalize-keymaps nil t)
-  (appkit-chatbuf-use-timeline-mode #'chirp-dm--timeline-mode)
-  (visual-line-mode 1))
+  (appkit-chatbuf-use-timeline-mode #'chirp-dm--timeline-mode))
 
 (cl-defun chirp-dm--open-conversation (conversation &key refresh-p)
   "Open a fresh chat view for normalized CONVERSATION.

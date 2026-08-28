@@ -232,7 +232,8 @@
 
 (ert-deftest chirp-thread-render-view-draws-ancestor-chain-prefix ()
   "Ancestors should share a prefix spine and keep replies nested under the focus."
-  (let ((scratch (generate-new-buffer " *chirp-thread-chain-test*"))
+  (let ((appkit-discussion-connector-style 'text)
+        (scratch (generate-new-buffer " *chirp-thread-chain-test*"))
         buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-media-avatar-image)
