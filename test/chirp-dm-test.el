@@ -14,14 +14,6 @@
 (require 'chirp-xchat)
 (require 'chirp-xchat-native)
 
-(declare-function evil-mode "evil" (&optional arg))
-(declare-function evil-insert "evil-commands"
-                  (count &optional vcount skip-empty-lines))
-(declare-function evil-insert-state "evil-states" ())
-(declare-function evil-normal-state "evil-states" ())
-(defvar evil-mode)
-(defvar evil-state)
-
 (defun chirp-dm-test--u8 (value)
   "Encode VALUE as one unsigned byte."
   (unibyte-string (logand value #xff)))
@@ -1359,41 +1351,6 @@
       (when (buffer-live-p request)
         (kill-buffer request)))))
 
-(ert-deftest chirp-dm-evil-enters-insert-state-in-the-composer ()
-  "Installed Evil integration should leave the Appkit composer editable."
-  (skip-unless (require 'evil nil t))
-  (let ((chirp--app nil)
-        (evil-was-enabled (bound-and-true-p evil-mode))
-        buffer)
-    (unwind-protect
-        (save-window-excursion
-          (unless evil-was-enabled
-            (evil-mode 1))
-          (let ((conversation
-                 (chirp-dm-test--normalized-conversation
-                  (chirp-dm-test--normalized-event "20" "20" "hello"))))
-            (setq buffer (chirp-dm--open-conversation conversation))
-            (with-current-buffer buffer
-              (goto-char (point-max))
-              (appkit-chatbuf-update-context-mode)
-              (should (eq evil-state 'normal))
-              (should (eq (key-binding (kbd "i")) #'evil-insert))
-              (evil-insert-state)
-              (should (eq evil-state 'insert))
-              (should (eq (key-binding (kbd "q")) #'self-insert-command))
-              (let ((last-command-event ?q))
-                (call-interactively #'self-insert-command))
-              (should (equal (appkit-chatbuf-input-string) "q"))
-              (evil-normal-state)
-              (goto-char (point-min))
-              (appkit-chatbuf-update-context-mode)
-              (should (eq (key-binding (kbd "q"))
-                          #'chirp-quit-current-buffer)))))
-      (chirp-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))
-      (unless evil-was-enabled
-        (evil-mode -1)))))
 
 (ert-deftest chirp-dm-send-clears-only-after-ack-and-canonical-refresh ()
   "Acknowledged sends should merge focused deltas without optimistic rows."

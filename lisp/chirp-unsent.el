@@ -102,21 +102,25 @@ Either `draft' or `scheduled'.")
 (defun chirp-unsent--setup-evil ()
   "Install optional Evil bindings for unsent draft lists."
   (when appkit-evil-enable-integration
-    (when (and (featurep 'evil)
-               (fboundp 'evil-set-initial-state))
-      (evil-set-initial-state 'chirp-unsent-mode 'normal))
+    (appkit-evil-set-initial-states '(chirp-unsent-mode) 'normal)
     (appkit-evil-define-readonly-keys 'chirp-unsent-mode-map)
-    (appkit-evil-define-keys '(normal motion) 'chirp-unsent-mode-map
-      (kbd "RET") #'chirp-unsent-open
-      (kbd "g r") #'chirp-unsent-refresh
-      (kbd "m") #'chirp-unsent-mark
-      (kbd "u") #'chirp-unsent-unmark
-      (kbd "U") #'chirp-unsent-unmark-all
-      (kbd "d") #'chirp-unsent-flag-delete
-      (kbd "x") #'chirp-unsent-execute
-      (kbd "TAB") #'chirp-unsent-toggle-kind)))
+    (appkit-evil-map
+      (:map chirp-unsent-mode-map
+       :nm
+       "RET" #'chirp-unsent-open
+       "g r" #'chirp-unsent-refresh
+       "M" #'chirp-unsent-mark
+       "U" #'chirp-unsent-unmark
+       "g U" #'chirp-unsent-unmark-all
+       "D" #'chirp-unsent-flag-delete
+       "X" #'chirp-unsent-execute
+       "TAB" #'chirp-unsent-toggle-kind))
+    (appkit-evil-normalize-buffers '(chirp-unsent-mode))))
 
 (chirp-unsent--setup-evil)
+
+(with-eval-after-load 'evil
+  (chirp-unsent--setup-evil))
 
 (defun chirp-unsent--buffer ()
   "Return the reusable unsent list buffer."

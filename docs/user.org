@@ -83,17 +83,18 @@ without fetching again; use ~g~ for fresh data.
 | ~N~ | older posts, conversations, or message history.  Evil: ~g n~ |
 | ~q~ | close the window; Home and Following keep the buffer |
 | ~RET~ / mouse-1 | Appkit action at point, or open the tweet or profile |
-| ~m~ | first media item |
-| ~D~ | download current media |
-| ~A~ | author profile |
-| ~S~ | add a spam phrase; ~C-u S~ starts from the display name |
-| ~x~ | actions menu |
+| ~m~ | first media item.  Evil: ~g m~ |
+| ~D~ | download current media.  Evil: ~g d~ |
+| ~A~ | author profile.  Evil: ~g a~ |
+| ~S~ | add a spam phrase; ~C-u S~ starts from the display name.  Evil: ~g S~ |
+| ~x~ | actions menu.  Evil: ~?~ |
 | ~x r~ | reply, or refuse when X limits replies |
 | ~x T~ | translate the tweet |
-| ~o~ | open in a browser |
+| ~o~ | open in a browser.  Evil: ~g o~ |
 
 In an XChat conversation, ~RET~ on the timeline moves to the
-composer; ~RET~ in the composer sends, ~C-u RET~ inserts a newline,
+composer; Evil users can use ~i~ to move there and enter insert state.
+~RET~ in the composer sends, ~C-u RET~ inserts a newline,
 and ~C-c C-c~ sends.  ~M-p~ and ~M-n~ walk sent-input history.
 
 ~M-x chirp-dm-cancel-unlock~ cancels an active recovery and reports

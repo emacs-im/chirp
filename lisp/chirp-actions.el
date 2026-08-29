@@ -153,11 +153,13 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
 (defun chirp-compose--setup-evil ()
   "Install optional Evil bindings for compose buffers."
   (when appkit-evil-enable-integration
-    (when (and (featurep 'evil)
-               (fboundp 'evil-set-initial-state))
-      (evil-set-initial-state 'chirp-compose-mode 'insert))))
+    (appkit-evil-set-initial-states '(chirp-compose-mode) 'insert)
+    (appkit-evil-normalize-buffers '(chirp-compose-mode))))
 
 (chirp-compose--setup-evil)
+
+(with-eval-after-load 'evil
+  (chirp-compose--setup-evil))
 
 ;;;; Mention Completion
 
