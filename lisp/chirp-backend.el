@@ -439,7 +439,9 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
       (when (and (vectorp rule)
                  (> (length rule) 2)
                  (stringp (aref rule 0))
-                 (eq (aref rule 2) #'compose-gstring-for-graphic))
+                 (memq (aref rule 2)
+                       '(compose-gstring-for-graphic
+                         compose-gstring-and-emoji)))
         (save-match-data
           (when (and (string-match (aref rule 0) text index)
                      (= (match-beginning 0) index))
