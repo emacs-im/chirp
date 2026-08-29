@@ -754,14 +754,12 @@ view has no conversation-key event."
 
 ;;; Inbox Mode
 
-(defvar chirp-dm--inbox-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map appkit-directory-mode-map)
-    (define-key map (kbd "g") #'chirp-dm-refresh-inbox)
-    (define-key map (kbd "N") #'chirp-dm-load-more-inbox)
-    (define-key map (kbd "q") #'chirp-quit-current-buffer)
-    map)
-  "Keymap for `chirp-dm--inbox-mode'.")
+(defvar-keymap chirp-dm--inbox-mode-map
+  :doc "Keymap for `chirp-dm--inbox-mode'."
+  :parent appkit-directory-mode-map
+  "g" #'chirp-dm-refresh-inbox
+  "N" #'chirp-dm-load-more-inbox
+  "q" #'chirp-quit-current-buffer)
 
 (define-derived-mode chirp-dm--inbox-mode appkit-directory-mode "Chirp-DMs"
   "Major mode for Chirp's Appkit-owned XChat inbox."
@@ -1602,15 +1600,13 @@ Disjoint focused fragments are bridged through older history before merging."
 
 ;;; Conversation Modes
 
-(defvar chirp-dm--timeline-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'chirp-dm-refresh-conversation)
-    (define-key map (kbd "N") #'chirp-dm-load-older-messages)
-    (define-key map (kbd "n") #'chirp-dm-next-message)
-    (define-key map (kbd "p") #'chirp-dm-previous-message)
-    (define-key map (kbd "q") #'chirp-quit-current-buffer)
-    map)
-  "Timeline-only keymap active outside the XChat composer.")
+(defvar-keymap chirp-dm--timeline-mode-map
+  :doc "Timeline-only keymap active outside the XChat composer."
+  "g" #'chirp-dm-refresh-conversation
+  "N" #'chirp-dm-load-older-messages
+  "n" #'chirp-dm-next-message
+  "p" #'chirp-dm-previous-message
+  "q" #'chirp-quit-current-buffer)
 
 (define-minor-mode chirp-dm--timeline-mode
   "Enable direct-message navigation keys outside the XChat composer."
@@ -1618,14 +1614,12 @@ Disjoint focused fragments are bridged through older history before merging."
   :lighter nil
   :keymap chirp-dm--timeline-mode-map)
 
-(defvar chirp-dm--conversation-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'chirp-dm-return-dwim)
-    (define-key map (kbd "C-c C-c") #'chirp-dm-submit)
-    (define-key map (kbd "C-c C-r") #'chirp-dm-refresh-conversation)
-    (define-key map (kbd "C-c C-n") #'chirp-dm-load-older-messages)
-    map)
-  "Keymap for `chirp-dm--conversation-mode'.")
+(defvar-keymap chirp-dm--conversation-mode-map
+  :doc "Keymap for `chirp-dm--conversation-mode'."
+  "RET" #'chirp-dm-return-dwim
+  "C-c C-c" #'chirp-dm-submit
+  "C-c C-r" #'chirp-dm-refresh-conversation
+  "C-c C-n" #'chirp-dm-load-older-messages)
 
 (defun chirp-dm--setup-evil ()
   "Install optional Evil bindings for XChat conversation views."

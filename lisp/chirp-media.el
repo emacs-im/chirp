@@ -296,33 +296,29 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 
 ;;; Modes
 
-(defvar chirp-media-view-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "n") #'chirp-media-next)
-    (define-key map (kbd "p") #'chirp-media-previous)
-    (define-key map (kbd "D") #'chirp-media-download-at-point)
-    (define-key map (kbd "v") #'chirp-media-play)
-    (define-key map (kbd "o") #'chirp-media-browse)
-    (define-key map (kbd "q") #'chirp-media-quit)
-    map)
-  "Keymap for `chirp-media-view-mode'.")
+(defvar-keymap chirp-media-view-mode-map
+  :doc "Keymap for `chirp-media-view-mode'."
+  :parent special-mode-map
+  "n" #'chirp-media-next
+  "p" #'chirp-media-previous
+  "D" #'chirp-media-download-at-point
+  "v" #'chirp-media-play
+  "o" #'chirp-media-browse
+  "q" #'chirp-media-quit)
 
 (define-derived-mode chirp-media-view-mode special-mode "Chirp-Media"
   "Major mode for large media in Chirp."
   (appkit-evil-normalize-keymaps))
 
-(defvar chirp-media-image-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map image-mode-map)
-    (define-key map (kbd "n") #'chirp-media-next)
-    (define-key map (kbd "p") #'chirp-media-previous)
-    (define-key map (kbd "D") #'chirp-media-download-at-point)
-    (define-key map (kbd "v") #'chirp-media-play)
-    (define-key map (kbd "o") #'chirp-media-browse)
-    (define-key map (kbd "q") #'chirp-media-quit)
-    map)
-  "Keymap for `chirp-media-image-mode'.")
+(defvar-keymap chirp-media-image-mode-map
+  :doc "Keymap for `chirp-media-image-mode'."
+  :parent image-mode-map
+  "n" #'chirp-media-next
+  "p" #'chirp-media-previous
+  "D" #'chirp-media-download-at-point
+  "v" #'chirp-media-play
+  "o" #'chirp-media-browse
+  "q" #'chirp-media-quit)
 
 (define-derived-mode chirp-media-image-mode image-mode "Chirp-Image"
   "Image mode used for Chirp photo viewing."

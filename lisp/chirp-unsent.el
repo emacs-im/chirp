@@ -38,20 +38,18 @@ Either `draft' or `scheduled'.")
 
 ;;; Mode
 
-(defvar chirp-unsent-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map tabulated-list-mode-map)
-    (define-key map (kbd "RET") #'chirp-unsent-open)
-    (define-key map (kbd "g") #'chirp-unsent-refresh)
-    (define-key map (kbd "m") #'chirp-unsent-mark)
-    (define-key map (kbd "u") #'chirp-unsent-unmark)
-    (define-key map (kbd "U") #'chirp-unsent-unmark-all)
-    (define-key map (kbd "d") #'chirp-unsent-flag-delete)
-    (define-key map (kbd "x") #'chirp-unsent-execute)
-    (define-key map (kbd "TAB") #'chirp-unsent-toggle-kind)
-    (define-key map (kbd "q") #'chirp-quit-current-buffer)
-    map)
-  "Keymap for `chirp-unsent-mode'.")
+(defvar-keymap chirp-unsent-mode-map
+  :doc "Keymap for `chirp-unsent-mode'."
+  :parent tabulated-list-mode-map
+  "RET" #'chirp-unsent-open
+  "g" #'chirp-unsent-refresh
+  "m" #'chirp-unsent-mark
+  "u" #'chirp-unsent-unmark
+  "U" #'chirp-unsent-unmark-all
+  "d" #'chirp-unsent-flag-delete
+  "x" #'chirp-unsent-execute
+  "TAB" #'chirp-unsent-toggle-kind
+  "q" #'chirp-quit-current-buffer)
 
 ;;; Rows
 
