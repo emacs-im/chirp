@@ -328,26 +328,32 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 (defun chirp-media--setup-evil ()
   "Install optional Evil bindings for Chirp media views."
   (when appkit-evil-enable-integration
-    (when (and (featurep 'evil)
-               (fboundp 'evil-set-initial-state))
-      (evil-set-initial-state 'chirp-media-view-mode 'normal)
-      (evil-set-initial-state 'chirp-media-image-mode 'normal))
+    (appkit-evil-set-initial-states
+     '(chirp-media-view-mode chirp-media-image-mode) 'normal)
     (appkit-evil-define-readonly-keys 'chirp-media-view-mode-map)
-    (appkit-evil-define-keys '(normal motion) 'chirp-media-view-mode-map
-      (kbd "g j") #'chirp-media-next
-      (kbd "g k") #'chirp-media-previous
-      (kbd "D") #'chirp-media-download-at-point
-      (kbd "v") #'chirp-media-play
-      (kbd "o") #'chirp-media-browse)
     (appkit-evil-define-readonly-keys 'chirp-media-image-mode-map)
-    (appkit-evil-define-keys '(normal motion) 'chirp-media-image-mode-map
-      (kbd "g j") #'chirp-media-next
-      (kbd "g k") #'chirp-media-previous
-      (kbd "D") #'chirp-media-download-at-point
-      (kbd "v") #'chirp-media-play
-      (kbd "o") #'chirp-media-browse)))
+    (appkit-evil-map
+      (:map chirp-media-view-mode-map
+       :nm
+       "g j" #'chirp-media-next
+       "g k" #'chirp-media-previous
+       "g d" #'chirp-media-download-at-point
+       "RET" #'chirp-media-play
+       "g o" #'chirp-media-browse)
+      (:map chirp-media-image-mode-map
+       :nm
+       "g j" #'chirp-media-next
+       "g k" #'chirp-media-previous
+       "g d" #'chirp-media-download-at-point
+       "RET" #'chirp-media-play
+       "g o" #'chirp-media-browse))
+    (appkit-evil-normalize-buffers
+     '(chirp-media-view-mode chirp-media-image-mode))))
 
 (chirp-media--setup-evil)
+
+(with-eval-after-load 'evil
+  (chirp-media--setup-evil))
 
 ;;; Media Identity and Cache
 

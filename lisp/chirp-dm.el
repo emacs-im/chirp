@@ -1624,16 +1624,26 @@ Disjoint focused fragments are bridged through older history before merging."
 (defun chirp-dm--setup-evil ()
   "Install optional Evil bindings for XChat conversation views."
   (when appkit-evil-enable-integration
-    (appkit-evil-define-keys '(normal motion) 'chirp-dm--conversation-mode-map
-      (kbd "RET") #'chirp-dm-return-dwim
-      (kbd "g r") #'chirp-dm-refresh-conversation)
-    (appkit-evil-define-keys '(normal motion) 'chirp-dm--timeline-mode-map
-      (kbd "q") #'chirp-quit-current-buffer
-      (kbd "g j") #'chirp-dm-next-message
-      (kbd "g k") #'chirp-dm-previous-message
-      (kbd "g n") #'chirp-dm-load-older-messages)))
+    (appkit-evil-set-initial-states
+     '(chirp-dm--conversation-mode) 'normal)
+    (appkit-evil-map
+      (:map chirp-dm--conversation-mode-map
+       :nm
+       "RET" #'chirp-dm-return-dwim
+       "g r" #'chirp-dm-refresh-conversation)
+      (:map chirp-dm--timeline-mode-map
+       :nm
+       "q" #'chirp-quit-current-buffer
+       "i" #'appkit-evil-chatbuf-enter-input
+       "g j" #'chirp-dm-next-message
+       "g k" #'chirp-dm-previous-message
+       "g n" #'chirp-dm-load-older-messages))
+    (appkit-evil-normalize-buffers '(chirp-dm--conversation-mode))))
 
 (chirp-dm--setup-evil)
+
+(with-eval-after-load 'evil
+  (chirp-dm--setup-evil))
 
 (define-derived-mode chirp-dm--conversation-mode appkit-chatbuf-mode "Chirp-DM"
   "Major mode for one XChat conversation with a plain-text composer."

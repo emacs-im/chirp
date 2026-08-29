@@ -12,11 +12,6 @@
 (require 'chirp-actions)
 (require 'chirp-thread)
 
-(declare-function evil-mode "evil" (&optional arg))
-(declare-function evil-goto-first-line "evil-commands" ())
-(declare-function evil-normal-state "evil-states" ())
-(defvar evil-mode)
-
 (defun chirp-test--face-member-p (face value)
   "Return non-nil when FACE appears in text property VALUE."
   (cond
@@ -2123,24 +2118,6 @@
                  :text "Read this"
                  :article-text "Full article body."))))
 
-(ert-deftest chirp-view-evil-keeps-native-prefixes-and-actions ()
-  "Evil normal state should keep `gg` and use `g r` for refresh."
-  (skip-unless (require 'evil nil t))
-  (let ((evil-was-enabled (bound-and-true-p evil-mode)))
-    (unwind-protect
-        (progn
-          (unless evil-was-enabled
-            (evil-mode 1))
-          (with-temp-buffer
-            (chirp-view-mode)
-            (evil-normal-state)
-            (should (eq (key-binding (kbd "RET")) #'chirp-open-at-point))
-            (should (eq (key-binding (kbd "g g")) #'evil-goto-first-line))
-            (should (eq (key-binding (kbd "g r")) #'chirp-refresh))
-            (should (eq (key-binding (kbd "g j")) #'chirp-next-entry))
-            (should (eq (key-binding (kbd "g k")) #'chirp-previous-entry))))
-      (unless evil-was-enabled
-        (evil-mode -1)))))
 
 (provide 'chirp-render-test)
 

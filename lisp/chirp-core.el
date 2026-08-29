@@ -330,26 +330,30 @@ commands still work, and displays alt text when the backend provides it."
 (defun chirp--setup-evil ()
   "Install optional Evil bindings for Chirp browsing views."
   (when appkit-evil-enable-integration
-    (when (and (featurep 'evil)
-               (fboundp 'evil-set-initial-state))
-      (evil-set-initial-state 'chirp-view-mode 'normal))
+    (appkit-evil-set-initial-states '(chirp-view-mode) 'normal)
     (appkit-evil-define-readonly-keys 'chirp-view-mode-map)
-    (appkit-evil-define-keys '(normal motion) 'chirp-view-mode-map
-      (kbd "RET") #'chirp-open-at-point
-      (kbd "<return>") #'chirp-open-at-point
-      (kbd "TAB") #'chirp-toggle-home-following
-      (kbd "g r") #'chirp-refresh
-      (kbd "g j") #'chirp-next-entry
-      (kbd "g k") #'chirp-previous-entry
-      (kbd "g n") #'chirp-load-more
-      (kbd "m") #'chirp-open-primary-media
-      (kbd "D") #'chirp-media-download-at-point
-      (kbd "A") #'chirp-open-author-at-point
-      (kbd "S") #'chirp-thread-add-spam-rule
-      (kbd "x") #'chirp-dispatch
-      (kbd "o") #'chirp-browse-at-point)))
+    (appkit-evil-map
+      (:map chirp-view-mode-map
+       :nm
+       "RET" #'chirp-open-at-point
+       "<return>" #'chirp-open-at-point
+       "TAB" #'chirp-toggle-home-following
+       "g r" #'chirp-refresh
+       "g j" #'chirp-next-entry
+       "g k" #'chirp-previous-entry
+       "g n" #'chirp-load-more
+       "g m" #'chirp-open-primary-media
+       "g d" #'chirp-media-download-at-point
+       "g a" #'chirp-open-author-at-point
+       "g S" #'chirp-thread-add-spam-rule
+       "?" #'chirp-dispatch
+       "g o" #'chirp-browse-at-point))
+    (appkit-evil-normalize-buffers '(chirp-view-mode))))
 
 (chirp--setup-evil)
+
+(with-eval-after-load 'evil
+  (chirp--setup-evil))
 
 ;;; Status
 
