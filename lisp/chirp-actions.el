@@ -117,21 +117,19 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
 
 ;;; Compose Mode
 
-(defvar chirp-compose-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'chirp-compose-send)
-    (define-key map (kbd "C-c C-s") #'chirp-compose-save)
-    (define-key map (kbd "C-c C-t") #'chirp-compose-schedule)
-    (define-key map (kbd "C-c C-k") #'chirp-compose-cancel)
-    (define-key map (kbd "C-c C-a") #'chirp-compose-attach-image)
-    (define-key map (kbd "C-c C-v") #'chirp-compose-paste-image)
-    (define-key map (kbd "C-c C-d") #'chirp-compose-remove-image)
-    (define-key map (kbd "C-c C-e") #'chirp-compose-describe-image)
-    (define-key map (kbd "C-c C-n") #'chirp-compose-add-post)
-    (define-key map (kbd "C-c C-p") #'chirp-compose-remove-post)
-    (define-key map (kbd "M-TAB") #'completion-at-point)
-    map)
-  "Keymap for `chirp-compose-mode'.")
+(defvar-keymap chirp-compose-mode-map
+  :doc "Keymap for `chirp-compose-mode'."
+  "C-c C-c" #'chirp-compose-send
+  "C-c C-s" #'chirp-compose-save
+  "C-c C-t" #'chirp-compose-schedule
+  "C-c C-k" #'chirp-compose-cancel
+  "C-c C-a" #'chirp-compose-attach-image
+  "C-c C-v" #'chirp-compose-paste-image
+  "C-c C-d" #'chirp-compose-remove-image
+  "C-c C-e" #'chirp-compose-describe-image
+  "C-c C-n" #'chirp-compose-add-post
+  "C-c C-p" #'chirp-compose-remove-post
+  "M-TAB" #'completion-at-point)
 
 (define-derived-mode chirp-compose-mode appkit-chat-compose-mode "Chirp-Compose"
   "Major mode for composing Chirp posts."

@@ -298,24 +298,22 @@ commands still work, and displays alt text when the backend provides it."
 
 ;;; View Mode
 
-(defvar chirp-view-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'chirp-refresh)
-    (define-key map (kbd "TAB") #'chirp-toggle-home-following)
-    (define-key map (kbd "n") #'chirp-next-entry)
-    (define-key map (kbd "p") #'chirp-previous-entry)
-    (define-key map (kbd "N") #'chirp-load-more)
-    (define-key map (kbd "RET") #'chirp-open-at-point)
-    (define-key map (kbd "t") #'chirp-open-at-point)
-    (define-key map (kbd "m") #'chirp-open-primary-media)
-    (define-key map (kbd "D") #'chirp-media-download-at-point)
-    (define-key map (kbd "A") #'chirp-open-author-at-point)
-    (define-key map (kbd "S") #'chirp-thread-add-spam-rule)
-    (define-key map (kbd "x") #'chirp-dispatch)
-    (define-key map (kbd "o") #'chirp-browse-at-point)
-    (define-key map (kbd "q") #'chirp-quit-current-buffer)
-    map)
-  "Keymap for `chirp-view-mode'.")
+(defvar-keymap chirp-view-mode-map
+  :doc "Keymap for `chirp-view-mode'."
+  "g" #'chirp-refresh
+  "TAB" #'chirp-toggle-home-following
+  "n" #'chirp-next-entry
+  "p" #'chirp-previous-entry
+  "N" #'chirp-load-more
+  "RET" #'chirp-open-at-point
+  "t" #'chirp-open-at-point
+  "m" #'chirp-open-primary-media
+  "D" #'chirp-media-download-at-point
+  "A" #'chirp-open-author-at-point
+  "S" #'chirp-thread-add-spam-rule
+  "x" #'chirp-dispatch
+  "o" #'chirp-browse-at-point
+  "q" #'chirp-quit-current-buffer)
 
 (define-derived-mode chirp-view-mode special-mode "Chirp"
   "Major mode for Chirp buffers."
