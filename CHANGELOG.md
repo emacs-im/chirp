@@ -55,6 +55,8 @@ history remains available in Git.
 
 ### Fixed
 
+- The actions transient now routes timeline entries through Chirp's interactive public commands, so opening the menu no longer fails while validating non-command timeline functions.
+
 - Browser-session login now tracks the returned request handle, rejects concurrent captures, and cancels an active capture when `chirp-forget-browser-session` runs.
 - Profile timelines now preserve and label each X timeline occurrence, including a pinned row repeated inside a conversation module, while using the server entry identity to keep every Appkit projection row stable and independently refreshable.
 - XChat media attachments now retain their verified `media_hash_key`, download ciphertext from X's cookie-authenticated TON media service, exclude url.el's header terminator from binary bodies, and decrypt with the message's exact conversation-key version inside the native module. Conversation rendering now stages primary markup, Appkit media cards, embedded tweet cards, and system dividers separately so shared prefix state aligns cards with avatar-backed message text; canonical Appkit media resources and card contexts own attachment actions. Appkit compose operations now own DM send effects, drafts clear only after acknowledgement, files open from Chirp's media cache, and failed resources settle instead of remaining pending or retrying on redraw.

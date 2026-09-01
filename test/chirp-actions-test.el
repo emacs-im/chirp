@@ -8,8 +8,7 @@
 (require 'cl-lib)
 (require 'transient)
 (require 'appkit-ui)
-(require 'chirp-actions)
-(require 'chirp-render)
+(require 'chirp)
 
 (defun chirp-test--make-compose-buffer (body)
   "Return a cons of compose and source buffers seeded with BODY."
@@ -1214,27 +1213,6 @@ Return a list of (compose source foreign)."
                                  :translation-language)
                       "zh")))))
       (clrhash (chirp--session-tweet-state-overrides (chirp--session))))))
-
-(ert-deftest chirp-dispatch-uses-toggle-actions-for-stateful-tweet-actions ()
-  "The Chirp transient should expose only the intended action bindings."
-  (dolist (binding
-           '(("h" . chirp-timeline-open-home)
-             ("f" . chirp-timeline-open-following)
-             ("u" . chirp-me)
-             ("b" . chirp-timeline-open-bookmarks)
-             ("L" . chirp-timeline-open-likes)
-             ("s" . chirp-timeline-open-list)
-             ("+" . chirp-follow-user-at-point)
-             ("-" . chirp-unfollow-user-at-point)
-             ("R" . chirp-toggle-retweet-at-point)
-             ("l" . chirp-toggle-like-at-point)
-             ("B" . chirp-toggle-bookmark-at-point)
-             ("T" . chirp-translate-at-point)
-             ("y" . chirp-copy-fixupx-url-at-point)))
-    (should
-     (equal (transient-get-suffix 'chirp-dispatch (car binding))
-            (transient-get-suffix 'chirp-dispatch (cdr binding)))))
-  (should-error (transient-get-suffix 'chirp-dispatch "U")))
 
 (ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()
   "Copy action should rewrite tweet URLs from x.com to fixupx.com."

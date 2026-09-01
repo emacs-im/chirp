@@ -21,11 +21,11 @@
 (require 'chirp-backend)
 (require 'chirp-media)
 
-(declare-function chirp-timeline-open-home "chirp-timeline" ())
-(declare-function chirp-timeline-open-following "chirp-timeline" ())
-(declare-function chirp-timeline-open-bookmarks "chirp-timeline" ())
-(declare-function chirp-timeline-open-likes "chirp-timeline" (&optional handle))
-(declare-function chirp-timeline-open-list "chirp-timeline" (&optional list-target))
+(declare-function chirp-home "chirp" ())
+(declare-function chirp-following "chirp" ())
+(declare-function chirp-bookmarks "chirp" ())
+(declare-function chirp-likes "chirp" ())
+(declare-function chirp-list "chirp" (&optional list-id))
 (declare-function chirp-me "chirp" ())
 (declare-function chirp-unsent-drafts "chirp-unsent" ())
 (declare-function chirp-unsent-scheduled "chirp-unsent" ())
@@ -1723,12 +1723,12 @@ target."
 (transient-define-prefix chirp-dispatch ()
   "Show Chirp write actions."
   [["Timeline"
-    ("h" "For You" chirp-timeline-open-home)
-    ("f" "Following" chirp-timeline-open-following)
+    ("h" "For You" chirp-home)
+    ("f" "Following" chirp-following)
     ("u" "Me" chirp-me)
-    ("b" "Bookmarks" chirp-timeline-open-bookmarks)
-    ("L" "Liked" chirp-timeline-open-likes)
-    ("s" "List" chirp-timeline-open-list)]
+    ("b" "Bookmarks" chirp-bookmarks)
+    ("L" "Liked" chirp-likes)
+    ("s" "List" chirp-list)]
    ["Compose"
     ("c" "Post" chirp-compose-post)
     ("r" "Reply" chirp-reply-at-point)
