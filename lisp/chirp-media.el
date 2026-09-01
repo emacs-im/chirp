@@ -1445,10 +1445,16 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
          (cl-loop for media in media-list
                   for index from 0
                   collect
-                  (list :file (chirp-media--preview-file media)
-                        :width (plist-get media :width)
-                        :height (plist-get media :height)
-                        :id (intern (format "chirp-media-%d" index))))))
+                  (append
+                   (list :file (chirp-media--preview-file media)
+                         :width (plist-get media :width)
+                         :height (plist-get media :height)
+                         :id (intern (format "chirp-media-%d" index)))
+                   (and widths
+                        (list :display-width (nth index widths)))
+                   (and fit (list :fit fit))
+                   (and (chirp-media-video-like-p media)
+                        (list :play-icon t))))))
     (when (cl-some (lambda (item) (plist-get item :file)) items)
       (appkit-media-horizontal-strip-image
        items height gap offset))))

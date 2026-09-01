@@ -394,7 +394,7 @@ rerender and creates a CPU loop."
         (chirp-media-carousel-image
          '((:type "photo" :file "/tmp/a.jpg"
             :width 430 :height 600)
-           (:type "photo" :file "/tmp/b.jpg"
+           (:type "video" :file "/tmp/b.jpg"
             :width 600 :height 375))
          384 8 28)
         'track-image))
@@ -407,7 +407,7 @@ rerender and creates a CPU loop."
         '((:file "/tmp/a.jpg" :width 430 :height 600
            :id chirp-media-0)
           (:file "/tmp/b.jpg" :width 600 :height 375
-           :id chirp-media-1)))))))
+           :id chirp-media-1 :play-icon t)))))))
 
 (ert-deftest chirp-media-side-by-side-thumbnail-prefers-fixed-crop ()
   "Grid thumbnails should crop to one fixed tile and retain a decoder fallback."
