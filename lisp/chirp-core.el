@@ -1622,19 +1622,11 @@ When MAX-COUNT is non-nil, return at most that many images."
 (defun chirp-normalize-quoted-tweet (value)
   "Normalize VALUE into a quoted-tweet plist, or nil."
   (when-let* ((quoted
-               (cond
-                ((chirp-object-p value)
-                 (or (chirp-get value "quotedTweet" "quoted_tweet")
-                     (chirp-get-in value '("quoted_status_result" "result"))))
-                (t nil))))
-    (or (and-let* ((quoted-id (chirp-first-nonblank
-                               (chirp-get quoted "rest_id" "id_str" "id")))
-                   (cached (gethash quoted-id
-                                    (chirp--session-quoted-tweet-cache
-                                     (chirp--session))))
-                   ((not (eq cached chirp--quoted-tweet-fetch-failed))))
-         cached)
-        (chirp-normalize-tweet quoted))))
+               (and (chirp-object-p value)
+                    (or (chirp-get value "quotedTweet" "quoted_tweet")
+                        (chirp-get-in
+                         value '("quoted_status_result" "result"))))))
+    (chirp-normalize-tweet quoted)))
 
 (defun chirp-quoted-tweet-enriched-p (tweet)
   "Return non-nil when quoted TWEET already carries full fetched detail."
@@ -1761,11 +1753,6 @@ Retweets use their wrapper ID so the wrapper and original remain distinct."
 
 ;;;; State Overrides
 
-(defun chirp-plist-override (plist prop fallback)
-  "Return PROP from PLIST when present, otherwise FALLBACK."
-  (if (plist-member plist prop)
-      (plist-get plist prop)
-    fallback))
 
 (defun chirp-set-tweet-state-override (tweet-id prop value)
   "Store VALUE as local PROP override for TWEET-ID."
@@ -1779,6 +1766,23 @@ Retweets use their wrapper ID so the wrapper and original remain distinct."
   "Clear local state overrides for TWEET-ID."
   (when tweet-id
     (remhash tweet-id (chirp--session-tweet-state-overrides (chirp--session)))))
+
+(defun chirp-apply-tweet-state-overrides (tweet)
+  "Apply current session state overrides to normalized TWEET and return it."
+  (when tweet
+    (let ((overrides
+           (and-let* ((tweet-id (plist-get tweet :id)))
+             (copy-sequence
+              (gethash tweet-id
+                       (chirp--session-tweet-state-overrides
+                        (chirp--session)))))))
+      (while overrides
+        (setq tweet
+              (plist-put tweet (pop overrides) (pop overrides)))))
+    (when-let* ((quoted (plist-get tweet :quoted-tweet)))
+      (plist-put tweet :quoted-tweet
+                 (chirp-apply-tweet-state-overrides quoted)))
+    tweet))
 
 ;;;; Feed Updates
 
@@ -2667,12 +2671,7 @@ over the card's `t.co` permalink."
               (chirp--tweet-reply-limited-p object)
               (equal (chirp-get legacy "limited_actions")
                      "limited_replies")))
-         (edit-metadata (chirp--tweet-edit-metadata object))
-         (state-overrides
-          (and id
-               (gethash id
-                        (chirp--session-tweet-state-overrides
-                         (chirp--session))))))
+         (edit-metadata (chirp--tweet-edit-metadata object)))
     (when (or id (not (string-empty-p display-text)))
       (list :kind 'tweet
             :id id
@@ -2711,12 +2710,11 @@ over the card's `t.co` permalink."
             :article-text article-text
             :promoted-p promoted-p
             :media media
-            :retweeted-p (chirp-plist-override state-overrides :retweeted-p retweeted-p)
-            :liked-p (chirp-plist-override state-overrides :liked-p liked-p)
-            :bookmarked-p (chirp-plist-override state-overrides :bookmarked-p bookmarked-p)
-            :translation (chirp-plist-override state-overrides :translation nil)
-            :translation-language
-            (chirp-plist-override state-overrides :translation-language nil)
+            :retweeted-p retweeted-p
+            :liked-p liked-p
+            :bookmarked-p bookmarked-p
+            :translation nil
+            :translation-language nil
             :reply-count (chirp--count-value
                           (chirp-get object "reply_count")
                           (chirp-get metrics "replies")
@@ -2755,7 +2753,9 @@ over the card's `t.co` permalink."
   "Collect normalized tweets from the top level of VALUE."
   (cond
    ((chirp-tweet-like-p value)
-    (let ((tweet (chirp-normalize-tweet value)))
+    (let ((tweet
+           (chirp-apply-tweet-state-overrides
+            (chirp-normalize-tweet value))))
       (if (and tweet
                (chirp-tweet-visible-p tweet))
           (list tweet)
@@ -2764,7 +2764,9 @@ over the card's `t.co` permalink."
     (delq nil
           (mapcar (lambda (item)
                     (when (chirp-tweet-like-p item)
-                      (let ((tweet (chirp-normalize-tweet item)))
+                      (let ((tweet
+                             (chirp-apply-tweet-state-overrides
+                              (chirp-normalize-tweet item))))
                         (when (and tweet
                                    (chirp-tweet-visible-p tweet))
                           tweet))))

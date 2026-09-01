@@ -327,11 +327,13 @@
       (progn
         (chirp-set-tweet-state-override "123" :translation "你好")
         (chirp-set-tweet-state-override "123" :translation-language "zh")
-        (let ((tweet (chirp-normalize-tweet
-                      '(("id" . "123")
-                        ("text" . "Hello")
-                        ("author" . (("screenName" . "alice")
-                                     ("name" . "Alice")))))))
+        (let ((tweet
+               (chirp-apply-tweet-state-overrides
+                (chirp-normalize-tweet
+                 '(("id" . "123")
+                   ("text" . "Hello")
+                   ("author" . (("screenName" . "alice")
+                                ("name" . "Alice"))))))))
           (with-temp-buffer
             (chirp-render-insert-tweet tweet)
             (should (string-match-p "Hello\nTranslation · zh\n你好"

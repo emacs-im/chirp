@@ -2098,9 +2098,11 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
         ("includePromotedContent" . :json-false)
         ("withVoice" . :json-false))
       (lambda (payload)
-        (let ((tweet (chirp-normalize-tweet
-                      (chirp-get-in
-                       payload '("data" "tweetResult" "result")))))
+        (let ((tweet
+               (chirp-apply-tweet-state-overrides
+                (chirp-normalize-tweet
+                 (chirp-get-in
+                  payload '("data" "tweetResult" "result"))))))
           (if (and tweet
                    (or (plist-get tweet :article-title)
                        (plist-get tweet :article-text)))
