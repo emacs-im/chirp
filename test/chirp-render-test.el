@@ -1988,7 +1988,8 @@
                   :appkit-media-strip-widths (320)))
          captured
          played
-         toggled)
+         toggled
+         mute-calls)
     (with-temp-buffer
       (insert "a\nb")
       (pcase-let* ((`(,map . ,state)
@@ -2007,17 +2008,27 @@
                      (setq played inline)))
                   ((symbol-function 'video-inline-toggle-occurrence)
                    (lambda (inline)
-                     (setq toggled inline))))
-          (call-interactively (lookup-key map (kbd "RET")))
+                     (setq toggled inline)))
+                  ((symbol-function 'video-inline-set-muted)
+                   (lambda (inline muted)
+                     (push (list inline muted) mute-calls))))
+          (call-interactively (lookup-key map (kbd "SPC")))
           (should
            (equal (seq-take captured 3)
                   '("https://example.com/video.mp4" 320 180)))
           (should (eq (plist-get (nthcdr 3 captured) :canvas)
                       'scene-canvas))
+          (should (plist-member (nthcdr 3 captured) :muted))
+          (should-not (plist-get (nthcdr 3 captured) :muted))
           (should (eq (aref state 9) 'inline-occurrence))
           (should (eq played 'inline-occurrence))
           (should (get-text-property 1 'chirp-video-inline-token))
           (should (get-text-property 3 'chirp-video-inline-token))
+          (call-interactively (lookup-key map (kbd "m")))
+          (call-interactively (lookup-key map (kbd "m")))
+          (should
+           (equal (nreverse mute-calls)
+                  '((inline-occurrence t) (inline-occurrence nil))))
           (call-interactively (lookup-key map (kbd "RET")))
           (should (eq toggled 'inline-occurrence)))))))
 
@@ -2034,7 +2045,7 @@
          (state
           (vector 1 '(0 104) media "Media" nil
                   4 80 '(100 120) 'cover
-                  nil poster nil nil))
+                  nil poster nil nil nil))
          draws)
     (cl-letf (((symbol-function 'video-canvas-create)
                (lambda (width height)
