@@ -1062,7 +1062,7 @@ composer capture."
                (appkit-media-one-line-preview-image-from-file path)))
          (preview
           (and image
-               (appkit-media-image-display-string image "[image]")))
+               (appkit-media-one-line-image-display-string image "[image]")))
          (size
           (and (appkit-media-file-present-p path)
                (file-size-human-readable
