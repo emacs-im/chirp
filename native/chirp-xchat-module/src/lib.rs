@@ -24,7 +24,7 @@ use chat_xdk_core::{
     ChatCore,
 };
 use chat_xdk_core::{
-    AttachmentInfo, EncryptMessageParams, Event, MessageContent, ReplyPreviewValidation,
+    AttachmentInfo, EncryptMessageParams, Event, Message, MessageContent, ReplyPreviewValidation,
     SendPayload,
 };
 use emacs::{defun, Env, Result, ResultExt, Transfer, Value};
@@ -45,6 +45,9 @@ const MAX_SIGNING_KEYS: usize = 512;
 const MAX_X_USER_ID_BYTES: usize = 32;
 const MAX_PUBLIC_KEY_VERSION_BYTES: usize = 128;
 const PUBLIC_KEY_LENGTHS: &[usize] = &[33, 65, 91];
+const MAX_DECRYPT_EVENT_BYTES: usize = 1024 * 1024;
+const MAX_DECRYPT_EVENT_BASE64_BYTES: usize = 4 * MAX_DECRYPT_EVENT_BYTES.div_ceil(3);
+const MAX_PUBLIC_KEY_BYTES: usize = 91;
 #[cfg(feature = "juicebox")]
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -904,42 +907,48 @@ fn parse_decrypt_input(
             "XChat native signing-key count is invalid".into(),
         ));
     }
-    let mut identities = HashSet::with_capacity(input.signing_keys.len());
-    let mut total_key_bytes = 0usize;
-    let mut signing_keys = Vec::with_capacity(input.signing_keys.len());
-    for key in input.signing_keys {
-        let identity = (key.user_id.clone(), key.public_key_version.clone());
-        total_key_bytes = total_key_bytes
-            .checked_add(key.public_key.len())
-            .and_then(|total| total.checked_add(key.identity_public_key.len()))
-            .and_then(|total| total.checked_add(key.identity_public_key_signature.len()))
-            .ok_or_else(|| {
-                NativeError::InvalidInput("XChat native signing-key size overflowed".into())
-            })?;
-        if !valid_decimal(&key.user_id, MAX_X_USER_ID_BYTES)
-            || !valid_public_key_version(&key.public_key_version)
-            || !identities.insert(identity)
-            || !valid_base64_length(&key.public_key, PUBLIC_KEY_LENGTHS)
-            || !valid_base64_length(&key.identity_public_key, PUBLIC_KEY_LENGTHS)
-            || !valid_base64_length(&key.identity_public_key_signature, &[64])
-        {
-            return Err(NativeError::InvalidInput(
-                "XChat native signing key is invalid".into(),
-            ));
+    let total_key_bytes = {
+        let mut identities = HashSet::with_capacity(input.signing_keys.len());
+        let mut total = 0usize;
+        for key in &input.signing_keys {
+            let identity = (key.user_id.as_str(), key.public_key_version.as_str());
+            total = total
+                .checked_add(key.public_key.len())
+                .and_then(|size| size.checked_add(key.identity_public_key.len()))
+                .and_then(|size| size.checked_add(key.identity_public_key_signature.len()))
+                .ok_or_else(|| {
+                    NativeError::InvalidInput("XChat native signing-key size overflowed".into())
+                })?;
+            if !valid_decimal(&key.user_id, MAX_X_USER_ID_BYTES)
+                || !valid_public_key_version(&key.public_key_version)
+                || !identities.insert(identity)
+                || !valid_base64_length(&key.public_key, PUBLIC_KEY_LENGTHS)
+                || !valid_base64_length(&key.identity_public_key, PUBLIC_KEY_LENGTHS)
+                || !valid_base64_length(&key.identity_public_key_signature, &[64])
+            {
+                return Err(NativeError::InvalidInput(
+                    "XChat native signing key is invalid".into(),
+                ));
+            }
         }
-        signing_keys.push(chat_xdk_core::SigningKeyEntry {
-            user_id: key.user_id,
-            public_key_version: key.public_key_version,
-            public_key: key.public_key,
-            identity_public_key: key.identity_public_key,
-            identity_public_key_signature: key.identity_public_key_signature,
-        });
-    }
+        total
+    };
     if total_key_bytes > 4 * 1024 * 1024 {
         return Err(NativeError::InvalidInput(
             "XChat native signing keys exceed 4 MiB".into(),
         ));
     }
+    let signing_keys = input
+        .signing_keys
+        .into_iter()
+        .map(|key| chat_xdk_core::SigningKeyEntry {
+            user_id: key.user_id,
+            public_key_version: key.public_key_version,
+            public_key: key.public_key,
+            identity_public_key: key.identity_public_key,
+            identity_public_key_signature: key.identity_public_key_signature,
+        })
+        .collect();
     Ok((input.events, signing_keys))
 }
 
@@ -974,10 +983,18 @@ fn parse_encrypt_text_input(
 }
 
 fn valid_base64_length(value: &str, lengths: &[usize]) -> bool {
+    let mut decoded = [0; MAX_PUBLIC_KEY_BYTES];
     value.len() <= 2048
         && BASE64
-            .decode(value)
-            .is_ok_and(|decoded| lengths.contains(&decoded.len()))
+            .decode_slice(value, &mut decoded)
+            .is_ok_and(|length| lengths.contains(&length))
+}
+
+fn valid_encoded_event(value: &str, decoded: &mut Vec<u8>) -> bool {
+    decoded.clear();
+    value.len() <= MAX_DECRYPT_EVENT_BASE64_BYTES
+        && BASE64.decode_vec(value, decoded).is_ok()
+        && decoded.len() <= MAX_DECRYPT_EVENT_BYTES
 }
 
 #[derive(Serialize)]
@@ -987,7 +1004,7 @@ struct VerifiedMessage {
     sender_id: Option<String>,
     conversation_id: Option<String>,
     created_at_msec: Option<i64>,
-    content_kind: String,
+    content_kind: &'static str,
     text: Option<String>,
     attachments: Vec<VerifiedAttachment>,
     reply: bool,
@@ -999,104 +1016,114 @@ struct VerifiedMessage {
 
 #[derive(Serialize)]
 struct VerifiedAttachment {
-    kind: String,
+    kind: &'static str,
     url: Option<String>,
     preview_url: Option<String>,
     name: Option<String>,
 }
 
-fn media_kind(value: Option<&str>) -> &str {
+fn media_kind(value: Option<&str>) -> &'static str {
     match value {
-        Some(kind @ ("image" | "gif" | "video" | "audio" | "file" | "svg")) => kind,
+        Some("image") => "image",
+        Some("gif") => "gif",
+        Some("video") => "video",
+        Some("audio") => "audio",
+        Some("file") => "file",
+        Some("svg") => "svg",
         _ => "media",
     }
 }
 
-fn verified_attachment(attachment: &AttachmentInfo) -> VerifiedAttachment {
+fn verified_attachment(attachment: AttachmentInfo) -> VerifiedAttachment {
     match attachment {
-        AttachmentInfo::Media(media) => {
-            let kind = media_kind(media.media_type.as_deref());
-            VerifiedAttachment {
-                kind: kind.into(),
-                url: media.legacy_media_url_https.clone(),
-                preview_url: media.legacy_media_preview_url.clone(),
-                name: media.filename.clone(),
-            }
-        }
+        AttachmentInfo::Media(media) => VerifiedAttachment {
+            kind: media_kind(media.media_type.as_deref()),
+            url: media.legacy_media_url_https,
+            preview_url: media.legacy_media_preview_url,
+            name: media.filename,
+        },
         AttachmentInfo::Url(url) => VerifiedAttachment {
-            kind: "url".into(),
-            url: url.url.clone(),
+            kind: "url",
+            url: url.url,
             preview_url: None,
-            name: url.display_title.clone(),
+            name: url.display_title,
         },
         AttachmentInfo::Post(post) => VerifiedAttachment {
-            kind: "post".into(),
-            url: post.post_url.clone(),
+            kind: "post",
+            url: post.post_url,
             preview_url: None,
             name: None,
         },
         AttachmentInfo::UnifiedCard(card) => VerifiedAttachment {
-            kind: "unified-card".into(),
-            url: card.url.clone(),
+            kind: "unified-card",
+            url: card.url,
             preview_url: None,
             name: None,
         },
         AttachmentInfo::Money(money) => VerifiedAttachment {
-            kind: "money".into(),
+            kind: "money",
             url: None,
             preview_url: None,
-            name: money.fallback_text.clone(),
+            name: money.fallback_text,
         },
     }
 }
 
-fn verified_message(message: chat_xdk_core::Message) -> Option<VerifiedMessage> {
-    if !message.verified {
+fn verified_message(message: Message) -> Option<VerifiedMessage> {
+    let Message {
+        meta,
+        content,
+        key_version,
+        verified,
+        attachments,
+        reply_preview_validation,
+        ..
+    } = message;
+    if !verified {
         return None;
     }
-    let (content_kind, text) = match &message.content {
-        MessageContent::Text { text, .. } => ("text", Some(text.clone())),
-        MessageContent::Reaction { emoji, .. } => ("reaction", Some(emoji.clone())),
-        MessageContent::ReactionRemoved { emoji, .. } => ("reaction-removed", Some(emoji.clone())),
-        MessageContent::Edit { new_text, .. } => ("edit", Some(new_text.clone())),
-        MessageContent::MarkRead => ("mark-read", None),
-        MessageContent::MarkUnread => ("mark-unread", None),
-        MessageContent::Unknown { .. } => ("unknown", None),
-    };
     let reply = matches!(
-        message.reply_preview_validation,
+        reply_preview_validation,
         Some(ReplyPreviewValidation::Valid)
     );
-    let preview = if reply {
-        match &message.content {
-            MessageContent::Text {
-                replying_to_preview,
-                ..
-            } => replying_to_preview.as_ref(),
-            _ => None,
+    let (content_kind, text, reply_text, reply_attachment_count) = match content {
+        MessageContent::Text {
+            text,
+            replying_to_preview,
+            ..
+        } => {
+            let preview = replying_to_preview.filter(|_| reply);
+            let attachment_count = preview
+                .as_ref()
+                .and_then(|value| value.attachments.as_ref())
+                .map_or(0, Vec::len);
+            (
+                "text",
+                Some(text),
+                preview.and_then(|value| value.message_text),
+                attachment_count,
+            )
         }
-    } else {
-        None
+        MessageContent::Reaction { emoji, .. } => ("reaction", Some(emoji), None, 0),
+        MessageContent::ReactionRemoved { emoji, .. } => ("reaction-removed", Some(emoji), None, 0),
+        MessageContent::Edit { new_text, .. } => ("edit", Some(new_text), None, 0),
+        MessageContent::MarkRead => ("mark-read", None, None, 0),
+        MessageContent::MarkUnread => ("mark-unread", None, None, 0),
+        MessageContent::Unknown { .. } => ("unknown", None, None, 0),
     };
     Some(VerifiedMessage {
-        sequence_id: message.meta.sequence_id,
-        id: message.meta.id,
-        sender_id: message.meta.sender_id,
-        conversation_id: message.meta.conversation_id,
-        created_at_msec: message.meta.created_at_msec,
-        content_kind: content_kind.into(),
+        sequence_id: meta.sequence_id,
+        id: meta.id,
+        sender_id: meta.sender_id,
+        conversation_id: meta.conversation_id,
+        created_at_msec: meta.created_at_msec,
+        content_kind,
         text,
-        attachments: message
-            .attachments
-            .iter()
-            .map(verified_attachment)
-            .collect(),
+        attachments: attachments.into_iter().map(verified_attachment).collect(),
         reply,
-        reply_text: preview.and_then(|value| value.message_text.clone()),
-        reply_attachment_count: preview
-            .and_then(|value| value.attachments.as_ref())
-            .map_or(0, Vec::len),
-        key_version: message.key_version,
+        reply_text,
+        reply_attachment_count,
+        key_version,
         verified: true,
     })
 }
@@ -1127,17 +1154,15 @@ fn decrypt_events(
             "XChat native decrypt input exceeds 16 MiB".into(),
         ));
     }
+    let mut decoded = Vec::new();
     for event in events {
-        if event.len() > 2 * 1024 * 1024
-            || BASE64
-                .decode(event)
-                .map_or(true, |decoded| decoded.len() > 1024 * 1024)
-        {
+        if !valid_encoded_event(event, &mut decoded) {
             return Err(NativeError::InvalidInput(
                 "XChat native decrypt event is invalid".into(),
             ));
         }
     }
+    drop(decoded);
 
     let event_refs = events.iter().map(String::as_str).collect::<Vec<_>>();
     let result = core.decrypt_events(&event_refs, signing_keys);
@@ -1789,6 +1814,18 @@ mod tests {
             parse_decrypt_input(input(&vector.event_sender_id, "01")),
             Err(NativeError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn encoded_event_validation_accepts_only_the_decoded_size_limit() {
+        let mut decoded = Vec::new();
+        let maximum = BASE64.encode(vec![0; MAX_DECRYPT_EVENT_BYTES]);
+        assert!(valid_encoded_event(&maximum, &mut decoded));
+        assert_eq!(decoded.len(), MAX_DECRYPT_EVENT_BYTES);
+
+        let oversized = BASE64.encode(vec![0; MAX_DECRYPT_EVENT_BYTES + 1]);
+        assert!(!valid_encoded_event(&oversized, &mut decoded));
+        assert!(!valid_encoded_event("not base64", &mut decoded));
     }
 
     #[test]
