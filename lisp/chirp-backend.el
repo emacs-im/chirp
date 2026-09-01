@@ -1592,7 +1592,7 @@ Chirp pagination envelope."
     (let* ((entries (chirp-backend--timeline-entries instructions))
            (raw-tweets (cl-mapcan #'chirp-backend--timeline-entry-tweets
                                   entries))
-           (tweets (chirp-collect-top-level-tweets raw-tweets))
+           (tweets (chirp--top-level-tweets-from-x raw-tweets))
            (cursor (chirp-backend--timeline-next-cursor entries))
            (envelope (and cursor
                           `(("pagination" . (("nextCursor" . ,cursor)))))))
@@ -1613,7 +1613,7 @@ Chirp pagination envelope."
     (let* ((entries (chirp-backend--timeline-entries instructions))
            (raw-tweets
             (cl-mapcan #'chirp-backend--timeline-entry-tweets entries))
-           (tweets (chirp-collect-top-level-tweets raw-tweets)))
+           (tweets (chirp--top-level-tweets-from-x raw-tweets)))
       (unless tweets
         (error "X returned tweet edit history Chirp could not parse"))
       tweets)))
@@ -1676,7 +1676,7 @@ pagination, and OWNER optionally owns the transport lifecycle."
   "Return the first target tweet ID referenced by notification ITEM."
   (cl-loop for target in (chirp-get-in item '("template" "target_objects"))
            for result = (chirp-get-in target '("tweet_results" "result"))
-           for tweet = (and result (chirp-normalize-tweet result))
+           for tweet = (and result (chirp--tweet-from-x result))
            when tweet return (plist-get tweet :id)))
 
 (defun chirp-backend--normalize-notification (entry)
@@ -1845,7 +1845,7 @@ ERRBACK receives request failures."
      (chirp-x-graphql-request
       (chirp-backend--operation 'viewer) nil
       (lambda (payload)
-        (let ((user (chirp-normalize-user
+        (let ((user (chirp--user-from-x
                      (chirp-get-in
                       payload '("data" "viewer" "user_results" "result")))))
           (if user
@@ -2100,7 +2100,7 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
       (lambda (payload)
         (let ((tweet
                (chirp-apply-tweet-state-overrides
-                (chirp-normalize-tweet
+                (chirp--tweet-from-x
                  (chirp-get-in
                   payload '("data" "tweetResult" "result"))))))
           (if (and tweet
@@ -2123,7 +2123,7 @@ CURSOR, PAGE, and ACCUMULATED carry private pagination state."
         `(("screen_name" . ,clean-handle)
           ("withSafetyModeUserFields" . t))
         (lambda (payload)
-          (let ((user (chirp-normalize-user
+          (let ((user (chirp--user-from-x
                        (chirp-get-in payload '("data" "user" "result")))))
             (if user
                 (funcall success user nil)
@@ -2244,7 +2244,7 @@ pagination."
 (defun chirp-backend--collect-users (data)
   "Normalize DATA into a list of user plists."
   (if (listp data)
-      (delq nil (mapcar #'chirp-normalize-user data))
+      (delq nil (mapcar #'chirp--user-from-x data))
     nil))
 
 (defun chirp-backend--user-collection

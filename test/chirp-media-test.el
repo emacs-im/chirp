@@ -387,10 +387,10 @@ rerender and creates a CPU loop."
     (should-not (chirp-media-thumbnail-placeholder-image
                  '(:type "photo" :url "https://example.com/photo.jpg")))))
 
-(ert-deftest chirp-normalize-media-item-preserves-preview-and-variants ()
+(ert-deftest chirp-media-from-x-item-preserves-preview-and-variants ()
   "Structured media payloads should keep preview URLs and variant lists."
   (let* ((media
-          (chirp-normalize-media-item
+          (chirp--media-item-from-x
            '(("type" . "video")
              ("url" . "https://high.mp4")
              ("previewUrl" . "https://preview.jpg")
@@ -416,7 +416,7 @@ rerender and creates a CPU loop."
   `(("legacy" . (("name" . ,name)
                  ("binding_values" . ,bindings)))))
 
-(ert-deftest chirp-normalize-tweet-reads-summary-link-card ()
+(ert-deftest chirp-tweet-from-x-reads-summary-link-card ()
   "Website cards should come from X binding_values, not a later HTML fetch."
   (let* ((bindings
           (list
@@ -432,7 +432,7 @@ rerender and creates a CPU loop."
             '(("image_value"
                . (("url" . "https://pbs.twimg.com/card_img/demo.jpg")))))))
          (tweet
-          (chirp-normalize-tweet
+          (chirp--tweet-from-x
            (list (cons "rest_id" "2086764219433660463")
                  (cons "urls" (list "https://github.com/antirez/h3.c"))
                  (cons "card" (chirp-test--card-object "summary" bindings)))))
@@ -445,10 +445,10 @@ rerender and creates a CPU loop."
     (should (equal (plist-get card :image-url)
                    "https://pbs.twimg.com/card_img/demo.jpg"))))
 
-(ert-deftest chirp-normalize-tweet-ignores-poll-cards ()
+(ert-deftest chirp-tweet-from-x-ignores-poll-cards ()
   "Poll cards should not be rendered as website previews."
   (let ((tweet
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           (list (cons "id" "1")
                 (cons "text" "poll")
                 (cons "card"
@@ -480,8 +480,8 @@ rerender and creates a CPU loop."
     (should (equal file-urls '("https://pbs.twimg.com/card_img/demo.jpg")))
     (should-not card-urls)))
 
-(ert-deftest chirp-normalize-tweet-reads-unified-card-video-media ()
-  "Tweet normalization should expose playable unified-card video variants."
+(ert-deftest chirp-tweet-from-x-reads-unified-card-video-media ()
+  "Tweet conversion should expose playable unified-card video variants."
   (let* ((card
           (concat
            "{\"media_entities\":{\"13_1\":{"
@@ -492,7 +492,7 @@ rerender and creates a CPU loop."
            "\"bitrate\":2176000,"
            "\"url\":\"https://example.com/video.mp4\"}]}}}}"))
          (tweet
-          (chirp-normalize-tweet
+          (chirp--tweet-from-x
            `(("rest_id" . "1")
              ("legacy" . (("full_text" . "video")))
              ("card" .

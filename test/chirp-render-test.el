@@ -51,7 +51,7 @@
 
 (defun chirp-test--sample-article-tweet ()
   "Return a normalized tweet payload with article metadata."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "123")
      ("text" . "Read this https://t.co/demo")
      ("urls" . ("https://example.com/article"))
@@ -62,7 +62,7 @@
 
 (defun chirp-test--sample-article-tweet-with-image ()
   "Return a normalized article tweet that includes one inline image."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "124")
      ("text" . "Longform https://t.co/demo")
      ("urls" . ("https://example.com/article"))
@@ -73,7 +73,7 @@
 
 (defun chirp-test--sample-quoted-tweet ()
   "Return a normalized tweet payload with a quoted tweet."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "999")
      ("text" . "Commentary https://t.co/quoted")
      ("urls" . ("https://x.com/bob/status/456"))
@@ -88,7 +88,7 @@
 
 (defun chirp-test--sample-quoted-tweet-with-media ()
   "Return a normalized tweet payload whose quoted tweet has media."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "998")
      ("text" . "Commentary https://t.co/quoted")
      ("urls" . ("https://x.com/bob/status/456"))
@@ -103,7 +103,7 @@
 
 (defun chirp-test--sample-retweeted-tweet ()
   "Return a normalized tweet payload with retweet social context."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "321")
      ("text" . "Boosted post")
      ("retweetedBy" . "dotey")
@@ -113,12 +113,12 @@
 (defun chirp-test--sample-adjacent-reply-tweets ()
   "Return two tweets where the second replies to the first."
   (list
-   (chirp-normalize-tweet
+   (chirp--tweet-from-x
     '(("id" . "100")
       ("text" . "Parent body text")
       ("author" . (("screenName" . "dingyi")
                    ("name" . "Ding")))))
-   (chirp-normalize-tweet
+   (chirp--tweet-from-x
     '(("id" . "101")
       ("text" . "Reply body text")
       ("inReplyToStatusId" . "100")
@@ -129,13 +129,13 @@
 (defun chirp-test--sample-adjacent-reply-tweets-with-handle-fallback ()
   "Return two tweets linked by handle and conversation metadata."
   (list
-   (chirp-normalize-tweet
+   (chirp--tweet-from-x
     '(("id" . "200")
       ("conversationId" . "200")
       ("text" . "Parent body text")
       ("author" . (("screenName" . "dingyi")
                    ("name" . "Ding")))))
-   (chirp-normalize-tweet
+   (chirp--tweet-from-x
     '(("id" . "201")
       ("conversationId" . "200")
       ("text" . "Reply body text")
@@ -145,7 +145,7 @@
 
 (defun chirp-test--sample-note-tweet-with-entity-links ()
   "Return a normalized note tweet whose expanded URLs live in entity metadata."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "777")
      ("author" . (("screenName" . "alice")
                   ("name" . "Alice")))
@@ -155,14 +155,14 @@
 
 (defun chirp-test--sample-tweet-with-incomplete-expanded-urls ()
   "Return a normalized tweet whose short links outnumber expanded URLs."
-  (chirp-normalize-tweet
+  (chirp--tweet-from-x
    '(("id" . "778")
      ("text" . "GitHub仓库 https://t.co/repo 在线阅读 https://t.co/read")
      ("urls" . ("https://github.com/example/project"))
      ("author" . (("screenName" . "alice")
                   ("name" . "Alice"))))))
 
-(ert-deftest chirp-normalize-tweet-handles-x-web-graphql-shape ()
+(ert-deftest chirp-tweet-from-x-handles-x-web-graphql-shape ()
   "X web timeline results should retain authors and legacy media."
   (let* ((media
           '(("type" . "photo")
@@ -181,7 +181,7 @@
              (("image_url" .
                "https://pbs.twimg.com/profile_images/alice.jpg")))))
          (tweet
-          (chirp-normalize-tweet
+          (chirp--tweet-from-x
            `(("id" . "VHdlZXQ6MTIz")
              ("rest_id" . "123")
              ("legacy" . (("full_text" . "Direct GraphQL payload")
@@ -205,7 +205,7 @@
     (should (= (plist-get tweet :bookmark-count) 16))
     (should (= (plist-get tweet :view-count) 10286969))))
 
-(ert-deftest chirp-normalize-tweet-preserves-reply-control-envelope ()
+(ert-deftest chirp-tweet-from-x-preserves-reply-control-envelope ()
   "Tweet visibility wrappers should retain reply-control metadata."
   (let* ((raw
           '(("__typename" . "TweetWithVisibilityResults")
@@ -215,15 +215,15 @@
                                       (("mode" . "ByInvitation")))))))
             ("limitedActionResults" .
              (("limited_actions" . ((("action" . "Reply"))))))))
-         (tweet (chirp-normalize-tweet raw)))
+         (tweet (chirp--tweet-from-x raw)))
     (should (chirp-tweet-like-p raw))
     (should (equal (plist-get tweet :reply-control-mode) "ByInvitation"))
     (should (plist-get tweet :reply-limited-p))))
 
-(ert-deftest chirp-normalize-tweet-preserves-edit-history-metadata ()
+(ert-deftest chirp-tweet-from-x-preserves-edit-history-metadata ()
   "Edited tweets should expose stable version IDs from both X shapes."
   (let ((latest
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("rest_id" . "200")
             ("legacy" . (("full_text" . "Latest")))
             ("edit_control" .
@@ -231,19 +231,19 @@
                (("edit_tweet_ids" . ("100" "200"))))
               ("initial_tweet_id" . "100"))))))
         (initial
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("rest_id" . "100")
             ("legacy" . (("full_text" . "Initial")))
             ("edit_control" .
              (("edit_tweet_ids" . ("100" "200")))))))
         (single-version
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("rest_id" . "300")
             ("legacy" . (("full_text" . "Original")))
             ("edit_control" .
              (("edit_tweet_ids" . ("300")))))))
         (unedited
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("rest_id" . "400")
             ("legacy" . (("full_text" . "No metadata")))))))
     (dolist (tweet (list latest initial))
@@ -257,7 +257,7 @@
     (should-not (plist-get unedited :edit-history-ids))
     (should-not (plist-get unedited :edited-p))))
 
-(ert-deftest chirp-normalize-tweet-strips-short-urls-and-keeps-article-fields ()
+(ert-deftest chirp-tweet-from-x-strips-short-urls-and-keeps-article-fields ()
   "Short links should be removed from display text while article data survives."
   (let ((tweet (chirp-test--sample-article-tweet)))
     (should (equal (plist-get tweet :text) "Read this"))
@@ -267,7 +267,7 @@
     (should (equal (chirp-tweet-article-preview tweet 80)
                    "First paragraph with details."))))
 
-(ert-deftest chirp-normalize-tweet-renders-x-article-rich-content ()
+(ert-deftest chirp-tweet-from-x-renders-x-article-rich-content ()
   "Direct X article content should preserve structure, links, and images."
   (let* ((raw
           '(("rest_id" . "123")
@@ -310,7 +310,7 @@
                      ("media_info" .
                       (("original_img_url" .
                         "https://pbs.twimg.com/media/detail.jpg"))))))))))))))
-         (tweet (chirp-normalize-tweet raw)))
+         (tweet (chirp--tweet-from-x raw)))
     (should (equal (plist-get tweet :article-title) "Longform title"))
     (should
      (equal (plist-get tweet :article-text)
@@ -329,7 +329,7 @@
         (chirp-set-tweet-state-override "123" :translation-language "zh")
         (let ((tweet
                (chirp-apply-tweet-state-overrides
-                (chirp-normalize-tweet
+                (chirp--tweet-from-x
                  '(("id" . "123")
                    ("text" . "Hello")
                    ("author" . (("screenName" . "alice")
@@ -351,7 +351,7 @@
     (should (equal (plist-get (car images) :url)
                    "https://example.com/cover.jpg"))))
 
-(ert-deftest chirp-normalize-tweet-keeps-quoted-tweet-and-filters-quote-link ()
+(ert-deftest chirp-tweet-from-x-keeps-quoted-tweet-and-filters-quote-link ()
   "Quoted tweets should survive normalization without duplicate permalinks."
   (let* ((tweet (chirp-test--sample-quoted-tweet))
          (quoted (plist-get tweet :quoted-tweet)))
@@ -361,9 +361,9 @@
     (should (string-match-p "Quoted body text" (plist-get quoted :text)))
     (should-not (plist-get tweet :urls))))
 
-(ert-deftest chirp-normalize-tweet-hides-leading-reply-mentions ()
+(ert-deftest chirp-tweet-from-x-hides-leading-reply-mentions ()
   "Reply-chain @handles should not appear in the visible tweet text."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "1")
                   ("text" . "@alice @bob hello there")
                   ("inReplyToStatusId" . "0")
@@ -371,36 +371,36 @@
     (should (equal (plist-get tweet :text) "hello there"))
     (should (equal (plist-get tweet :raw-text) "@alice @bob hello there"))))
 
-(ert-deftest chirp-normalize-tweet-uses-display-text-range ()
+(ert-deftest chirp-tweet-from-x-uses-display-text-range ()
   "X display_text_range should win over stripping every leading mention."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "1")
                   ("full_text" . "@alice @bob check this")
                   ("display_text_range" . (7 22))
                   ("inReplyToScreenName" . "alice")))))
     (should (equal (plist-get tweet :text) "@bob check this"))))
 
-(ert-deftest chirp-normalize-tweet-keeps-leading-mention-on-original-posts ()
+(ert-deftest chirp-tweet-from-x-keeps-leading-mention-on-original-posts ()
   "An original post may start with an @mention that the author typed."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "1")
                   ("text" . "@alice hello")))))
     (should (equal (plist-get tweet :text) "@alice hello"))))
 
-(ert-deftest chirp-normalize-tweet-preserves-related-timeline-context-only ()
+(ert-deftest chirp-tweet-from-x-preserves-related-timeline-context-only ()
   "Known timeline context should normalize without interning arbitrary values."
   (let ((related
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("id" . "123")
             ("text" . "Related body")
             ("timelineContext" . "related"))))
         (snake-related
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("id" . "234")
             ("text" . "Related body")
             ("timeline_context" . "related"))))
         (unknown
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("id" . "456")
             ("text" . "Unknown body")
             ("timelineContext" . "future-context")))))
@@ -408,11 +408,11 @@
     (should (eq (plist-get snake-related :timeline-context) 'related))
     (should-not (plist-get unknown :timeline-context))))
 
-(ert-deftest chirp-normalize-tweet-filters-own-permalink ()
+(ert-deftest chirp-tweet-from-x-filters-own-permalink ()
   "A tweet's own permalink should not be rendered as an expanded link."
   (dolist (permalink '("https://twitter.com/alice/status/123?ref_src=twsrc"
                        "https://x.com/i/web/status/123"))
-    (let ((tweet (chirp-normalize-tweet
+    (let ((tweet (chirp--tweet-from-x
                   `(("id" . "123")
                     ("text" . "Original body https://t.co/self")
                     ("urls" . (,permalink))
@@ -421,14 +421,14 @@
       (should (equal (plist-get tweet :text) "Original body"))
       (should-not (plist-get tweet :urls)))))
 
-(ert-deftest chirp-normalize-tweet-hides-photo-and-video-links ()
+(ert-deftest chirp-tweet-from-x-hides-photo-and-video-links ()
   "Media placeholders and resource URLs should not be displayed as links."
   (dolist (media '((("type" . "photo")
                     ("url" . "https://pbs.twimg.com/media/example.jpg"))
                    (("type" . "video")
                     ("url" . "https://video.twimg.com/ext_tw_video/example.mp4"))))
     (let* ((media-url (cdr (assoc "url" media)))
-           (tweet (chirp-normalize-tweet
+           (tweet (chirp--tweet-from-x
                    `(("id" . "123")
                      ("text" . "External https://t.co/site Media https://t.co/media")
                      ("urls" . ("https://example.com/article" ,media-url))
@@ -439,9 +439,9 @@
       (should (equal (plist-get tweet :urls)
                      '("https://example.com/article"))))))
 
-(ert-deftest chirp-normalize-tweet-strips-unexpanded-media-placeholder ()
+(ert-deftest chirp-tweet-from-x-strips-unexpanded-media-placeholder ()
   "A rendered media item should cover its otherwise unexpanded short URL."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "123")
                   ("text" . "Photo https://t.co/media")
                   ("media" . ((("type" . "photo")
@@ -451,9 +451,9 @@
     (should (equal (plist-get tweet :text) "Photo"))
     (should-not (plist-get tweet :urls))))
 
-(ert-deftest chirp-normalize-tweet-hides-known-media-host-without-metadata ()
+(ert-deftest chirp-tweet-from-x-hides-known-media-host-without-metadata ()
   "A known media host should stay hidden without structured media metadata."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "123")
                   ("text" . "Photo https://t.co/media")
                   ("urls" . ("https://pic.x.com/example"))
@@ -462,7 +462,7 @@
     (should (equal (plist-get tweet :text) "Photo"))
     (should-not (plist-get tweet :urls))))
 
-(ert-deftest chirp-normalize-tweet-extracts-multiple-note-tweet-links ()
+(ert-deftest chirp-tweet-from-x-extracts-multiple-note-tweet-links ()
   "Expanded URLs should survive even when they only appear in note-tweet entities."
   (let ((tweet (chirp-test--sample-note-tweet-with-entity-links)))
     (should (equal (plist-get tweet :text) "GitHub仓库\n在线阅读"))
@@ -470,7 +470,7 @@
                    '("https://github.com/example/project"
                      "https://example.com/read")))))
 
-(ert-deftest chirp-normalize-tweet-keeps-short-urls-when-expanded-links-are-incomplete ()
+(ert-deftest chirp-tweet-from-x-keeps-short-urls-when-expanded-links-are-incomplete ()
   "Display text should keep `t.co` placeholders when expansion coverage is incomplete."
   (let ((tweet (chirp-test--sample-tweet-with-incomplete-expanded-urls)))
     (should (equal (plist-get tweet :text)
@@ -478,12 +478,12 @@
     (should (equal (plist-get tweet :urls)
                    '("https://github.com/example/project")))))
 
-(ert-deftest chirp-normalize-tweet-preserves-retweeted-by-handle ()
+(ert-deftest chirp-tweet-from-x-preserves-retweeted-by-handle ()
   "Structured tweets should preserve retweet social context handles."
   (let ((tweet (chirp-test--sample-retweeted-tweet)))
     (should (equal (plist-get tweet :retweeted-by) "dotey"))))
 
-(ert-deftest chirp-normalize-tweet-unwraps-x-retweet-results ()
+(ert-deftest chirp-tweet-from-x-unwraps-x-retweet-results ()
   "X retweet wrappers should render the original tweet with social context."
   (let* ((retweeter
           '(("rest_id" . "10")
@@ -498,7 +498,7 @@
             ("core" . (("user_results" . (("result" . ,author)))))
             ("legacy" . (("full_text" . "Original post")))))
          (tweet
-          (chirp-normalize-tweet
+          (chirp--tweet-from-x
            `(("rest_id" . "100")
              ("isPromoted" . t)
              ("core" . (("user_results" . (("result" . ,retweeter)))))
@@ -512,9 +512,9 @@
     (should (equal (plist-get tweet :retweeted-by-name) "Alice"))
     (should (plist-get tweet :promoted-p))))
 
-(ert-deftest chirp-normalize-user-parses-structured-profile-payload-with-blank-name ()
+(ert-deftest chirp-user-from-x-parses-structured-profile-payload-with-blank-name ()
   "Structured profile payloads should survive blank display-name fields."
-  (let ((user (chirp-normalize-user
+  (let ((user (chirp--user-from-x
                '(("id" . "50683")
                  ("name" . "")
                  ("screenName" . "dingyi")
@@ -534,10 +534,10 @@
     (should (plist-get user :viewer-following-p))
     (should-not (plist-get user :viewer-followed-by-p))))
 
-(ert-deftest chirp-normalize-user-handles-current-x-profile-shape ()
+(ert-deftest chirp-user-from-x-handles-current-x-profile-shape ()
   "Current X profile fields should retain biography and account counts."
   (let ((user
-         (chirp-normalize-user
+         (chirp--user-from-x
           '(("id" . "VXNlcjo0Mg==")
             ("rest_id" . "42")
             ("core" . (("name" . "Alice")
@@ -616,7 +616,7 @@
 
 (ert-deftest chirp-render-insert-tweet-highlights-genuine-external-links ()
   "Genuine external links should highlight on hover and open themselves."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "123")
                   ("text" . "Read https://t.co/article")
                   ("urls" . ("https://example.com/article"))
@@ -672,7 +672,7 @@
   (let* ((text "See\n- https://t.co/aaa\n- https://t.co/bbb\n- ASD-STE100")
          (first (string-match "https://t.co/aaa" text))
          (second (string-match "https://t.co/bbb" text)))
-    (chirp-normalize-tweet
+    (chirp--tweet-from-x
      `(("id" . "2087")
        ("text" . ,text)
        ("entities" .
@@ -688,7 +688,7 @@
        ("author" . (("screenName" . "zackkanter")
                     ("name" . "Zack Kanter")))))))
 
-(ert-deftest chirp-normalize-tweet-uses-code-point-entity-indices ()
+(ert-deftest chirp-tweet-from-x-uses-code-point-entity-indices ()
   "GraphQL entity indices are Unicode code points, not UTF-16 units."
   (let* ((text (concat "FuckCraft Episode 4 Pinke's Gym Arc! [Pinke Anims] "
                        "Minecraft: pinke gym anal gangbang deepthroat sweaty "
@@ -696,7 +696,7 @@
                        "https://t.co/ZC1eHiIdEj\n\n"
                        "#Rule34 #Minecraft #FuckCraft #PinkeAnims #NSFW "
                        "https://t.co/YqNlKANgce"))
-         (tweet (chirp-normalize-tweet
+         (tweet (chirp--tweet-from-x
                  `(("id" . "2087131921880871390")
                    ("full_text" . ,text)
                    ("display_text_range" . (0 217))
@@ -736,7 +736,7 @@
                                (equal (plist-get entity :tag) "30:06")))
                         (plist-get tweet :text-entities)))))
 
-(ert-deftest chirp-normalize-tweet-inlines-display-urls-from-entities ()
+(ert-deftest chirp-tweet-from-x-inlines-display-urls-from-entities ()
   "URL entities should replace `t.co` in place with X's display_url."
   (let ((tweet (chirp-test--sample-inline-url-tweet)))
     (should (equal (plist-get tweet :text)
@@ -884,9 +884,9 @@
         (should (search-forward "Version history" nil t))
         (should-not (search-forward "Edited" nil t))))))
 
-(ert-deftest chirp-normalize-tweet-extracts-mentions-and-hashtags ()
+(ert-deftest chirp-tweet-from-x-extracts-mentions-and-hashtags ()
   "Tweet entities should keep mentions and hashtags for inline actions."
-  (let ((tweet (chirp-normalize-tweet
+  (let ((tweet (chirp--tweet-from-x
                 '(("id" . "55")
                   ("text" . "Hi @bob see #emacs")
                   ("author" . (("screenName" . "alice")
@@ -1305,13 +1305,13 @@
       (search-forward "[slice]")
       (should (stringp (get-text-property (match-beginning 0) 'line-prefix))))))
 
-(ert-deftest chirp-normalize-tweet-decodes-html-entities-without-shifting-urls ()
+(ert-deftest chirp-tweet-from-x-decodes-html-entities-without-shifting-urls ()
   "HTML entities in tweet text should decode without moving URL spans."
   (let* ((raw "Scala &amp; Java https://t.co/aaa")
          (url-beg (string-match "https://t.co/aaa" raw))
          (url-end (+ url-beg (length "https://t.co/aaa")))
          (tweet
-          (chirp-normalize-tweet
+          (chirp--tweet-from-x
            `(("id" . "amp")
              ("text" . ,raw)
              ("entities"
@@ -1345,7 +1345,7 @@
                             :url "https://example.com/path"
                             :start start
                             :end end))))
-        opened)
+         opened)
     (should (equal (substring text start end) "example.com/path"))
     (with-temp-buffer
       (chirp-view-mode)
@@ -1565,7 +1565,7 @@
 (ert-deftest chirp-render-insert-discussion-entry-labels-related-tweet ()
   "Related context should precede the original author heading."
   (let ((tweet
-         (chirp-normalize-tweet
+         (chirp--tweet-from-x
           '(("id" . "related-1")
             ("text" . "Related body")
             ("timelineContext" . "related")
@@ -2043,7 +2043,7 @@
                      (lambda (_tweet-id callback &optional _errback)
                        (funcall
                         callback
-                        (chirp-normalize-tweet
+                        (chirp--tweet-from-x
                          '(("id" . "456")
                            ("text" . "Quoted body text with image")
                            ("author" . (("screenName" . "bob")

@@ -306,7 +306,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                      '(("rest_id" . "1")
                        ("legacy" . (("full_text" . "hello")))))
                     (chirp-backend-test--bottom-cursor "cursor-next"))))))
-              ((symbol-function 'chirp-collect-top-level-tweets)
+              ((symbol-function 'chirp--top-level-tweets-from-x)
                (lambda (items)
                  (setq raw-tweets items)
                  '((:id "1")))))
@@ -352,7 +352,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                  (setq operation request-operation)
                  (funcall callback
                           (chirp-backend-test--home-timeline-payload nil))))
-              ((symbol-function 'chirp-collect-top-level-tweets)
+              ((symbol-function 'chirp--top-level-tweets-from-x)
                (lambda (_items) nil)))
       (chirp-backend-feed #'ignore t))
     (should (equal (plist-get operation :name) "HomeLatestTimeline"))))
