@@ -10,9 +10,11 @@ Each explicit `M-x chirp-direct-messages` unlock submission creates one native j
 
 ### Media and outgoing messages
 
-X GraphQL, the official three-step Chat media upload, and authenticated Chat media downloads remain in Lisp. For outgoing media, the native module reads the user-selected file, enforces the size bound and detected content type, and stream-encrypts it into a session-owned temporary ciphertext file. The returned staging metadata includes the opaque verified conversation-key version; final message encryption is pinned to that same version so a concurrent key rotation cannot separate the media ciphertext from its envelope. Release, failure, cancellation, or session destruction removes the staging file.
+The native module owns the cryptographic side of outgoing media. It validates the selected file and detected content type, enforces the plaintext size bound, stream-encrypts into a session-owned temporary file, and returns only file metadata plus the opaque verified conversation-key version. Final message encryption is pinned to that version, so key rotation cannot separate the attachment ciphertext from its message envelope. Release, failure, cancellation, and session destruction all remove the staged ciphertext.
 
-Outgoing text, typed uploaded-media descriptors, reply target events, bounded key-event envelopes, and reaction operations enter the module only for synchronous bounded SDK calls. Lisp receives a message event and signature envelope and submits it once through the fixed X write operation.
+Lisp owns the network side. `chirp-x.el` creates a transport-only upload UUID, initializes the upload through authenticated X GraphQL, sends bounded ciphertext parts to TON with session cookies and CSRF, and finalizes through GraphQL. Native code never receives X credentials or calls X APIs.
+
+Outgoing text, typed media descriptors, reply targets, bounded key-event envelopes, and reactions enter the native module only for synchronous bounded SDK operations. Lisp receives the signed opaque event envelope and submits it once through the fixed X write operation.
 
 ### Cancellation and destruction
 

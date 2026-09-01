@@ -1015,18 +1015,139 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
       (when (< (1+ row) row-count)
         (insert (propertize "\n" 'line-height t))))))
 
+(defun chirp-render--media-track-offsets (image gap)
+  "Return IMAGE item offsets in SVG pixels, separated by GAP."
+  (let ((offset 0))
+    (mapcar
+     (lambda (width)
+       (prog1 offset
+         (setq offset (+ offset width gap))))
+     (plist-get (cdr image) :appkit-media-strip-widths))))
+
+(defun chirp-render--media-track-reset-hscroll ()
+  "Reset horizontal scrolling after point leaves a focused media track."
+  (unless (get-text-property (point) 'chirp-media-track)
+    (set-window-hscroll (selected-window) 0)))
+
+(defun chirp-render--media-track-select (state delta)
+  "Move media track STATE by DELTA items and reveal the selected item."
+  (let* ((media-list (aref state 2))
+         (count (length media-list))
+         (index (mod (+ (aref state 0) delta) count))
+         (offset (nth index (aref state 1))))
+    (if-let* ((image
+               (chirp-media-track-strip-image
+                media-list (aref state 5) offset))
+              (rows (appkit-media-image-slice-rows image))
+              (same-size (= (length rows) (length (aref state 4)))))
+        (progn
+          (let ((inhibit-read-only t))
+            (cl-mapc
+             (lambda (position row)
+               (put-text-property
+                position (1+ position) 'display
+                (get-text-property 0 'display row)))
+             (aref state 4) rows))
+          (aset state 0 index)
+          (when (eq (window-buffer (selected-window))
+                    (current-buffer))
+            (set-window-hscroll (selected-window) 0))
+          (message "Media %d of %d; RET opens it" (1+ index) count))
+      (user-error "Unable to reveal media item %d" (1+ index)))))
+
+(defun chirp-render--media-track-open (state)
+  "Open the currently selected item in media track STATE."
+  (chirp-media-open
+   (aref state 2) (aref state 0) (aref state 3)))
+
+(defun chirp-render--media-track-hotspot-map
+    (position media-list image gap)
+  "Return keyboard and image-map-style actions for a media track.
+
+POSITION supplies its existing keymap.  MEDIA-LIST, IMAGE, and GAP describe
+the natural-ratio track."
+  (let* ((map
+          (copy-keymap
+           (or (get-text-property position 'keymap)
+               (make-sparse-keymap))))
+         (state
+          (vector
+           0
+           (chirp-render--media-track-offsets image gap)
+           media-list
+           (or chirp--view-title "Chirp Media")
+           nil
+           gap)))
+    (dolist (key '([right] [tab]))
+      (define-key
+       map key
+       (lambda ()
+         (interactive)
+         (chirp-render--media-track-select state 1))))
+    (dolist (key '([left] [backtab] [S-iso-lefttab]))
+      (define-key
+       map key
+       (lambda ()
+         (interactive)
+         (chirp-render--media-track-select state -1))))
+    (dolist (key (list (kbd "RET") [return]))
+      (define-key
+       map key
+       (lambda ()
+         (interactive)
+         (chirp-render--media-track-open state))))
+    (cl-loop for _media in media-list
+             for index from 0
+             for id = (intern (format "chirp-media-%d" index))
+             do
+             (let ((item-index index))
+               (define-key map (vector id 'down-mouse-1) #'ignore)
+               (define-key
+                map
+                (vector id 'mouse-1)
+                (lambda ()
+                  (interactive)
+                  (aset state 0 item-index)
+                  (chirp-render--media-track-open state)))))
+    (cons map state)))
+
 (defun chirp-render--insert-media-track
     (media-list prefix prefix-face)
-  "Insert focused MEDIA-LIST at natural ratios in one horizontal track.
+  "Insert focused MEDIA-LIST as one unbreakable natural-ratio track.
 
 PREFIX and PREFIX-FACE control indentation."
-  (chirp-render--insert-media-row
-   (cl-loop for media in media-list
-            for index from 0
-            collect
-            (chirp-render--media-cell
-             media index (chirp-media-track-image media)))
-   media-list chirp-media-layout-track-gap prefix prefix-face))
+  (if-let* ((image
+             (chirp-media-track-strip-image
+              media-list chirp-media-layout-track-gap))
+            (rows (appkit-media-image-slice-rows image)))
+      (let (hotspot-map track-state track-positions)
+        (setq-local auto-hscroll-mode nil)
+        (add-hook 'post-command-hook
+                  #'chirp-render--media-track-reset-hscroll nil t)
+        (cl-loop for row in rows
+                 for row-index from 0
+                 do
+                 (unless (zerop row-index)
+                   (insert (propertize "\n" 'line-height t)))
+                 (chirp-render--insert-prefix prefix prefix-face)
+                 (let ((start (point)))
+                   (insert row)
+                   (push start track-positions)
+                   (chirp-render--mark-media-region
+                    start (point) (car media-list) media-list 0)
+                   (unless hotspot-map
+                     (pcase-let
+                         ((`(,map . ,state)
+                           (chirp-render--media-track-hotspot-map
+                            start media-list image
+                            chirp-media-layout-track-gap)))
+                       (setq hotspot-map map
+                             track-state state)))
+                   (put-text-property start (point) 'keymap hotspot-map)
+                   (put-text-property start (point)
+                                      'chirp-media-track t)))
+        (aset track-state 4 (nreverse track-positions)))
+    (chirp-render--insert-media-grid media-list prefix prefix-face)))
 
 (defun chirp-render--insert-media-grid
     (media-list prefix prefix-face)

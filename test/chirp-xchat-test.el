@@ -722,6 +722,10 @@
             (should-not failure)
             (should acknowledged)
             (should (= (length uploads) 1))
+            (should
+             (equal (car uploads)
+                    (list "42-99" file
+                          (file-attribute-size (file-attributes file)))))
             (should (equal released '(7)))
             (should (equal (car prepared) "42-99"))
             (should (equal (cadr prepared) ""))
@@ -752,6 +756,8 @@
                         :encrypted-bytes
                         (file-attribute-size (file-attributes file))
                         :plaintext-bytes 5
+                        :upload-message-id
+                        "66666666-7777-4888-8999-aaaaaaaaaaaa"
                         :filename "wrong.jpg"
                         :mime-type "video/mp4"
                         :media-type 3
@@ -776,11 +782,11 @@
       (when (file-exists-p file)
         (delete-file file)))))
 
-(ert-deftest chirp-xchat-media-upload-uses-official-three-step-api ()
-  "Encrypted media should initialize, append bounded parts, and finalize once."
+(ert-deftest chirp-xchat-media-upload-matches-the-current-web-workflow ()
+  "Encrypted media should use X web GraphQL, bounded TON parts, and finalize."
   (let ((chirp--app nil)
         (file (make-temp-file "chirp-xchat-upload-"))
-        requests media-hash failure)
+        graph-requests ton-requests progress-events media-hash failure)
     (unwind-protect
         (progn
           (with-temp-file file
@@ -788,62 +794,142 @@
             (insert (make-string (+ (* 3 1024 1024) 7) ?x)))
           (let ((size (file-attribute-size (file-attributes file))))
             (cl-letf
-                (((symbol-function 'chirp-x--request)
+                (((symbol-function 'chirp-x--make-uuid)
+                  (lambda ()
+                    "01234567-89ab-4def-8123-456789abcdef"))
+                 ((symbol-function 'chirp-x-graphql-request)
+                  (lambda (operation variables callback &rest _options)
+                    (push (list operation variables) graph-requests)
+                    (cond
+                     ((eq operation
+                          chirp-x--chat-media-initialize-operation)
+                      (funcall
+                       callback
+                       '(("data" .
+                          (("xchat_initialize_media_upload" .
+                            (("__typename" . "InitializeMediaUploadResult")
+                             ("media_hash_key" . "media_hash")
+                             ("resume_id" . "123"))))))))
+                     ((eq operation chirp-x--chat-media-finalize-operation)
+                      (funcall
+                       callback
+                       '(("data" .
+                          (("xchat_finalize_media_upload" .
+                            (("__typename" . "FinalizeMediaUploadResponse")
+                             ("upload_error")))))))))
+                    'graphql-request))
+                 ((symbol-function 'chirp-x--request)
                   (lambda (url method callback &rest options)
-                    (let ((data
-                           (json-parse-string
-                            (plist-get options :data)
-                            :object-type 'alist
-                            :array-type 'list
-                            :null-object nil
-                            :false-object :json-false)))
-                      (push (list url method data) requests)
-                      (cond
-                       ((string-suffix-p "/initialize" url)
-                        (funcall
-                         callback
-                         '(("data" .
-                            (("session_id" . "123")
-                             ("media_hash_key" . "media_hash"))))))
-                       ((string-suffix-p "/append" url)
-                        (funcall callback '(("data" . (("expires_at" . 1))))))
-                       ((string-suffix-p "/finalize" url)
-                        (funcall callback '(("data" . (("success" . t)))))))
-                      'request))))
+                    (push
+                     (list url method
+                           (plist-get options :data)
+                           (plist-get options :content-type)
+                           (plist-get options :cookie-only)
+                           (plist-get options :allow-empty))
+                     ton-requests)
+                    (funcall callback (make-hash-table :test #'equal))
+                    'ton-request)))
               (chirp-x-upload-chat-media
                "42:99" file size
                (lambda (value) (setq media-hash value))
                :errback (lambda (message) (setq failure message))
-               :owner (chirp-app))))
-          (setq requests (nreverse requests))
+               :owner (chirp-app)
+               :progress (lambda (event) (push event progress-events)))))
+          (setq graph-requests (nreverse graph-requests)
+                ton-requests (nreverse ton-requests)
+                progress-events (nreverse progress-events))
           (should-not failure)
           (should (equal media-hash "media_hash"))
-          (should (= (length requests) 4))
-          (let ((initialize (nth 0 requests))
-                (first-part (nth 1 requests))
-                (second-part (nth 2 requests))
-                (finalize (nth 3 requests)))
+          (should (= (length graph-requests) 2))
+          (let* ((initialize (car graph-requests))
+                 (initialize-operation (car initialize))
+                 (initialize-variables (cadr initialize))
+                 (finalize (cadr graph-requests))
+                 (finalize-operation (car finalize))
+                 (finalize-variables (cadr finalize)))
             (should
-             (string-suffix-p
-              "/2/chat/media/upload/initialize" (car initialize)))
-            (should (eq (cadr initialize) 'post))
+             (equal (plist-get initialize-operation :query-id)
+                    "DidmR9ZXZhbiOAUY31bh_Q"))
             (should
-             (= (alist-get 'total_bytes (caddr initialize))
-                (+ (* 3 1024 1024) 7)))
-            (should (= (alist-get 'segment_index (caddr first-part)) 0))
+             (equal (cdr (assoc "conversationId" initialize-variables))
+                    "42:99"))
             (should
-             (= (length
-                 (base64-decode-string
-                  (alist-get 'media (caddr first-part))))
-                (* 3 1024 1024)))
-            (should (= (alist-get 'segment_index (caddr second-part)) 1))
+             (equal (cdr (assoc "messageId" initialize-variables))
+                    "01234567-89ab-4def-8123-456789abcdef"))
             (should
-             (= (length
-                 (base64-decode-string
-                  (alist-get 'media (caddr second-part))))
-                7))
+             (equal (cdr (assoc "totalBytes" initialize-variables))
+                    (number-to-string (+ (* 3 1024 1024) 7))))
             (should
-             (equal (alist-get 'num_parts (caddr finalize)) "2"))))
+             (equal (plist-get finalize-operation :query-id)
+                    "zxijIBKSw0Icf8xz0Ok9hA"))
+            (should
+             (equal (cdr (assoc "messageId" finalize-variables))
+                    "01234567-89ab-4def-8123-456789abcdef"))
+            (should
+             (equal (cdr (assoc "mediaHashKey" finalize-variables))
+                    "media_hash"))
+            (should (equal (cdr (assoc "resumeId" finalize-variables))
+                           "123"))
+            (should (equal (cdr (assoc "numParts" finalize-variables))
+                           "2"))
+            (should (equal (cdr (assoc "ttlMsec" finalize-variables))
+                           "2592000000")))
+          (should (= (length ton-requests) 2))
+          (let ((first (car ton-requests))
+                (second (cadr ton-requests)))
+            (should
+             (equal
+              (car first)
+              (concat
+               "https://ton.x.com/i/ton/data/xchat_media/42:99/media_hash"
+               "?concurrent=true&resumeId=123&partNumber=0")))
+            (should
+             (equal
+              (car second)
+              (concat
+               "https://ton.x.com/i/ton/data/xchat_media/42:99/media_hash"
+               "?concurrent=true&resumeId=123&partNumber=1")))
+            (should (eq (cadr first) 'post))
+            (should (eq (cadr second) 'post))
+            (should (= (length (nth 2 first)) (* 3 1024 1024)))
+            (should (= (length (nth 2 second)) 7))
+            (dolist (request ton-requests)
+              (should
+               (equal (nth 3 request) "application/octet-stream"))
+              (should (eq (nth 4 request) t))
+              (should (eq (nth 5 request) t))))
+          (should
+           (equal (mapcar (lambda (event) (plist-get event :phase))
+                          progress-events)
+                  '(initialize upload upload finalize))))
+      (chirp-stop)
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest chirp-xchat-media-upload-identifies-initialize-failure ()
+  "A rejected initialize mutation should name its upload phase."
+  (let ((chirp--app nil)
+        (file (make-temp-file "chirp-xchat-upload-" nil nil "ciphertext"))
+        failure ton-requested)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-x-graphql-request)
+                   (lambda (_operation _variables _callback &rest options)
+                     (funcall (plist-get options :errback)
+                              "X request failed (HTTP 403)")
+                     'graphql-request))
+                  ((symbol-function 'chirp-x--request)
+                   (lambda (&rest _arguments)
+                     (setq ton-requested t))))
+          (chirp-x-upload-chat-media
+           "42:99" file (file-attribute-size (file-attributes file)) #'ignore
+           :errback (lambda (message) (setq failure message))
+           :owner (chirp-app))
+          (should-not ton-requested)
+          (should
+           (equal failure
+                  (concat
+                   "XChat media initialize request failed: "
+                   "X request failed (HTTP 403)"))))
       (chirp-stop)
       (when (file-exists-p file)
         (delete-file file)))))
