@@ -48,7 +48,7 @@ history remains available in Git.
 - `M-x chirp-thread` and `M-x chirp-list` now accept numeric IDs only. Use `M-x chirp-open-url` for supported X or Twitter URLs.
 - Direct-message entry now requires an explicit absolute `chirp-xchat-native-module-file` and successful XChat unlock; Chirp does not infer or search for native build output.
 - X account cookies are now read exclusively from Chirp's private auth file created by `M-x chirp-login`; `CHIRP_X_AUTH_TOKEN`, `CHIRP_X_CT0`, and `auth-source` entries are no longer used.
-- Chirp now requires Appkit 0.2.16 or newer for gapless inline image slices, inline action spans, compose submit progress, cancel hooks, multi-part compose surfaces, read-only stable-key projections, point-safe line metrics, and pre-heading discussion context.
+- Chirp now requires GNU Emacs 31.1 and Appkit 0.3.0 for semantic markup codecs, gapless inline image slices, action spans, compose lifecycle ownership, stable-key projections, and shared discussion and chat geometry.
 
 ### Fixed
 
@@ -73,6 +73,7 @@ history remains available in Git.
 - Acknowledged XChat sends now bridge disjoint focused fragments through bounded older-history pages before merging one continuous conversation window; focused payloads may omit inbox-only deletion metadata, and inbox continuation may omit a false snapshot-restart flag.
 - Verified XChat image attachments now use Appkit media resources and inline rendering when X provides a trusted URL, while verified reply previews and unsupported attachments no longer remain encrypted placeholders.
 - XChat inbox entries now use Appkit's recent-session directory rows with participant avatars, previews, request/muted trails, and activity metrics. Inbox and conversation projections acquire only the peer, sender, and attachment resources used by their rendered rows, redraw only dependent rows, and use Appkit's shared one-line activity and two-line chat-avatar geometry.
+- XChat message text now decodes and encodes through Appkit's plain semantic markup codec. The native bridge strictly decodes bounded verified JSON domain values, and only allowlisted X media URLs can enter the image resource pipeline.
 - Website cards such as GitHub summaries now render from X's `card` payload instead of a later Open Graph fetch that GitHub pages exceed.
 - Inline photos, video stills, compose previews, and website-card images use Appkit's two-step media API: cache `:height Nch` previews, then display through `appkit-media-insert-image-slices` or `appkit-media-image-slice-rows`. Tweet media grids no longer slice images locally.
 - Avatars size to the current text line (`chirp-avatar-size` 28 is one line). `text-scale-mode` rebuilds avatars and card prefixes from cached data instead of leaving pixel chrome behind.

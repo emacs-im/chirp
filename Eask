@@ -12,7 +12,7 @@
 (source "gnu")
 (source 'melpa)
 
-(depends-on "emacs" "29.1")
+(depends-on "emacs" "31.1")
 (depends-on "appkit" :file "../appkit.el")
 (depends-on "browser-session" :file "../browser-session")
 (depends-on "plz" "0.8")

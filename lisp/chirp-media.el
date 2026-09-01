@@ -567,6 +567,32 @@ optionally supplies the source filename used for media type hints."
                    app 'function transfer #'appkit-media-cancel-transfer)))
           entry))))))
 
+(defun chirp-media--trusted-xchat-media-url-p (value)
+  "Return non-nil when VALUE is an allowlisted HTTPS XChat media URL."
+  (and (stringp value)
+       (<= (length value) 8192)
+       (not (string-match-p "[[:cntrl:]]" value))
+       (condition-case nil
+           (let* ((parsed (url-generic-parse-url value))
+                  (host (downcase (or (url-host parsed) ""))))
+             (and (equal (url-type parsed) "https")
+                  (null (url-user parsed))
+                  (null (url-password parsed))
+                  (memq (url-port parsed) '(nil 443))
+                  (or (equal host "ton.twitter.com")
+                      (string-suffix-p ".twimg.com" host))))
+         (error nil))))
+
+(cl-defun chirp-media-request-xchat-image-resource
+    (view resource-key source &key name)
+  "Acquire allowlisted XChat image SOURCE for RESOURCE-KEY in VIEW.
+
+NAME optionally supplies the filename used for media type hints."
+  (when (chirp-media--trusted-xchat-media-url-p source)
+    (chirp-media-request-image-resource
+     view resource-key source :name name)
+    resource-key))
+
 (cl-defun chirp-media-insert-image-resource
     (view resource-key &key alternate-text help-echo)
   "Insert VIEW's cached image RESOURCE-KEY and return its display status.
@@ -1246,6 +1272,24 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
               (size (chirp-media--avatar-pixel-size)))
     (or (appkit-media-circular-image-from-file file size)
         (chirp-media--scaled-image file size size))))
+
+(defun chirp-media-xchat-avatar-resource-key (identity url)
+  "Return the stable avatar resource key for IDENTITY and URL, or nil."
+  (when (and (stringp identity)
+             (not (string-empty-p identity))
+             (stringp url)
+             (not (string-empty-p url)))
+    (list 'xchat-avatar identity)))
+
+(defun chirp-media-request-xchat-avatar-resource (view identity url)
+  "Request IDENTITY's avatar URL resource on behalf of VIEW.
+
+Return its stable resource key, or nil when IDENTITY or URL is unavailable."
+  (when-let* ((resource-key
+               (chirp-media-xchat-avatar-resource-key identity url)))
+    (chirp-media-request-image-resource
+     view resource-key url :name "avatar.jpg")
+    resource-key))
 
 (defun chirp-media-avatar-resource-image (view resource-key &optional pixel-size)
   "Return VIEW's cached avatar RESOURCE-KEY as an image descriptor.

@@ -180,6 +180,127 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
          (chirp-xchat-native--settle-recovery
           recovery nil (error-message-string err)))))))
 
+;;; Native JSON Decoding
+
+(defconst chirp-xchat-native--max-message-bytes 16384
+  "Maximum UTF-8 bytes accepted for one native plaintext field.")
+
+(defconst chirp-xchat-native--max-attachments 100
+  "Maximum verified attachments accepted for one native message.")
+
+(defun chirp-xchat-native--optional-string (object key limit label)
+  "Decode optional string KEY from OBJECT up to LIMIT bytes for LABEL."
+  (let ((value (alist-get key object)))
+    (cond
+     ((null value) nil)
+     ((and (stringp value) (<= (string-bytes value) limit)) value)
+     (t (error "XChat native module returned invalid %s" label)))))
+
+(defun chirp-xchat-native--required-string (object key limit label)
+  "Decode required string KEY from OBJECT up to LIMIT bytes for LABEL."
+  (or (chirp-xchat-native--optional-string object key limit label)
+      (error "XChat native module omitted %s" label)))
+
+(defun chirp-xchat-native--decode-attachment (raw)
+  "Decode one verified native attachment RAW into a domain plist."
+  (unless (listp raw)
+    (error "XChat native module returned an invalid attachment"))
+  (let* ((kind-name
+          (chirp-xchat-native--required-string
+           raw 'kind 32 "attachment kind"))
+         (kind
+          (and (member kind-name
+                       '("image" "gif" "video" "audio" "file" "svg"
+                         "media" "url" "post" "unified-card" "money"))
+               (intern kind-name))))
+    (unless kind
+      (error "XChat native module returned an unknown attachment kind"))
+    (list :kind kind
+          :url
+          (chirp-xchat-native--optional-string
+           raw 'url 8192 "attachment URL")
+          :preview-url
+          (chirp-xchat-native--optional-string
+           raw 'preview_url 8192 "attachment preview URL")
+          :name
+          (chirp-xchat-native--optional-string
+           raw 'name 1024 "attachment name"))))
+
+(defun chirp-xchat-native--decode-message (raw)
+  "Decode one verified native message RAW into a bounded domain plist."
+  (unless (and (listp raw) (eq (alist-get 'verified raw) t))
+    (error "XChat native module returned an unverified message"))
+  (let* ((sequence-id
+          (chirp-xchat-native--optional-string
+           raw 'sequence_id 1024 "message sequence ID"))
+         (message-id
+          (chirp-xchat-native--optional-string
+           raw 'id 1024 "message ID"))
+         (conversation-id
+          (chirp-xchat-native--required-string
+           raw 'conversation_id 1024 "conversation ID"))
+         (content-name
+          (chirp-xchat-native--required-string
+           raw 'content_kind 32 "message content kind"))
+         (content-kind
+          (and (member content-name
+                       '("text" "reaction" "reaction-removed" "edit"
+                         "mark-read" "mark-unread" "unknown"))
+               (intern content-name)))
+         (attachments (alist-get 'attachments raw))
+         (reply (alist-get 'reply raw))
+         (reply-count (alist-get 'reply_attachment_count raw)))
+    (unless (or sequence-id message-id)
+      (error "XChat native module omitted message identity"))
+    (unless content-kind
+      (error "XChat native module returned an unknown content kind"))
+    (unless (and (listp attachments)
+                 (<= (length attachments)
+                     chirp-xchat-native--max-attachments))
+      (error "XChat native module returned invalid attachments"))
+    (unless (memq reply '(t :json-false))
+      (error "XChat native module returned an invalid reply flag"))
+    (unless (and (integerp reply-count)
+                 (<= 0 reply-count chirp-xchat-native--max-attachments))
+      (error "XChat native module returned an invalid reply attachment count"))
+    (list :sequence-id sequence-id
+          :message-id message-id
+          :sender-id
+          (chirp-xchat-native--optional-string
+           raw 'sender_id 1024 "sender ID")
+          :conversation-id conversation-id
+          :created-at-msec
+          (let ((value (alist-get 'created_at_msec raw)))
+            (when (and value (not (integerp value)))
+              (error "XChat native module returned an invalid timestamp"))
+            value)
+          :content-kind content-kind
+          :text
+          (chirp-xchat-native--optional-string
+           raw 'text chirp-xchat-native--max-message-bytes "message text")
+          :attachments
+          (mapcar #'chirp-xchat-native--decode-attachment attachments)
+          :reply-p (eq reply t)
+          :reply-text
+          (chirp-xchat-native--optional-string
+           raw 'reply_text chirp-xchat-native--max-message-bytes
+           "reply text")
+          :reply-attachment-count reply-count
+          :key-version
+          (chirp-xchat-native--optional-string
+           raw 'key_version 1024 "conversation key version"))))
+
+(defun chirp-xchat-native--decode-decrypt-output (raw)
+  "Decode bounded native decryption output RAW into verified messages."
+  (let ((messages (alist-get 'messages raw))
+        (errors (alist-get 'errors raw)))
+    (unless (and (listp messages) (<= (length messages) 200))
+      (error "XChat native module returned invalid decrypted messages"))
+    (unless (and (listp errors) (<= (length errors) 200)
+                 (cl-every (lambda (entry) (stringp (cdr entry))) errors))
+      (error "XChat native module returned invalid decryption errors"))
+    (mapcar #'chirp-xchat-native--decode-message messages)))
+
 ;;; Cryptographic Operations
 
 (defun chirp-xchat-native-unlocked-p ()
@@ -192,7 +313,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
               (chirp-xchat-native-session-unlocked-p session)))))
 
 (defun chirp-xchat-native-decrypt-events (events signing-keys)
-  "Return verified plaintext for encoded XChat EVENTS using SIGNING-KEYS."
+  "Decode verified domain messages from XChat EVENTS using SIGNING-KEYS."
   (let (input-json output-json)
     (unwind-protect
         (progn
@@ -203,9 +324,10 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
                 output-json
                 (chirp-xchat-native-decrypt
                  (chirp-xchat-native--session) input-json))
-          (json-parse-string
-           output-json :object-type 'alist :array-type 'list
-           :null-object nil :false-object :json-false))
+          (chirp-xchat-native--decode-decrypt-output
+           (json-parse-string
+            output-json :object-type 'alist :array-type 'list
+            :null-object nil :false-object :json-false)))
       (when (stringp input-json)
         (clear-string input-json))
       (when (stringp output-json)
