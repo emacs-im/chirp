@@ -477,6 +477,146 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-primary-auto-load-continues-quietly-through-empty-page ()
+  "An empty automatic page should advance its cursor without announcing."
+  (let ((chirp--app nil)
+        (chirp-timeline-poll-interval nil)
+        (chirp-timeline-auto-load-threshold 50)
+        buffer
+        messages
+        rechecks
+        requests)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success _following errback _max-results
+                                      cursor _owner)
+                       (setq requests
+                             (append requests
+                                     (list (list :success success
+                                                 :errback errback
+                                                 :cursor cursor))))
+                       (list 'request (length requests))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                    ((symbol-function 'message)
+                     (lambda (format-string &rest arguments)
+                       (when format-string
+                         (push (apply #'format format-string arguments)
+                               messages)))))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (observer
+                    (with-current-buffer buffer
+                      chirp-timeline--scroll-observer)))
+              (funcall
+               (plist-get (nth 0 requests) :success)
+               (list '(:kind tweet :id "1" :text "Visible post"))
+               '(("pagination" . (("nextCursor" . "older-1")))))
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (funcall
+                 (appkit-scroll-observer-end-function observer)
+                 'window 975 1000))
+              (should (= 2 (length requests)))
+              (cl-letf (((symbol-function 'appkit-scroll-observer-check)
+                         (lambda (candidate &optional _window)
+                           (should (eq candidate observer))
+                           (setq rechecks (1+ (or rechecks 0)))
+                           (with-current-buffer buffer
+                             (funcall
+                              (appkit-scroll-observer-end-function observer)
+                              'window 975 1000)))))
+                (funcall
+                 (plist-get (nth 1 requests) :success)
+                 nil
+                 '(("pagination" . (("nextCursor" . "older-2")))))
+                (appkit-sync-invalidations view))
+              (let ((page (plist-get (appkit-view-state view) :page)))
+                (should (= rechecks 1))
+                (should (equal (plist-get page :next-cursor) "older-2"))
+                (should-not (plist-get page :auto-load-paused-p))
+                (should-not (plist-get page :exhausted-p)))
+              (should (= 3 (length requests)))
+              (should
+               (equal (plist-get (nth 2 requests) :cursor) "older-2"))
+              (should-not (member "No older posts." messages))
+              (funcall
+               (plist-get (nth 2 requests) :success)
+               (list '(:kind tweet :id "2" :text "Older post"))
+               '(("pagination" . (("nextCursor" . "older-3")))))
+              (should
+               (equal
+                (mapcar
+                 (lambda (tweet) (plist-get tweet :id))
+                 (plist-get (appkit-view-state view) :items))
+                '("1" "2"))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-auto-load-errors-remain-quiet-and-paused ()
+  "An automatic paging failure should wait for an explicit retry."
+  (let ((chirp--app nil)
+        (chirp-timeline-poll-interval nil)
+        (chirp-timeline-auto-load-threshold 50)
+        buffer
+        messages
+        requests)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success _following errback _max-results
+                                      cursor _owner)
+                       (setq requests
+                             (append requests
+                                     (list (list :success success
+                                                 :errback errback
+                                                 :cursor cursor))))
+                       (list 'request (length requests))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore)
+                    ((symbol-function 'message)
+                     (lambda (format-string &rest arguments)
+                       (when format-string
+                         (push (apply #'format format-string arguments)
+                               messages)))))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (observer
+                    (with-current-buffer buffer
+                      chirp-timeline--scroll-observer)))
+              (funcall
+               (plist-get (nth 0 requests) :success)
+               (list '(:kind tweet :id "1" :text "Visible post"))
+               '(("pagination" . (("nextCursor" . "older-1")))))
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (funcall
+                 (appkit-scroll-observer-end-function observer)
+                 'window 975 1000))
+              (should (= 2 (length requests)))
+              (funcall
+               (plist-get (nth 1 requests) :errback)
+               "Older page failed")
+              (appkit-sync-invalidations view)
+              (let* ((state (appkit-view-state view))
+                     (page (plist-get state :page)))
+                (should (eq (plist-get (plist-get state :status) :phase)
+                            'idle))
+                (should (plist-get page :auto-load-paused-p)))
+              (with-current-buffer buffer
+                (funcall
+                 (appkit-scroll-observer-end-function observer)
+                 'window 975 1000)
+                (should-not (string-match-p "Unable to load"
+                                            (buffer-string))))
+              (should (= 2 (length requests)))
+              (should-not (member "Older page failed" messages)))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-primary-tweet-actions-update-canonical-state-by-key ()
   "Tweet actions should not recover primary state from rendered text."
   (let ((chirp--app nil)
