@@ -65,6 +65,7 @@ Set this to nil to disable automatic pagination.  Manual loading with
   "One logical primary timeline request generation."
   id
   phase
+  quiet-p
   settled-p)
 
 ;;;; State and Mode
@@ -99,7 +100,9 @@ Set this to nil to disable automatic pagination.  Manual loading with
         :query (list :kind kind :limit limit)
         :items nil
         :pending-new-items nil
-        :page (list :next-cursor nil :exhausted-p nil)
+        :page (list :next-cursor nil
+                    :exhausted-p nil
+                    :auto-load-paused-p nil)
         :status (list :phase 'initial :message nil)
         :generation nil
         :loaded-p nil
@@ -223,6 +226,7 @@ Set this to nil to disable automatic pagination.  Manual loading with
                  (eq (plist-get status :phase) 'idle)
                  (null (plist-get state :generation))
                  (plist-get page :next-cursor)
+                 (not (plist-get page :auto-load-paused-p))
                  (not (plist-get page :exhausted-p)))
         (setq-local chirp-timeline--auto-load-pending-recheck-p t)
         (chirp-timeline--load-more-primary view t)))))
@@ -294,6 +298,7 @@ Set this to nil to disable automatic pagination.  Manual loading with
   (setf (chirp-timeline--generation-settled-p generation) t)
   (when (chirp-view-state-token-current-p view state generation)
     (let* ((phase (chirp-timeline--generation-phase generation))
+           (quiet (chirp-timeline--generation-quiet-p generation))
            (query (plist-get state :query))
            (page (plist-get state :page))
            (status (plist-get state :status))
@@ -304,13 +309,15 @@ Set this to nil to disable automatic pagination.  Manual loading with
       (pcase phase
         ('older
          (let* ((cursor (plist-get page :next-cursor))
-                (merged (chirp-append-unique-tweets current tweets)))
-           (unless (> (length merged) (length current))
+                (merged (chirp-append-unique-tweets current tweets))
+                (added-p (> (length merged) (length current))))
+           (unless (or added-p quiet)
              (message "No older posts."))
            (setf (plist-get state :items) merged
                  (plist-get page :next-cursor) next-cursor
                  (plist-get page :exhausted-p)
-                 (or (not next-cursor) (equal cursor next-cursor)))))
+                 (or (not next-cursor) (equal cursor next-cursor))
+                 (plist-get page :auto-load-paused-p) nil)))
         ((or 'refresh 'poll)
          (if (null current)
              (setf (plist-get state :items) tweets
@@ -331,7 +338,8 @@ Set this to nil to disable automatic pagination.  Manual loading with
          (setf (plist-get state :items) tweets
                (plist-get state :pending-new-items) nil
                (plist-get page :next-cursor) next-cursor
-               (plist-get page :exhausted-p) (not next-cursor))
+               (plist-get page :exhausted-p) (not next-cursor)
+               (plist-get page :auto-load-paused-p) nil)
          (setq position-intent 'first)))
       (setf (plist-get status :phase) 'idle
             (plist-get status :message) nil
@@ -350,13 +358,18 @@ Set this to nil to disable automatic pagination.  Manual loading with
   "Settle GENERATION in VIEW and STATE with error MESSAGE."
   (setf (chirp-timeline--generation-settled-p generation) t)
   (when (chirp-view-state-token-current-p view state generation)
-    (let ((phase (chirp-timeline--generation-phase generation))
-          (status (plist-get state :status)))
-      (setf (plist-get status :phase) (if (eq phase 'poll) 'idle 'error)
-            (plist-get status :message) (and (not (eq phase 'poll)) message)
+    (let* ((phase (chirp-timeline--generation-phase generation))
+           (quiet (chirp-timeline--generation-quiet-p generation))
+           (silent (or quiet (eq phase 'poll)))
+           (page (plist-get state :page))
+           (status (plist-get state :status)))
+      (setf (plist-get status :phase) (if silent 'idle 'error)
+            (plist-get status :message) (and (not silent) message)
             (plist-get state :generation) nil)
+      (when (and quiet (eq phase 'older))
+        (setf (plist-get page :auto-load-paused-p) t))
       (appkit-request-sync view :part 'frame :position t)
-      (unless (eq phase 'poll)
+      (unless silent
         (message "%s"
                  (replace-regexp-in-string "[\r\n]+" "  " message))))))
 
@@ -376,8 +389,9 @@ Set this to nil to disable automatic pagination.  Manual loading with
     (remhash chirp-timeline--request-key
              (appkit-view-request-table view))))
 
-(defun chirp-timeline--request (view phase)
-  "Start one logical PHASE request owned by VIEW."
+(defun chirp-timeline--request (view phase &optional quiet)
+  "Start one logical PHASE request owned by VIEW.
+When QUIET is non-nil, suppress user-facing completion and error messages."
   (let* ((state (chirp-timeline--view-state view))
          (query (plist-get state :query))
          (page (plist-get state :page))
@@ -385,7 +399,8 @@ Set this to nil to disable automatic pagination.  Manual loading with
          (generation
           (chirp-timeline--generation-create
            :id (gensym "chirp-timeline-generation-")
-           :phase phase))
+           :phase phase
+           :quiet-p quiet))
          callback-ran-p
          request)
     ;; Revoke the previous generation before cancellation can synchronously
@@ -744,7 +759,7 @@ When QUIET is non-nil, suppress status messages for automatic pagination."
           (not (plist-get page :next-cursor)))
       (unless quiet (message "No older posts.")))
      (t
-      (chirp-timeline--request view 'older)))))
+      (chirp-timeline--request view 'older quiet)))))
 
 (defun chirp-load-more (&optional _anchor-id)
   "Load older posts, preserving the current semantic position."
