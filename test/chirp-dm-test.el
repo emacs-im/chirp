@@ -178,6 +178,37 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-dm-decryption-retains-reaction-target-identity ()
+  "Verified reaction targets should reach their canonical message aggregate."
+  (let* ((target (chirp-dm-test--normalized-event "20" "20" "wowo" "42"))
+         (reaction
+          (chirp-dm-test--normalized-event
+           "21" "message-21" "[Encrypted message unavailable]" "42"))
+         (conversation
+          (chirp-dm-test--normalized-conversation target reaction))
+         (state (list :conversation conversation)))
+    (setf (plist-get reaction :encrypted-p) t)
+    (chirp-dm-conversation--apply-verified-messages
+     state
+     '((:sequence-id "message-21"
+        :message-id "21"
+        :sender-id "42"
+        :conversation-id "conversation-1"
+        :content-kind reaction
+        :text "🔥"
+        :target-message-id "20"
+        :attachments nil
+        :reply-p nil
+        :reply-text nil
+        :reply-attachment-count 0)))
+    (let* ((events (plist-get conversation :events))
+           (target (car events))
+           (operation (cadr events))
+           (aggregate (car (plist-get target :reactions))))
+      (should (equal (plist-get operation :target-message-id) "20"))
+      (should (equal (plist-get aggregate :emoji) "🔥"))
+      (should (equal (plist-get aggregate :senders) '("42"))))))
+
 (ert-deftest chirp-dm-decryption-loads-conversation-key-history ()
   "Decryption should load one key-bearing history page before native work."
   (let ((chirp--app nil)

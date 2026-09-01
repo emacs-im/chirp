@@ -1091,6 +1091,7 @@ struct VerifiedMessage {
     created_at_msec: Option<i64>,
     content_kind: &'static str,
     text: Option<String>,
+    target_message_id: Option<String>,
     attachments: Vec<VerifiedAttachment>,
     reply: bool,
     reply_text: Option<String>,
@@ -1208,7 +1209,8 @@ fn verified_message(message: Message) -> Option<VerifiedMessage> {
         reply_preview_validation,
         Some(ReplyPreviewValidation::Valid)
     );
-    let (content_kind, text, reply_text, reply_attachment_count) = match content {
+    let (content_kind, text, target_message_id, reply_text, reply_attachment_count) = match content
+    {
         MessageContent::Text {
             text,
             replying_to_preview,
@@ -1222,16 +1224,33 @@ fn verified_message(message: Message) -> Option<VerifiedMessage> {
             (
                 "text",
                 Some(text),
+                None,
                 preview.and_then(|value| value.message_text),
                 attachment_count,
             )
         }
-        MessageContent::Reaction { emoji, .. } => ("reaction", Some(emoji), None, 0),
-        MessageContent::ReactionRemoved { emoji, .. } => ("reaction-removed", Some(emoji), None, 0),
-        MessageContent::Edit { new_text, .. } => ("edit", Some(new_text), None, 0),
-        MessageContent::MarkRead => ("mark-read", None, None, 0),
-        MessageContent::MarkUnread => ("mark-unread", None, None, 0),
-        MessageContent::Unknown { .. } => ("unknown", None, None, 0),
+        MessageContent::Reaction {
+            emoji,
+            target_message_id,
+        } => ("reaction", Some(emoji), Some(target_message_id), None, 0),
+        MessageContent::ReactionRemoved {
+            emoji,
+            target_message_id,
+        } => (
+            "reaction-removed",
+            Some(emoji),
+            Some(target_message_id),
+            None,
+            0,
+        ),
+        MessageContent::Edit {
+            new_text,
+            target_message_id,
+            ..
+        } => ("edit", Some(new_text), Some(target_message_id), None, 0),
+        MessageContent::MarkRead => ("mark-read", None, None, None, 0),
+        MessageContent::MarkUnread => ("mark-unread", None, None, None, 0),
+        MessageContent::Unknown { .. } => ("unknown", None, None, None, 0),
     };
     Some(VerifiedMessage {
         sequence_id: meta.sequence_id,
@@ -1241,6 +1260,7 @@ fn verified_message(message: Message) -> Option<VerifiedMessage> {
         created_at_msec: meta.created_at_msec,
         content_kind,
         text,
+        target_message_id,
         attachments: attachments.into_iter().map(verified_attachment).collect(),
         reply,
         reply_text,
@@ -1859,6 +1879,7 @@ mod tests {
         };
         let mut invalid_reply = message.clone();
         invalid_reply.reply_preview_validation = Some(ReplyPreviewValidation::Invalid);
+
         let output = verified_message(message).expect("verified message is exported");
         assert_eq!(output.content_kind, "text");
         assert_eq!(output.text.as_deref(), Some(""));
@@ -1878,6 +1899,30 @@ mod tests {
         assert!(!invalid.reply);
         assert_eq!(invalid.reply_text, None);
         assert_eq!(invalid.reply_attachment_count, 0);
+    }
+    #[test]
+    fn verified_reaction_preserves_target_sequence_identity() {
+        let message = chat_xdk_core::Message {
+            meta: chat_xdk_core::EventMeta::default(),
+            content: MessageContent::Reaction {
+                emoji: "🔥".into(),
+                target_message_id: "2094820808055113564".into(),
+            },
+            key_version: Some("1".into()),
+            verified: true,
+            should_notify: None,
+            ttl_msec: None,
+            attachments: Vec::new(),
+            media_hashes: Vec::new(),
+            reply_preview_validation: None,
+        };
+        let output = verified_message(message).expect("verified reaction is exported");
+        assert_eq!(output.content_kind, "reaction");
+        assert_eq!(output.text.as_deref(), Some("🔥"));
+        assert_eq!(
+            output.target_message_id.as_deref(),
+            Some("2094820808055113564")
+        );
     }
 
     #[test]

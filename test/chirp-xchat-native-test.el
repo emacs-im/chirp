@@ -133,6 +133,35 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
     (should (= (plist-get attachment :filesize-bytes) 4096))
     (should (equal (plist-get attachment :name) "example.jpg"))))
 
+(ert-deftest chirp-xchat-native-decodes-reaction-target-identity ()
+  "Verified reactions should retain the exact target message sequence ID."
+  (let ((message
+         (chirp-xchat-native--decode-message
+          '((sequence_id . "21")
+            (id . "reaction-21")
+            (sender_id . "42")
+            (conversation_id . "conversation-1")
+            (created_at_msec . 1700000000001)
+            (content_kind . "reaction")
+            (text . "🔥")
+            (target_message_id . "20")
+            (attachments)
+            (reply . :json-false)
+            (reply_attachment_count . 0)
+            (key_version . "7")
+            (verified . t)))))
+    (should (equal (plist-get message :target-message-id) "20")))
+  (should-error
+   (chirp-xchat-native--decode-message
+    '((sequence_id . "21")
+      (conversation_id . "conversation-1")
+      (content_kind . "reaction")
+      (text . "🔥")
+      (attachments)
+      (reply . :json-false)
+      (reply_attachment_count . 0)
+      (verified . t)))))
+
 (ert-deftest chirp-xchat-native-rejects-invalid-domain-output ()
   "Native JSON decoding should reject unverified or structurally invalid data."
   (should-error
@@ -221,7 +250,7 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
   (skip-unless (chirp-xchat-native-test--load))
   (should (module-function-p (symbol-function 'chirp-xchat-native-version)))
   (should (equal (chirp-xchat-native-version)
-                 "0.2.3/chat-xdk-0.4.3"))
+                 "0.2.4/chat-xdk-0.4.3"))
   (dolist (function '(chirp-xchat-native-encrypt-text
                       chirp-xchat-native-decrypt-media
                       chirp-xchat-native-recovery-start

@@ -53,19 +53,77 @@ not replaced by a later encrypted snapshot."
           (setq fetched (cdr fetched))))))
     (nconc (nreverse merged) current fetched)))
 
+(defun chirp-dm-state--reaction-event-p (event)
+  "Return non-nil when EVENT adds or removes a message reaction."
+  (memq (plist-get event :content-kind) '(reaction reaction-removed)))
+
+
+(defun chirp-dm-state-visible-events (events)
+  "Return ordered EVENTS excluding message-targeted reaction operations."
+  (cl-remove-if #'chirp-dm-state--reaction-event-p events))
+(defun chirp-dm-state--apply-reaction-event (target event)
+  "Apply one normalized reaction EVENT to its TARGET message."
+  (let* ((emoji (plist-get event :text))
+         (sender-id (plist-get event :sender-id))
+         (reactions (plist-get target :reactions))
+         (reaction
+          (cl-find emoji reactions
+                   :key (lambda (item) (plist-get item :emoji))
+                   :test #'equal)))
+    (when (and (stringp emoji) (not (string-empty-p emoji))
+               (stringp sender-id) (not (string-empty-p sender-id)))
+      (unless reaction
+        (setq reaction (list :emoji emoji :count 0 :senders nil)
+              reactions (append reactions (list reaction))))
+      (if (eq (plist-get event :content-kind) 'reaction)
+          (cl-pushnew sender-id (plist-get reaction :senders) :test #'equal)
+        (setf (plist-get reaction :senders)
+              (delete sender-id (plist-get reaction :senders))))
+      (if (plist-get reaction :senders)
+          (setf (plist-get reaction :count)
+                (length (plist-get reaction :senders)))
+        (setq reactions (delq reaction reactions)))
+      (setf (plist-get target :reactions) reactions))))
+
+(defun chirp-dm-state--refresh-reactions (events)
+  "Rebuild target-message reaction aggregates from ordered EVENTS."
+  (let ((targets (make-hash-table :test #'equal))
+        (events
+         (mapcar
+          (lambda (event) (plist-put event :reactions nil))
+          events)))
+    (dolist (event events)
+      (unless (chirp-dm-state--reaction-event-p event)
+        (dolist (id (delete-dups
+                     (delq nil (list (plist-get event :sequence-id)
+                                     (plist-get event :id)))))
+          (puthash id event targets))))
+    (dolist (event events)
+      (when-let* (((chirp-dm-state--reaction-event-p event))
+                  (target-id (plist-get event :target-message-id))
+                  (target (gethash target-id targets)))
+        (chirp-dm-state--apply-reaction-event target event)))
+    events))
+
+
 (defun chirp-dm-state--refresh-derived-fields (conversation)
   "Refresh event-derived fields on canonical CONVERSATION."
-  (let ((latest (car (last (plist-get conversation :events)))))
+  (let* ((events (plist-get conversation :events))
+         (activity (car (last events)))
+         (latest
+          (car (last (cl-remove-if
+                      #'chirp-dm-state--reaction-event-p events)))))
     (setf (plist-get conversation :latest-event) latest
           (plist-get conversation :preview)
           (and latest (chirp-xchat-event-label latest))
           (plist-get conversation :updated-at-msec)
-          (and latest (plist-get latest :created-at-msec))))
+          (and activity (plist-get activity :created-at-msec))))
   conversation)
 
 (defun chirp-dm-state-set-events (conversation events)
   "Replace canonical CONVERSATION's ordered EVENTS and derived fields."
-  (setf (plist-get conversation :events) events)
+  (setf (plist-get conversation :events)
+        (chirp-dm-state--refresh-reactions events))
   (chirp-dm-state--refresh-derived-fields conversation))
 
 (defun chirp-dm-state-accept-live-event (event)
@@ -135,7 +193,8 @@ Otherwise preserve canonical events while adding events from SNAPSHOT."
         (chirp-dm-state-merge-snapshot conversation snapshot))
        (t
         (setq conversation (copy-tree snapshot))
-        (chirp-dm-state--refresh-derived-fields conversation)
+        (chirp-dm-state-set-events
+         conversation (plist-get conversation :events))
         (puthash id conversation table)))
       conversation)))
 

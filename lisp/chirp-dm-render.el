@@ -26,10 +26,29 @@
 (require 'appkit-view)
 (require 'chirp-core)
 (require 'chirp-backend)
+(require 'chirp-dm-state)
 (require 'chirp-media)
 (require 'chirp-time)
 (require 'chirp-render)
 (require 'chirp-url)
+
+(defface chirp-dm-reaction
+  '((((class color) (background dark))
+     (:foreground "white" :background "#35353c"))
+    (((class color) (background light))
+     (:foreground "#014d98" :background "#c6cbd1"))
+    (t :inherit mode-line-inactive))
+  "Face used for XChat reaction chips not selected by the current user."
+  :group 'chirp)
+
+(defface chirp-dm-reaction-selected
+  '((((class color) (min-colors 88))
+     (:inherit chirp-dm-reaction
+      :foreground "white" :background "RoyalBlue3"))
+    (t :inherit chirp-dm-reaction :inverse-video t))
+  "Face used for XChat reaction chips selected by the current user."
+  :group 'chirp)
+
 
 (defun chirp-dm-render--one-line (text)
   "Return TEXT collapsed into one trimmed display line."
@@ -357,11 +376,8 @@
   "Insert EVENT's primary content and projected CONTEXT."
   (let* ((document (plist-get event :document))
          (content-label
-          (pcase (plist-get event :content-kind)
-            ('reaction "Reaction: ")
-            ('reaction-removed "Reaction removed: ")
-            ('edit "Edited message: ")
-            (_ nil)))
+          (and (eq (plist-get event :content-kind) 'edit)
+               "Edited message: "))
          (reply (plist-get context :reply))
          inserted-p)
     (when reply
@@ -405,6 +421,25 @@
                       (chirp-dm-render--insert-attachment-object
                        view node prefix-state)))))
         (< start end)))))
+
+(defun chirp-dm-render--reaction-label (reaction)
+  "Return compact chip text for normalized REACTION."
+  (let ((count (or (plist-get reaction :count) 0)))
+    (format " %s%s "
+            (plist-get reaction :emoji)
+            (if (> count 1) (format " %d" count) ""))))
+
+(defun chirp-dm-render--insert-reactions (context prefix-state)
+  "Insert CONTEXT reaction chips beneath a message using PREFIX-STATE."
+  (appkit-chat-ins-insert-reaction-line
+   (plist-get context :reactions)
+   :prefix prefix-state
+   :selected-face 'chirp-dm-reaction-selected
+   :unselected-face 'chirp-dm-reaction
+   :label-function #'chirp-dm-render--reaction-label
+   :selected-p-function
+   (lambda (reaction) (plist-get reaction :selected-p))))
+
 
 (defun chirp-dm-render--message-avatar-prefixes (view context)
   "Return shared two-line avatar prefixes for CONTEXT rendered in VIEW."
@@ -459,6 +494,7 @@
       (insert "\n")
       (appkit-ui-apply-line-prefix body-start (point) body-prefix))
     (chirp-dm-render--insert-message-attachments view event body-prefix)
+    (chirp-dm-render--insert-reactions context body-prefix)
     (insert "\n")))
 
 (defun chirp-dm-render-header (state)
@@ -568,7 +604,7 @@
 (defun chirp-dm-render-project-events (view state events)
   "Project XChat EVENTS from STATE and ensure their resources for VIEW."
   (appkit-chat-timeline-project
-   events
+   (chirp-dm-state-visible-events events)
    (lambda (event) (plist-get event :id))
    :context-function
    (lambda (_previous event)
@@ -588,7 +624,18 @@
                (when (plist-get event :reply-p)
                  (list :document (plist-get event :reply-document)
                        :attachment-count
-                       (plist-get event :reply-attachment-count)))))))
+                       (plist-get event :reply-attachment-count)))
+               :reactions
+               (mapcar
+                (lambda (reaction)
+                  (let ((projected (copy-tree reaction)))
+                    (setf (plist-get projected :selected-p)
+                          (and self-id
+                               (member self-id
+                                       (plist-get reaction :senders))
+                               t))
+                    projected))
+                (plist-get event :reactions))))))
    :dependencies-function
    (lambda (event)
      (chirp-dm-render--event-resource-keys view state event))))
