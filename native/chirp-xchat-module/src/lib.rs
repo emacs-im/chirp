@@ -42,6 +42,9 @@ const MAX_DECRYPT_INPUT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_ENCRYPT_INPUT_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_TEXT_BYTES: usize = 16 * 1024;
 const MAX_SIGNING_KEYS: usize = 512;
+const MAX_X_USER_ID_BYTES: usize = 32;
+const MAX_PUBLIC_KEY_VERSION_BYTES: usize = 128;
+const PUBLIC_KEY_LENGTHS: &[usize] = &[33, 65, 91];
 #[cfg(feature = "juicebox")]
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -531,6 +534,14 @@ fn validate_pin(pin: String) -> std::result::Result<Zeroizing<Vec<u8>>, NativeEr
     }
     Ok(pin)
 }
+fn valid_decimal(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn valid_public_key_version(value: &str) -> bool {
+    valid_decimal(value, MAX_PUBLIC_KEY_VERSION_BYTES)
+        && (value.len() == 1 || !value.starts_with('0'))
+}
 
 #[cfg(feature = "juicebox")]
 fn parse_recovery_request(
@@ -573,10 +584,7 @@ impl RecoveryInput {
 }
 
 fn validate_recovery_input(input: &RecoveryInput) -> std::result::Result<(), NativeError> {
-    if input.user_id.is_empty()
-        || input.user_id.len() > 32
-        || !input.user_id.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if !valid_decimal(&input.user_id, MAX_X_USER_ID_BYTES) {
         return Err(NativeError::InvalidInput(
             "XChat recovery user identity is invalid".into(),
         ));
@@ -671,12 +679,7 @@ fn validate_recovery_input(input: &RecoveryInput) -> std::result::Result<(), Nat
 
     let mut versions = HashSet::with_capacity(input.registered_keys.len());
     for key in &input.registered_keys {
-        if key.version.is_empty()
-            || key.version.len() > 128
-            || !key.version.bytes().all(|byte| byte.is_ascii_digit())
-            || (key.version.len() > 1 && key.version.starts_with('0'))
-            || !versions.insert(key.version.as_str())
-        {
+        if !valid_public_key_version(&key.version) || !versions.insert(key.version.as_str()) {
             return Err(NativeError::InvalidInput(
                 "XChat registered public-key version is invalid".into(),
             ));
@@ -684,7 +687,7 @@ fn validate_recovery_input(input: &RecoveryInput) -> std::result::Result<(), Nat
         let identity = BASE64.decode(&key.identity_public_key).map_err(|_| {
             NativeError::InvalidInput("XChat registered identity key is invalid".into())
         })?;
-        if !matches!(identity.len(), 33 | 65 | 91) {
+        if !PUBLIC_KEY_LENGTHS.contains(&identity.len()) {
             return Err(NativeError::InvalidInput(
                 "XChat registered identity key has an invalid length".into(),
             ));
@@ -913,19 +916,11 @@ fn parse_decrypt_input(
             .ok_or_else(|| {
                 NativeError::InvalidInput("XChat native signing-key size overflowed".into())
             })?;
-        if key.user_id.is_empty()
-            || key.user_id.len() > 32
-            || !key.user_id.bytes().all(|byte| byte.is_ascii_digit())
-            || key.public_key_version.is_empty()
-            || key.public_key_version.len() > 128
-            || !key
-                .public_key_version
-                .bytes()
-                .all(|byte| byte.is_ascii_digit())
-            || (key.public_key_version.len() > 1 && key.public_key_version.starts_with('0'))
+        if !valid_decimal(&key.user_id, MAX_X_USER_ID_BYTES)
+            || !valid_public_key_version(&key.public_key_version)
             || !identities.insert(identity)
-            || !valid_base64_length(&key.public_key, &[33, 65, 91])
-            || !valid_base64_length(&key.identity_public_key, &[33, 65, 91])
+            || !valid_base64_length(&key.public_key, PUBLIC_KEY_LENGTHS)
+            || !valid_base64_length(&key.identity_public_key, PUBLIC_KEY_LENGTHS)
             || !valid_base64_length(&key.identity_public_key_signature, &[64])
         {
             return Err(NativeError::InvalidInput(
@@ -1740,6 +1735,61 @@ mod tests {
             Err(NativeError::InvalidInput(_))
         ));
     }
+    #[test]
+    fn x_identity_rules_reject_ambiguous_or_unbounded_values() {
+        assert!(valid_decimal("0", MAX_X_USER_ID_BYTES));
+        assert!(valid_decimal(
+            &"9".repeat(MAX_X_USER_ID_BYTES),
+            MAX_X_USER_ID_BYTES
+        ));
+        assert!(!valid_decimal("", MAX_X_USER_ID_BYTES));
+        assert!(!valid_decimal("user-1", MAX_X_USER_ID_BYTES));
+        assert!(!valid_decimal(
+            &"9".repeat(MAX_X_USER_ID_BYTES + 1),
+            MAX_X_USER_ID_BYTES
+        ));
+
+        assert!(valid_public_key_version("0"));
+        assert!(valid_public_key_version("12"));
+        assert!(!valid_public_key_version(""));
+        assert!(!valid_public_key_version("01"));
+        assert!(!valid_public_key_version("v1"));
+        assert!(!valid_public_key_version(
+            &"9".repeat(MAX_PUBLIC_KEY_VERSION_BYTES + 1)
+        ));
+    }
+
+    #[test]
+    fn decrypt_input_uses_shared_x_identity_rules() {
+        let vector = parse_official_vector().expect("official vector parses");
+        let input = |user_id: &str, public_key_version: &str| {
+            serde_json::json!({
+                "events": [&vector.event_message_b64],
+                "signing_keys": [{
+                    "user_id": user_id,
+                    "public_key_version": public_key_version,
+                    "public_key": &vector.signing_public_b64,
+                    "identity_public_key": &vector.identity_public_b64,
+                    "identity_public_key_signature":
+                        &vector.identity_public_key_signature_b64
+                }]
+            })
+            .to_string()
+        };
+        assert!(parse_decrypt_input(input(
+            &vector.event_sender_id,
+            &vector.event_signing_key_version
+        ))
+        .is_ok());
+        assert!(matches!(
+            parse_decrypt_input(input("sender", &vector.event_signing_key_version)),
+            Err(NativeError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            parse_decrypt_input(input(&vector.event_sender_id, "01")),
+            Err(NativeError::InvalidInput(_))
+        ));
+    }
 
     #[test]
     fn encrypt_text_input_is_strictly_bounded() {
@@ -1800,6 +1850,12 @@ mod tests {
         assert!(validate_recovery_input(&input).is_ok());
 
         input.user_id = "other-user".into();
+        assert!(matches!(
+            validate_recovery_input(&input),
+            Err(NativeError::InvalidInput(_))
+        ));
+        input = valid_recovery_input();
+        input.registered_keys[0].version = "01".into();
         assert!(matches!(
             validate_recovery_input(&input),
             Err(NativeError::InvalidInput(_))
