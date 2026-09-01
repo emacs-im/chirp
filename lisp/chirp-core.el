@@ -493,6 +493,22 @@ revisited later."
        (with-current-buffer buffer
          (eq chirp--request-token token))))
 
+(defun chirp-view-state-token-current-p (view state token &optional property)
+  "Return non-nil when TOKEN still owns PROPERTY in VIEW and STATE.
+
+PROPERTY defaults to `:generation'."
+  (and (appkit-view-live-p view)
+       (eq state (appkit-view-state view))
+       (eq token (plist-get state (or property :generation)))))
+
+(defun chirp-cancel-view-request (view request-key cancel-function)
+  "Remove VIEW's REQUEST-KEY transport and call CANCEL-FUNCTION on it."
+  (let* ((table (appkit-view-request-table view))
+         (request (gethash request-key table)))
+    (remhash request-key table)
+    (when request
+      (funcall cancel-function request))))
+
 ;;; Projection Views
 
 (defun chirp--live-projection-view (&optional buffer)
