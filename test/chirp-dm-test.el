@@ -67,6 +67,9 @@
                          '(viewer configuration pin recovery inbox)))
           (should (equal received-pin "2580"))
           (should (eq owner chirp--app))
+          (should
+           (equal (chirp--session-xchat-user (chirp--session))
+                  '(:id "42")))
           (should (cl-every #'zerop (string-to-list pin)))
           (should (cl-every #'zerop (string-to-list token)))
           (should (buffer-live-p buffer)))
@@ -92,7 +95,8 @@
                        (setq callback success
                              owner (plist-get options :owner))
                        'inbox-request)))
-            (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+            (setf (chirp--session-xchat-user (chirp--session)) '(:id "42")
+                  (chirp--session-xchat-user-id (chirp--session)) "42")
             (setq buffer (chirp-direct-messages))
             (let* ((view (with-current-buffer buffer (appkit-current-view)))
                    (conversation
@@ -230,6 +234,67 @@
                 (should
                  (equal (plist-get (car (last (chirp-dm-conversation--events state))) :text)
                         "verified plaintext"))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-dm-new-group-ingests-key-before-send-preflight ()
+  "Opening a new group should ingest its key before local message encryption."
+  (let ((chirp--app nil)
+        buffer ingested send-variables send-error)
+    (unwind-protect
+        (save-window-excursion
+          (let* ((key-event
+                  (chirp-dm-test--normalized-event "10" "10" nil))
+                 (_key
+                  (setf (plist-get key-event :kind) 'conversation-key-change
+                        (plist-get key-event :encoded-event) "encoded-group-key"))
+                 (conversation
+                  (chirp-dm-test--normalized-conversation key-event)))
+            (setf (plist-get conversation :id) "group-1"
+                  (plist-get conversation :type) 'group
+                  (plist-get conversation :has-more) nil
+                  (plist-get conversation :older-cursor) nil
+                  (chirp--session-xchat-native-epoch (chirp--session)) 7
+                  (chirp--session-xchat-user-id (chirp--session)) "42")
+            (cl-letf
+                (((symbol-function 'chirp-backend-dm-signing-keys)
+                  (lambda (_user-ids callback &rest _options)
+                    (funcall callback [] nil)
+                    nil))
+                 ((symbol-function 'chirp-xchat-native-decrypt-events)
+                  (lambda (conversation-id events _signing-keys)
+                    (should (equal conversation-id "group-1"))
+                    (should (equal events '("encoded-group-key")))
+                    (setq ingested t)
+                    nil))
+                 ((symbol-function 'chirp-xchat-native-prepare-text)
+                  (lambda (conversation-id text)
+                    (should ingested)
+                    (should (equal conversation-id "group-1"))
+                    (should (equal text "hello group"))
+                    '(:message-id "01234567-89ab-cdef-0123-456789abcdef"
+                      :encoded-message-create-event "ZXZlbnQ="
+                      :encoded-message-event-signature "c2ln")))
+                 ((symbol-function 'chirp-x-graphql-request)
+                  (lambda (_operation variables _callback &rest _options)
+                    (setq send-variables variables)
+                    'send-request)))
+              (setq buffer (chirp-dm-conversation-open conversation))
+              (should ingested)
+              (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                     (state (appkit-view-state view))
+                     (canonical-key
+                      (car (chirp-dm-conversation--events state))))
+                (should (= (plist-get canonical-key :native-key-epoch) 7)))
+              (should
+               (eq
+                (chirp-backend-dm-send-text
+                 "group-1" "hello group" #'ignore
+                 :errback (lambda (message) (setq send-error message)))
+                'send-request))
+              (should send-variables)
+              (should-not send-error))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -540,6 +605,40 @@
             (with-current-buffer buffer
               (should (string-match-p "Unknown sender" (buffer-string)))
               (should-not (string-match-p "\\`You" (buffer-string))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-dm-self-sender-uses-authenticated-profile ()
+  "An omitted self participant should retain its profile label and avatar."
+  (let ((chirp--app nil)
+        buffer requested-avatar)
+    (unwind-protect
+        (save-window-excursion
+          (let ((conversation
+                 (chirp-dm-test--normalized-conversation
+                  (chirp-dm-test--normalized-event
+                   "20" "20" "outgoing" "99")))
+                (user
+                 '(:id "99" :name "Me" :handle "me"
+                   :avatar-url "https://example.invalid/me.jpg")))
+            (setf (chirp--session-xchat-user (chirp--session)) user
+                  (chirp--session-xchat-user-id (chirp--session)) "99"
+                  (plist-get conversation :participants) nil)
+            (cl-letf
+                (((symbol-function
+                   'chirp-media-request-xchat-avatar-resource)
+                  (lambda (_view identity url)
+                    (setq requested-avatar (list identity url))
+                    (list 'xchat-avatar identity))))
+              (setq buffer (chirp-dm-conversation-open conversation)))
+            (should
+             (equal requested-avatar
+                    '("99" "https://example.invalid/me.jpg")))
+            (with-current-buffer buffer
+              (should (string-match-p "^Me" (buffer-string)))
+              (should-not
+               (string-match-p "Unknown sender" (buffer-string))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

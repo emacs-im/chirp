@@ -55,16 +55,36 @@
            :key (lambda (participant) (plist-get participant :id))
            :test #'equal))
 
+(defun chirp-dm-render--view-user-id (view)
+  "Return VIEW's current XChat user ID, or nil."
+  (when (appkit-view-live-p view)
+    (chirp--session-xchat-user-id
+     (appkit-app-state (appkit-view-app view)))))
+
+(defun chirp-dm-render--view-user (view)
+  "Return VIEW's authenticated XChat user profile, or nil."
+  (when (appkit-view-live-p view)
+    (chirp--session-xchat-user
+     (appkit-app-state (appkit-view-app view)))))
+
+(defun chirp-dm-render--event-participant (view state event)
+  "Resolve EVENT's participant from conversation STATE or VIEW identity."
+  (let ((sender-id (plist-get event :sender-id)))
+    (or (chirp-dm-render--participant state sender-id)
+        (when-let* ((user (chirp-dm-render--view-user view))
+                    ((equal (plist-get user :id) sender-id)))
+          user))))
+
 (defun chirp-dm-render--participant-label (participant)
   "Return PARTICIPANT's display label, or nil."
   (or (plist-get participant :name)
       (and-let* ((handle (plist-get participant :handle)))
         (concat "@" handle))))
 
-(defun chirp-dm-render--event-sender-label (state event)
-  "Return display sender label for EVENT in conversation STATE."
-  (or (chirp-dm-render--participant-label
-       (chirp-dm-render--participant state (plist-get event :sender-id)))
+(defun chirp-dm-render--event-sender-label (participant event self-id)
+  "Return EVENT's sender label from PARTICIPANT and SELF-ID."
+  (or (chirp-dm-render--participant-label participant)
+      (and (equal (plist-get event :sender-id) self-id) "You")
       "Unknown sender"))
 
 (defun chirp-dm-render--event-system-label (event)
@@ -535,8 +555,7 @@
   "Ensure and return resources affecting EVENT from STATE in VIEW."
   (when (eq (plist-get event :kind) 'message)
     (let* ((participant
-            (chirp-dm-render--participant
-             state (plist-get event :sender-id)))
+            (chirp-dm-render--event-participant view state event))
            (avatar-key
             (chirp-media-request-xchat-avatar-resource
              view
@@ -554,11 +573,12 @@
    :context-function
    (lambda (_previous event)
      (when (eq (plist-get event :kind) 'message)
-       (let ((participant
-              (chirp-dm-render--participant
-               state (plist-get event :sender-id))))
+       (let* ((participant
+               (chirp-dm-render--event-participant view state event))
+              (self-id (chirp-dm-render--view-user-id view)))
          (list :sender-label
-               (chirp-dm-render--event-sender-label state event)
+               (chirp-dm-render--event-sender-label
+                participant event self-id)
                :sender-id (plist-get event :sender-id)
                :avatar-key
                (chirp-media-xchat-avatar-resource-key

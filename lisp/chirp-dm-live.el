@@ -197,7 +197,7 @@
             ((or 'pull 'batch)
              (chirp-dm-live--collect-fallback service)
              (chirp-dm-live--dispatch-fallback service))
-            ((or 'keepalive 'instruction) nil)
+            ((or 'keepalive 'instruction 'transient) nil)
             (kind (error "Unknown XChat live event kind: %S" kind))))
       (error
        (message "Chirp XChat live frame failed: %s"

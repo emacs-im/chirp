@@ -310,10 +310,12 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                       :message-request-p
                       (and (chirp-xchat--thrift-field create 109 2) t)))))))
 
-(defun chirp-xchat-decode-event (encoded)
-  "Decode one Base64 ENCODED XChat event into a bounded domain plist."
-  (let* ((event (chirp-xchat--decode-event encoded))
-         (sequence-id (chirp-xchat--field-text event 1 "sequence ID"))
+(defun chirp-xchat--normalize-event (event encoded &optional live-p)
+  "Normalize decoded XChat EVENT carrying original ENCODED bytes.
+
+When LIVE-P is non-nil, return nil for transient typing activity that has no
+stable event identity."
+  (let* ((sequence-id (chirp-xchat--field-text event 1 "sequence ID"))
          (message-id (chirp-xchat--field-text event 2 "message ID"))
          (sender-id (chirp-xchat--field-text event 3 "sender ID"))
          (conversation-id
@@ -321,30 +323,36 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
          (created-at (chirp-xchat--field-text event 6 "event timestamp"))
          (detail (chirp-xchat--thrift-field event 7 12))
          (metadata (chirp-xchat--event-detail detail)))
-    (unless (and (stringp sequence-id)
-                 (string-match-p "\\`[0-9]+\\'" sequence-id)
-                 (stringp message-id)
-                 (not (string-empty-p message-id))
-                 (stringp sender-id)
-                 (not (string-empty-p sender-id))
-                 (stringp conversation-id)
-                 (not (string-empty-p conversation-id))
-                 (stringp created-at)
-                 (string-match-p "\\`[0-9]+\\'" created-at))
-      (error "XChat message event has incomplete identity"))
-    (append (list :id sequence-id
-                  :sequence-id sequence-id
-                  :message-id message-id
-                  :sender-id sender-id
-                  :conversation-id conversation-id
-                  :created-at-msec created-at
-                  :trusted-p
-                  (and (chirp-xchat--thrift-field event 11 2) t))
-            metadata
-            (when (or (plist-get metadata :encrypted-p)
-                      (eq (plist-get metadata :kind)
-                          'conversation-key-change))
-              (list :encoded-event encoded)))))
+    (if (and live-p (eq (plist-get metadata :kind) 'typing))
+        nil
+      (unless (and (stringp sequence-id)
+                   (string-match-p "\\`[0-9]+\\'" sequence-id)
+                   (stringp message-id)
+                   (not (string-empty-p message-id))
+                   (stringp sender-id)
+                   (not (string-empty-p sender-id))
+                   (stringp conversation-id)
+                   (not (string-empty-p conversation-id))
+                   (stringp created-at)
+                   (string-match-p "\\`[0-9]+\\'" created-at))
+        (error "XChat message event has incomplete identity"))
+      (append (list :id sequence-id
+                    :sequence-id sequence-id
+                    :message-id message-id
+                    :sender-id sender-id
+                    :conversation-id conversation-id
+                    :created-at-msec created-at
+                    :trusted-p
+                    (and (chirp-xchat--thrift-field event 11 2) t))
+              metadata
+              (when (or (plist-get metadata :encrypted-p)
+                        (eq (plist-get metadata :kind)
+                            'conversation-key-change))
+                (list :encoded-event encoded))))))
+
+(defun chirp-xchat-decode-event (encoded)
+  "Decode one Base64 ENCODED XChat event into a bounded domain plist."
+  (chirp-xchat--normalize-event (chirp-xchat--decode-event encoded) encoded))
 
 (defun chirp-xchat-live-token (payload)
   "Return the bounded websocket token from XChat GraphQL PAYLOAD."
@@ -362,8 +370,9 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
 (defun chirp-xchat-decode-live-frame (bytes)
   "Decode bounded binary websocket BYTES into an XChat live domain event.
 
-The result has kind `event', `pull', `keepalive', `instruction', or `batch'.
-An `event' result also carries the normalized MessageEvent under `:event'."
+The result has kind `event', `transient', `pull', `keepalive', `instruction',
+or `batch'.  An `event' result also carries the normalized MessageEvent under
+`:event'."
   (unless (and (stringp bytes)
                (not (multibyte-string-p bytes))
                (<= 1 (length bytes) chirp-xchat--max-document-bytes))
@@ -383,10 +392,14 @@ An `event' result also carries the normalized MessageEvent under `:event'."
                     (= (aref bytes 2) 1)
                     (= (aref bytes (1- (length bytes))) 0))
          (error "XChat live event framing is invalid"))
-       (let ((encoded
-              (base64-encode-string
-               (substring bytes 3 (1- (length bytes))) t)))
-         (list :kind 'event :event (chirp-xchat-decode-event encoded))))
+       (let* ((event-bytes (substring bytes 3 (1- (length bytes))))
+              (encoded (base64-encode-string event-bytes t))
+              (event
+               (chirp-xchat--normalize-event
+                (chirp-xchat--thrift-document event-bytes) encoded t)))
+         (if event
+             (list :kind 'event :event event)
+           (list :kind 'transient))))
       (2
        (let ((instruction
               (and (= (length value) 1) (caar value))))

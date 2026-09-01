@@ -72,6 +72,17 @@
   "Report XChat unlock failure MESSAGE without placing it in a DM buffer."
   (display-warning 'chirp message :error))
 
+(defun chirp-dm--remember-user (app user)
+  "Retain authenticated XChat USER in live APP and return its ID."
+  (when-let* ((user-id (plist-get user :id))
+              ((stringp user-id))
+              ((string-match-p "\\`[0-9]+\\'" user-id))
+              ((appkit-app-live-p app)))
+    (let ((state (appkit-app-state app)))
+      (setf (chirp--session-xchat-user state) (copy-tree user)
+            (chirp--session-xchat-user-id state) user-id))
+    user-id))
+
 (defun chirp-dm--prompt-and-unlock (app input)
   "Prompt using INPUT and recover XChat keys in APP."
   (require 'chirp-xchat-native)
@@ -99,11 +110,8 @@
     (message "Fetching XChat key configuration...")
     (chirp-backend-whoami
      (lambda (user _envelope)
-       (if-let* ((user-id (plist-get user :id)))
+       (if-let* ((user-id (chirp-dm--remember-user app user)))
            (progn
-             (when (appkit-app-live-p app)
-               (setf (chirp--session-xchat-user-id (appkit-app-state app))
-                     user-id))
              (chirp-backend-dm-recovery-input
               user-id
               (lambda (input _response-envelope)
@@ -127,19 +135,19 @@
   "Open an unlocked inbox after ensuring the current XChat user identity."
   (let* ((app (chirp-app))
          (state (appkit-app-state app))
-         (user-id (chirp--session-xchat-user-id state)))
+         (user-id (chirp--session-xchat-user-id state))
+         (user (chirp--session-xchat-user state)))
     (if (and (stringp user-id)
-             (string-match-p "\\`[0-9]+\\'" user-id))
+             (string-match-p "\\`[0-9]+\\'" user-id)
+             (equal (plist-get user :id) user-id))
         (progn
           (chirp-dm-live-ensure)
           (chirp-dm-inbox-open))
       (message "Resolving the authenticated XChat identity...")
       (chirp-backend-whoami
-       (lambda (user _envelope)
-         (if-let* ((resolved (plist-get user :id))
-                   ((appkit-app-live-p app)))
+       (lambda (resolved _envelope)
+         (if (chirp-dm--remember-user app resolved)
              (progn
-               (setf (chirp--session-xchat-user-id state) resolved)
                (chirp-dm-live-ensure)
                (chirp-dm-inbox-open))
            (chirp-dm--unlock-error
