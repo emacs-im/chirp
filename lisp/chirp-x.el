@@ -484,6 +484,7 @@ This does not sign out of X in the browser."
 (defun chirp-x--trusted-url-p (url)
   "Return non-nil when URL belongs to an authenticated X service root."
   (or (string-prefix-p (concat chirp-x--api-base-url "/") url)
+      (string-prefix-p chirp-x--chat-api-base-url url)
       (string-prefix-p chirp-x--chat-media-base-url url)
       (cl-some (lambda (entry)
                  (string-prefix-p (cdr entry) url))
