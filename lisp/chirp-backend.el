@@ -344,20 +344,32 @@ When zero or negative, the in-memory read cache is disabled."
       nil)
      (t nil))))
 
+(defun chirp-backend--report-requester-error (err)
+  "Report one cached-read requester ERR without starving its peers."
+  (display-warning
+   'chirp-backend
+   (format "Chirp cached-read callback failed: %s"
+           (error-message-string err))
+   :warning))
+
 (defun chirp-backend--dispatch-read-success (requesters value envelope)
-  "Invoke REQUESTERS with VALUE and ENVELOPE."
+  "Invoke every REQUESTER with VALUE and ENVELOPE."
   (dolist (requester requesters)
-    (funcall (car requester)
-             (chirp-backend--clone-data value)
-             (chirp-backend--clone-data envelope))))
+    (condition-case err
+        (funcall (car requester)
+                 (chirp-backend--clone-data value)
+                 (chirp-backend--clone-data envelope))
+      (error (chirp-backend--report-requester-error err)))))
 
 (defun chirp-backend--dispatch-read-error (requesters message)
-  "Invoke REQUESTERS with MESSAGE."
+  "Invoke every REQUESTER error callback with MESSAGE."
   (dolist (requester requesters)
-    (funcall (or (cdr requester)
-                 (lambda (text)
-                   (message "%s" text)))
-             message)))
+    (condition-case err
+        (funcall (or (cdr requester)
+                     (lambda (text)
+                       (message "%s" text)))
+                 message)
+      (error (chirp-backend--report-requester-error err)))))
 
 (defun chirp-backend--cached-read (key fetcher callback &optional errback)
   "Fetch KEY via FETCHER and serve CALLBACK from the short-lived read cache.
