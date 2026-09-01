@@ -691,21 +691,18 @@ Return RESOURCE-KEY only when the verified media metadata is usable."
               (appkit-app-resource-store (appkit-view-app view)))
      :status)))
 
-(defun chirp-media-xchat-resource-file (view resource-key)
-  "Return RESOURCE-KEY's valid cached XChat media file in VIEW, or nil."
-  (when (appkit-view-live-p view)
-    (let ((file
-           (plist-get
-            (gethash resource-key
-                     (appkit-app-resource-store (appkit-view-app view)))
-            :file)))
-      (and (stringp file) (chirp-media--valid-cache-file-p file) file))))
-
-(defun chirp-media-open-xchat-resource (view resource-key)
-  "Open RESOURCE-KEY's decrypted XChat attachment from VIEW."
-  (if-let* ((file (chirp-media-xchat-resource-file view resource-key)))
-      (appkit-media-open-file file)
-    (user-error "XChat attachment is unavailable")))
+(defun chirp-media-xchat-resource (view resource-key attachment)
+  "Return RESOURCE-KEY as a canonical Appkit resource for ATTACHMENT in VIEW."
+  (appkit-media-resource-create
+   :file
+   (when (appkit-view-live-p view)
+     (let ((file
+            (plist-get
+             (gethash resource-key
+                      (appkit-app-resource-store (appkit-view-app view)))
+             :file)))
+       (and (stringp file) (chirp-media--valid-cache-file-p file) file)))
+   :name (plist-get attachment :name)))
 
 (defun chirp-media--trusted-xchat-media-url-p (value)
   "Return non-nil when VALUE is an allowlisted HTTPS XChat media URL."
