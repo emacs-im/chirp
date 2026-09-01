@@ -1803,29 +1803,41 @@
     (should word-wrap)
     (should-not truncate-lines)))
 
-(ert-deftest chirp-render-discussion-focus-uses-unbreakable-media-track ()
-  "The focused thread post should render one composite slice per line."
-  (let ((tweet
-         '(:kind tweet
-           :id "focus"
-           :text "Focused post"
-           :author-name "Alice"
-           :author-handle "alice"
-           :media
-           ((:type "photo" :url "media-0" :width 430 :height 600)
-            (:type "photo" :url "media-1" :width 600 :height 375)
-            (:type "photo" :url "media-2" :width 458 :height 600))))
-        track-media
-        track-gap
-        track-offsets)
+(ert-deftest chirp-render-discussion-focus-shares-unbreakable-carousel ()
+  "Focused posts should share the non-condensed SVG carousel."
+  (let* ((tweet
+          '(:kind tweet
+            :id "focus"
+            :text "Focused post"
+            :author-name "Alice"
+            :author-handle "alice"
+            :retweeted-by "bob"
+            :media
+            ((:type "photo" :url "media-0" :width 430 :height 600)
+             (:type "photo" :url "media-1" :width 600 :height 375)
+             (:type "photo" :url "media-2" :width 458 :height 600))))
+         (expected-plan
+          (chirp-media-layout-carousel-plan
+           (list (/ 430.0 600) (/ 600.0 375) (/ 458.0 600))
+           512))
+         track-media
+         track-height
+         track-gap
+         track-offsets
+         track-widths
+         track-fit)
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-track-strip-image)
-                 (lambda (media-list gap &optional offset)
+                ((symbol-function 'chirp-media-carousel-image)
+                 (lambda (media-list height gap
+                           &optional offset widths fit)
                    (setq track-media media-list
-                         track-gap gap)
+                         track-height height
+                         track-gap gap
+                         track-widths widths
+                         track-fit fit)
                    (push offset track-offsets)
                    '(image
                      :type svg
@@ -1841,7 +1853,7 @@
                        chirp-media-2 nil)))))
                 ((symbol-function 'chirp-media-thumbnail-image)
                  (lambda (&rest _args)
-                   (ert-fail "focused media unexpectedly used a cover crop")))
+                   (ert-fail "non-condensed media used a cover grid")))
                 ((symbol-function 'image-size)
                  (lambda (&rest _args) '(30 . 6)))
                 ((symbol-function 'appkit-media--char-pixel-height)
@@ -1849,96 +1861,147 @@
         (let ((inhibit-read-only t))
           (chirp-render-insert-discussion-entry
            (chirp-test--discussion-row tweet t)))
-      (let ((track-positions
-             (cl-loop for position from (point-min) below (point-max)
-                      when (get-text-property position 'chirp-media-track)
-                      collect position)))
-        (should (= (length track-positions) 6))
-        (dolist (position track-positions)
+        (let ((track-positions
+               (cl-loop for position from (point-min) below (point-max)
+                        when (get-text-property position 'chirp-media-track)
+                        collect position)))
+          (should (= (length track-positions) 6))
+          (dolist (position track-positions)
+            (should
+             (eq (car-safe
+                  (car-safe (get-text-property position 'display)))
+                 'slice))
+            (save-excursion
+              (goto-char position)
+              (should (= position (line-beginning-position)))
+              (should (= (1+ position) (line-end-position)))))
+          (let ((map (get-text-property (car track-positions) 'keymap))
+                opened-index)
+            (should
+             (commandp (lookup-key map [chirp-media-2 mouse-1])))
+            (cl-letf (((symbol-function 'chirp-media-open)
+                       (lambda (_media-list index _title)
+                         (setq opened-index index))))
+              (call-interactively (lookup-key map [right]))
+              (call-interactively (lookup-key map (kbd "RET")))
+              (should (= opened-index 1))
+              (call-interactively (lookup-key map [right]))
+              (call-interactively (lookup-key map (kbd "RET")))
+              (should (= opened-index 2))
+              (call-interactively (lookup-key map [left]))
+              (call-interactively (lookup-key map (kbd "RET")))
+              (should (= opened-index 1))
+              (call-interactively
+               (lookup-key map [chirp-media-2 mouse-1]))
+              (should (= opened-index 2))))
+          (should (equal (nreverse track-offsets)
+                         '(nil 14 28 14)))
+          (should-not auto-hscroll-mode)
           (should
-           (eq (car-safe
-                (car-safe (get-text-property position 'display)))
-               'slice))
-          (save-excursion
-            (goto-char position)
-            (should (= position (line-beginning-position)))
-            (should (= (1+ position) (line-end-position)))))
-        (should
-         (commandp
-          (lookup-key
-           (get-text-property (car track-positions) 'keymap)
-           [chirp-media-2 mouse-1])))
-        (let ((map (get-text-property (car track-positions) 'keymap))
-              opened-index)
-          (cl-letf (((symbol-function 'chirp-media-open)
-                     (lambda (_media-list index _title)
-                       (setq opened-index index))))
-            (call-interactively (lookup-key map [right]))
-            (call-interactively (lookup-key map (kbd "RET")))
-            (should (= opened-index 1))
-            (call-interactively (lookup-key map [right]))
-            (call-interactively (lookup-key map (kbd "RET")))
-            (should (= opened-index 2))
-            (call-interactively (lookup-key map [left]))
-            (call-interactively (lookup-key map (kbd "RET")))
-            (should (= opened-index 1))
-            (call-interactively
-             (lookup-key map [chirp-media-2 mouse-1]))
-            (should (= opened-index 2))))
-        (should (equal (nreverse track-offsets)
-                       '(nil 18 36 18)))
-        (should-not auto-hscroll-mode)
-        (should
-         (memq #'chirp-render--media-track-reset-hscroll
-               post-command-hook))
-    (should (eq track-media (plist-get tweet :media)))
-    (should (= track-gap 8)))))))
+           (memq #'chirp-render--media-track-reset-hscroll
+                 post-command-hook))))
+      (should (eq track-media (plist-get tweet :media)))
+      (should (= track-height (plist-get expected-plan :height)))
+      (should (= track-gap 4))
+      (should (equal track-widths
+                     (plist-get expected-plan :widths)))
+      (should (eq track-fit 'cover)))))
 
-(ert-deftest chirp-render-discussion-focus-retweet-keeps-cover-grid ()
-  "A focused retweet should retain the compact TweetPhotos cover grid."
-  (let ((tweet
-         '(:kind tweet
-           :id "focus-retweet"
-           :text "Retweeted post"
-           :author-name "Alice"
-           :author-handle "alice"
-           :retweeted-by "bob"
-           :media
-           ((:type "photo" :url "media-0")
-            (:type "photo" :url "media-1")
-            (:type "photo" :url "media-2"))))
-        crop-specs)
+(ert-deftest chirp-render-timeline-multi-media-uses-current-carousel ()
+  "Top-level timeline posts should use the current X Web carousel."
+  (let* ((media
+          '((:type "photo" :url "a" :width 340 :height 680)
+            (:type "photo" :url "b" :width 340 :height 680)
+            (:type "photo" :url "c" :width 340 :height 680)))
+         (tweet
+          `(:kind tweet :id "timeline" :text "Carousel"
+            :author-name "Alice" :author-handle "alice"
+            :media ,media))
+         (plan
+          (chirp-media-layout-carousel-plan '(0.5 0.5 0.5) 512))
+         captured)
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-track-strip-image)
+                ((symbol-function 'chirp-render--insert-media-track)
+                 (lambda (items _prefix _prefix-face
+                           height gap widths fit)
+                   (setq captured
+                         (list items height gap widths fit))))
+                ((symbol-function 'chirp-render--insert-media-grid)
                  (lambda (&rest _args)
-                   (ert-fail "retweet unexpectedly used the media track")))
-                ((symbol-function 'chirp-media-thumbnail-image)
-                 (lambda (_media &optional crop-spec)
-                   (push crop-spec crop-specs)
-                   `(image
-                     :type png
-                     :appkit-media-nslices
-                     ,(/ (plist-get crop-spec :height) 18))))
-                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
-                 (lambda (&rest _args) nil))
-                ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(10 . 16)))
-                ((symbol-function 'frame-char-height)
-                 (lambda (&optional _frame) 18))
-                ((symbol-function 'appkit-media--char-pixel-height)
-                 (lambda () 18)))
+                   (ert-fail "timeline media used a compact cover grid"))))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-discussion-entry
-           (chirp-test--discussion-row tweet t)))))
+          (chirp-render-insert-tweet tweet))))
     (should
-     (equal
-      (nreverse crop-specs)
-      '((:width 255 :height 288)
-        (:width 255 :height 144 :insets (0 0 2 0))
-        (:width 255 :height 144))))))
+     (equal captured
+            (list media
+                  (plist-get plan :height)
+                  4
+                  (plist-get plan :widths)
+                  'cover)))))
+
+(ert-deftest chirp-render-timeline-single-media-uses-large-shared-renderer ()
+  "Top-level single media should use the large non-condensed SVG renderer."
+  (let* ((media
+          '((:type "photo" :url "a" :width 600 :height 375)))
+         (tweet
+          `(:kind tweet :id "timeline-single" :text "One image"
+            :author-name "Alice" :author-handle "alice"
+            :media ,media))
+         (plan
+          (chirp-media-layout-carousel-plan '(1.6) 512))
+         captured)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--insert-media-track)
+                 (lambda (items _prefix _prefix-face
+                           height gap widths fit)
+                   (setq captured
+                         (list items height gap widths fit))))
+                ((symbol-function 'chirp-render--insert-media-grid)
+                 (lambda (&rest _args)
+                   (ert-fail "single timeline media used a compact grid"))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))))
+    (should
+     (equal captured
+            (list media
+                  (plist-get plan :height)
+                  4
+                  (plist-get plan :widths)
+                  nil)))))
+
+(ert-deftest chirp-render-quoted-multi-media-keeps-condensed-grid ()
+  "Quoted cards should remain condensed while their parent uses carousel."
+  (let* ((quoted-media
+          '((:type "photo" :url "a" :width 340 :height 680)
+            (:type "photo" :url "b" :width 340 :height 680)))
+         (quoted
+          `(:kind tweet :id "quoted" :text "Quoted"
+            :author-name "Bob" :author-handle "bob"
+            :media ,quoted-media))
+         (tweet
+          `(:kind tweet :id "outer" :text "Outer"
+            :author-name "Alice" :author-handle "alice"
+            :quoted-tweet ,quoted))
+         captured-grid)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-render--insert-media-grid)
+                 (lambda (items _prefix _prefix-face)
+                   (setq captured-grid items)))
+                ((symbol-function 'chirp-render--insert-media-carousel)
+                 (lambda (&rest _args)
+                   (ert-fail "quoted media used a non-condensed carousel"))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))))
+    (should (eq captured-grid quoted-media))))
 
 (ert-deftest chirp-render-media-grid-places-three-through-six-items ()
   "Every TweetPhotos topology should place expected items on each band."

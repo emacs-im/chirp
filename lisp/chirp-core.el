@@ -38,12 +38,12 @@
 (declare-function chirp-load-more "chirp-timeline" (&optional anchor-id))
 (declare-function chirp-toggle-home-following "chirp-timeline" ())
 (declare-function chirp-media-at-point "chirp-media" ())
-(declare-function chirp-media-open "chirp-media" (media-list index &optional title buffer))
-(declare-function chirp-media-open-at-point "chirp-media" ())
+(declare-function chirp-media-open "chirp-media-view" (media-list index &optional title buffer))
+(declare-function chirp-media-open-at-point "chirp-media-view" ())
 (declare-function chirp-media-download-at-point "chirp-media" ())
 (declare-function chirp-media-prefetch-tweet "chirp-media" (tweet buffer))
-(declare-function chirp-media-image-mode "chirp-media" ())
-(declare-function chirp-media-view-mode "chirp-media" ())
+(declare-function chirp-media-image-mode "chirp-media-view" ())
+(declare-function chirp-media-view-mode "chirp-media-view" ())
 (declare-function chirp-xchat-native-session-destroy
                   "chirp-xchat-native-module" (session))
 
