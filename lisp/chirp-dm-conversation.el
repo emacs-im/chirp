@@ -15,6 +15,8 @@
 (require 'appkit-core)
 (require 'appkit-compose)
 (require 'appkit-chatbuf)
+(require 'appkit-media)
+(require 'appkit-ui)
 (require 'appkit-chat-history)
 (require 'appkit-chat-timeline)
 (require 'appkit-evil)
@@ -37,6 +39,16 @@
 (defcustom chirp-dm-history-page-size 200
   "Number of older XChat events requested per conversation page, up to 200."
   :type '(integer 1 200)
+  :group 'chirp)
+
+(defcustom chirp-dm-attach-commands
+  '(("photo" . chirp-dm-attach-photo)
+    ("video" . chirp-dm-attach-video)
+    ("audio" . chirp-dm-attach-audio)
+    ("file" . chirp-dm-attach-file)
+    ("gif" . chirp-dm-attach-gif))
+  "Attachment type candidates offered by `chirp-dm-attach'."
+  :type '(alist :key-type string :value-type function)
   :group 'chirp)
 
 ;;; Variables
@@ -454,6 +466,7 @@ Return non-nil when the refresh was accepted."
           :older-stalled-p nil
           :status (list :phase 'idle :message nil)
           :decrypt-generation nil
+          :reaction-operations (make-hash-table :test #'equal)
           :send-error nil)))
 
 ;;;; Rendering
@@ -479,6 +492,93 @@ Return non-nil when the refresh was accepted."
   (appkit-chatbuf-input-apply-text-properties)
   (when (appkit-compose-operation-active-p)
     (setq buffer-read-only t)))
+
+(defun chirp-dm-conversation--message-by-id (state message-id)
+  "Return MESSAGE-ID from canonical conversation STATE, or nil."
+  (cl-find-if
+   (lambda (event)
+     (or (equal (plist-get event :sequence-id) message-id)
+         (equal (plist-get event :id) message-id)))
+   (chirp-dm-conversation--events state)))
+
+(defun chirp-dm-conversation--reply-target (state)
+  "Return STATE's current Appkit reply target event, or nil."
+  (let ((aux (appkit-chatbuf-aux-state)))
+    (when (eq (plist-get aux :aux-type) 'reply)
+      (chirp-dm-conversation--message-by-id
+       state (plist-get aux :message-id)))))
+
+(defun chirp-dm-conversation--event-sender-label (conversation event)
+  "Return EVENT's sender label in CONVERSATION."
+  (let ((participant
+         (cl-find (plist-get event :sender-id)
+                  (plist-get conversation :participants)
+                  :key (lambda (item) (plist-get item :id))
+                  :test #'equal)))
+    (or (plist-get participant :name)
+        (and-let* ((handle (plist-get participant :handle)))
+          (concat "@" handle))
+        (and (equal (plist-get event :sender-id)
+                    (chirp--session-xchat-user-id (chirp--session)))
+             "You")
+        "message")))
+
+(defun chirp-dm-conversation--reply-context-text (state)
+  "Return Appkit reply context chrome for conversation STATE."
+  (if-let* ((target (chirp-dm-conversation--reply-target state)))
+      (let* ((conversation (chirp-dm-conversation--conversation state))
+             (document (plist-get target :document))
+             (preview
+              (chirp-dm-conversation--one-line
+               (if document (appkit-markup-plain-text document) ""))))
+        (appkit-chatbuf-aux-render
+         :title
+         (format "Reply to %s"
+                 (chirp-dm-conversation--event-sender-label
+                  conversation target))
+         :preview
+         (appkit-ui-one-line-preview-create
+          :text
+          (cond
+           ((not (string-empty-p preview))
+            (truncate-string-to-width preview 80 nil nil "…"))
+           ((> (or (plist-get target :attachment-count) 0) 0)
+            "[Attachment message]")
+           (t "[Message preview unavailable]")))
+         :cancel-action #'chirp-dm-cancel-reply
+         :cancel-help "Cancel reply (C-c C-k)"
+         :width (max 20 (min 80 (window-width)))))
+    ""))
+
+(defun chirp-dm-conversation--reply-key-events (state target)
+  "Return bounded raw key events from STATE needed to validate TARGET."
+  (let* ((version
+          (or (plist-get target :conversation-key-version)
+              (plist-get target :key-version)))
+         (events
+          (append (plist-get state :recovery-key-events)
+                  (cl-remove-if-not
+                   (lambda (event)
+                     (eq (plist-get event :kind)
+                         'conversation-key-change))
+                   (chirp-dm-conversation--events state))))
+         (ordered
+          (append
+           (cl-remove-if-not
+            (lambda (event)
+              (and version
+                   (equal (plist-get event :conversation-key-version)
+                          version)))
+            events)
+           events)))
+    (seq-take
+     (delete-dups
+      (delq nil
+            (mapcar (lambda (event)
+                      (plist-get event :encoded-event))
+                    ordered)))
+     64)))
+
 
 (defun chirp-dm-conversation--sync (view invalidations)
   "Synchronize conversation VIEW for pending INVALIDATIONS."
@@ -513,7 +613,8 @@ Return non-nil when the refresh was accepted."
         (appkit-invalidations-resource-keys invalidations))
        (appkit-chat-timeline-set-frame
         (chirp-dm-render-header conversation)
-        (chirp-dm-render-footer state)
+        (concat (chirp-dm-render-footer state)
+                (chirp-dm-conversation--reply-context-text state))
         :bind-input-function (lambda () (chirp-dm-conversation--bind-composer state))
         :composer-visible-p t)
        (chirp-dm-conversation--sync-composer-state state)))))
@@ -885,80 +986,286 @@ Disjoint focused fragments are bridged through older history before merging."
     (appkit-request-sync view :part 'frame :position t)
     (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
 
-(defun chirp-dm-conversation--settle-send-success (view state owner text)
-  "Settle acknowledged Appkit send OWNER for TEXT in VIEW and STATE."
+(defun chirp-dm-conversation--settle-send-success
+    (view state owner text reply-p)
+  "Settle acknowledged Appkit send OWNER for TEXT in VIEW and STATE.
+
+When REPLY-P is non-nil, clear the reply context owned by the acknowledged
+composer capture."
   (when (chirp-dm-conversation--send-owner-current-p view owner)
     (appkit-with-live-view view
       (appkit-compose-operation-finish owner)
       (setq buffer-read-only nil)
       (setf (plist-get state :send-error) nil)
-      (appkit-chatbuf-input-history-push text)
-      (appkit-chatbuf-input-set-text ""))
+      (unless (string-empty-p (string-trim text))
+        (appkit-chatbuf-input-history-push text))
+      (appkit-chatbuf-input-set-text "")
+      (when reply-p
+        (appkit-chatbuf-aux-reset)))
     (appkit-request-sync view :part 'frame :position t)
     (chirp-dm-conversation--request view 'refresh)
-    (message "Direct message sent")))
+    (message "%s sent" (if reply-p "Direct-message reply" "Direct message"))))
 
 ;;;; Commands
 
-(defun chirp-dm-conversation--reject-compose-object (_value _text)
-  "Reject one structured compose object unsupported by XChat plain text."
-  '(reject . xchat-plain-text-only))
+(defconst chirp-dm-conversation--attachment-object-kind 'dm-attachment
+  "Structured composer object kind for one local XChat attachment.")
+
+(defconst chirp-dm-conversation--attachment-kinds
+  '(photo video audio file gif)
+  "Supported typed XChat composer attachment kinds.")
+
+(defun chirp-dm-conversation--attachment-object-p (value)
+  "Return non-nil when VALUE is a typed local XChat attachment object."
+  (and (listp value)
+       (eq (plist-get value :kind)
+           chirp-dm-conversation--attachment-object-kind)
+       (memq (plist-get value :attachment-kind)
+             chirp-dm-conversation--attachment-kinds)
+       (stringp (plist-get value :path))))
+
+(defun chirp-dm-conversation--classify-compose-object (value _text)
+  "Classify structured compose VALUE for XChat output."
+  (if (chirp-dm-conversation--attachment-object-p value)
+      '(side-channel . attachments)
+    '(reject . unsupported-xchat-compose-object)))
+
+(defun chirp-dm-conversation--capture-attachments (capture)
+  "Return ordered typed attachment objects frozen in CAPTURE."
+  (let* ((parse-result
+          (appkit-markup-compose-capture-parse-result capture))
+         (occurrences
+          (alist-get
+           'attachments
+           (appkit-markup-parse-result-side-channels parse-result))))
+    (mapcar
+     (lambda (occurrence)
+       (let ((value
+              (copy-tree
+               (appkit-markup-object-occurrence-value occurrence))))
+         (unless (chirp-dm-conversation--attachment-object-p value)
+           (error "XChat composer captured an invalid attachment"))
+         value))
+     occurrences)))
+
+(defun chirp-dm-conversation--attachment-display-text (attachment)
+  "Return typed composer preview text for ATTACHMENT."
+  (let* ((kind (plist-get attachment :attachment-kind))
+         (path (plist-get attachment :path))
+         (filename
+          (or (plist-get attachment :filename)
+              (file-name-nondirectory path)))
+         (image-p (memq kind '(photo gif)))
+         (image
+          (and image-p
+               (appkit-media-file-present-p path)
+               (appkit-media-one-line-preview-image-from-file path)))
+         (preview
+          (and image
+               (appkit-media-image-display-string image "[image]")))
+         (size
+          (and (appkit-media-file-present-p path)
+               (file-size-human-readable
+                (file-attribute-size (file-attributes path)))))
+         (label
+          (pcase kind
+            ('photo "[photo]")
+            ('gif "[GIF]")
+            ('video "[video]")
+            ('audio "[audio]")
+            (_ "[file]"))))
+    (concat label " "
+            (if preview (concat preview " ") "")
+            (propertize filename 'help-echo path)
+            (if size (format " (%s)" size) ""))))
+
+(defun chirp-dm-conversation--queue-attachment (file attachment-kind)
+  "Queue FILE with typed ATTACHMENT-KIND in the current XChat composer."
+  (unless (chirp-dm-conversation--current-view)
+    (user-error "Current view is not a direct-message conversation"))
+  (when (appkit-compose-operation-active-p)
+    (user-error "A direct message is already being sent"))
+  (unless (memq attachment-kind
+                chirp-dm-conversation--attachment-kinds)
+    (user-error "Unsupported XChat attachment kind: %s" attachment-kind))
+  (let* ((path (expand-file-name file))
+         (attributes (and (file-regular-p path) (file-attributes path)))
+         (size (and attributes (file-attribute-size attributes))))
+    (unless (and attributes (file-readable-p path)
+                 (integerp size) (> size 0)
+                 (<= size (* 50 1024 1024)))
+      (user-error
+       "XChat attachment must be a readable file between 1 byte and 50 MiB"))
+    (let* ((capture (appkit-markup-compose-capture))
+           (attachments
+            (chirp-dm-conversation--capture-attachments capture))
+           (multi-p (memq attachment-kind '(photo gif video))))
+      (when (>= (length attachments) 10)
+        (user-error "XChat messages support at most 10 attachments"))
+      (when (or (and attachments (not multi-p))
+                (cl-some
+                 (lambda (attachment)
+                   (not
+                    (memq (plist-get attachment :attachment-kind)
+                          '(photo gif video))))
+                 attachments))
+        (user-error
+         "Files and audio must be the only attachment in an XChat message")))
+    (let ((object
+           (list :kind chirp-dm-conversation--attachment-object-kind
+                 :attachment-kind attachment-kind
+                 :path path
+                 :filename (file-name-nondirectory path))))
+      (goto-char
+       (or (appkit-chatbuf-input-logical-end-position) (point-max)))
+      (appkit-chatbuf-input-insert
+       (chirp-dm-conversation--attachment-display-text object)
+       :object object)
+      (message "XChat %s queued: %s"
+               attachment-kind (file-name-nondirectory path))
+      object)))
+
+(defun chirp-dm-attach-file (file)
+  "Queue local FILE as a document in the current XChat composer."
+  (interactive (list (read-file-name "Attach file: " nil nil t)))
+  (chirp-dm-conversation--queue-attachment file 'file))
+
+(defun chirp-dm-attach-photo (file)
+  "Queue local image FILE as a photo in the current XChat composer."
+  (interactive (list (read-file-name "Attach photo: " nil nil t)))
+  (chirp-dm-conversation--queue-attachment file 'photo))
+
+(defun chirp-dm-attach-video (file)
+  "Queue local video FILE as a video in the current XChat composer."
+  (interactive (list (read-file-name "Attach video: " nil nil t)))
+  (chirp-dm-conversation--queue-attachment file 'video))
+
+(defun chirp-dm-attach-audio (file)
+  "Queue local audio FILE as audio in the current XChat composer."
+  (interactive (list (read-file-name "Attach audio: " nil nil t)))
+  (chirp-dm-conversation--queue-attachment file 'audio))
+
+(defun chirp-dm-attach-gif (file)
+  "Queue local GIF FILE as an animation in the current XChat composer."
+  (interactive (list (read-file-name "Attach GIF: " nil nil t)))
+  (chirp-dm-conversation--queue-attachment file 'gif))
+
+(defun chirp-dm-attach (attach-type)
+  "Choose ATTACH-TYPE and invoke its configured XChat attachment command."
+  (interactive
+   (list
+    (completing-read
+     "Attachment type: "
+     (mapcar #'car chirp-dm-attach-commands)
+     nil t)))
+  (let ((command (cdr (assoc-string
+                       attach-type chirp-dm-attach-commands t))))
+    (unless (commandp command)
+      (user-error "Invalid XChat attachment type: %s" attach-type))
+    (call-interactively command)))
 
 (defun chirp-dm-submit ()
-  "Encrypt and send the current plain-text XChat composer input once."
+  "Encrypt and send the current XChat composer input once."
   (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
       (let* ((state (chirp-dm-conversation--state view))
-             callback-ran-p request capture owner text)
+             (aux (appkit-chatbuf-aux-state))
+             (reply-p (eq (plist-get aux :aux-type) 'reply))
+             (reply-target (and reply-p
+                                (chirp-dm-conversation--reply-target state)))
+             callback-ran-p request capture owner text attachments)
         (unless (appkit-chatbuf-point-in-input-p)
           (user-error "Point is not in the direct-message composer"))
         (when (appkit-compose-operation-active-p)
           (user-error "A direct message is already being sent"))
-        (when (appkit-chatbuf-composer-idle-p)
-          (user-error "Direct message is empty"))
+        (when (and reply-p (null reply-target))
+          (user-error "Direct-message reply target is no longer available"))
+        (when (and reply-target
+                   (not (stringp (plist-get reply-target :encoded-event))))
+          (user-error "Direct-message reply target has no raw XChat event"))
         (setq capture
               (condition-case nil
                   (appkit-markup-compose-capture)
                 (appkit-markup-object-rejected
-                 (user-error
-                  "XChat sending currently supports plain text only")))
+                 (user-error "XChat composer contains an unsupported object")))
               text
               (appkit-markup-compose-output-source
                (appkit-markup-compose-output capture 'plain))
-              owner
+              attachments
+              (chirp-dm-conversation--capture-attachments capture))
+        (when (and (string-empty-p (string-trim text))
+                   (null attachments))
+          (user-error "Direct message is empty"))
+        (setq owner
               (appkit-compose-operation-begin
-               'dm-send
+               (if reply-p 'dm-reply 'dm-send)
                :generation
                (appkit-markup-compose-capture-generation capture)
-               :label "Sending direct message"))
+               :label
+               (cond
+                ((and reply-p attachments)
+                 "Sending direct-message reply with attachments")
+                (reply-p "Sending direct-message reply")
+                (attachments "Sending direct message with attachments")
+                (t "Sending direct message"))))
         (setf (plist-get state :send-error) nil)
         (setq buffer-read-only t)
         (appkit-request-sync view :part 'frame :position t)
-        (condition-case err
-            (setq request
-                  (chirp-backend-dm-send-text
-                   (chirp-dm-conversation--id state) text
-                   (lambda (_event _envelope)
-                     (setq callback-ran-p t)
-                     (chirp-dm-conversation--settle-send-success
-                      view state owner text))
-                   :errback
-                   (lambda (message)
-                     (setq callback-ran-p t)
-                     (chirp-dm-conversation--settle-send-error
-                      view state owner message))
-                   :owner view))
-          ((error quit)
-           (chirp-dm-conversation--settle-send-error
-            view state owner (error-message-string err))
-           (signal (car err) (cdr err))))
+        (let ((success
+               (lambda (_event _envelope)
+                 (setq callback-ran-p t)
+                 (chirp-dm-conversation--settle-send-success
+                  view state owner text reply-p)))
+              (failure
+               (lambda (message)
+                 (setq callback-ran-p t)
+                 (chirp-dm-conversation--settle-send-error
+                  view state owner message))))
+          (condition-case err
+              (setq request
+                    (cond
+                     (attachments
+                      (chirp-backend-dm-send-attachments
+                       (chirp-dm-conversation--id state)
+                       text attachments success
+                       :target-event
+                       (and reply-p
+                            (plist-get reply-target :encoded-event))
+                       :key-events
+                       (and reply-p
+                            (chirp-dm-conversation--reply-key-events
+                             state reply-target))
+                       :errback failure
+                       :owner view))
+                     (reply-p
+                      (chirp-backend-dm-send-reply
+                       (chirp-dm-conversation--id state)
+                       text
+                       (plist-get reply-target :encoded-event)
+                       (chirp-dm-conversation--reply-key-events
+                        state reply-target)
+                       success
+                       :errback failure
+                       :owner view))
+                     (t
+                      (chirp-backend-dm-send-text
+                       (chirp-dm-conversation--id state) text success
+                       :errback failure
+                       :owner view))))
+            ((error quit)
+             (chirp-dm-conversation--settle-send-error
+              view state owner (error-message-string err))
+             (signal (car err) (cdr err)))))
         (when (and (not callback-ran-p)
                    (chirp-dm-conversation--send-owner-current-p view owner)
                    (not (buffer-live-p request)))
           (chirp-dm-conversation--settle-send-error
            view state owner "XChat message request did not start"))
         (when (chirp-dm-conversation--send-owner-current-p view owner)
-          (message "Sending direct message..."))
+          (message "%s..."
+                   (if reply-p
+                       "Sending direct-message reply"
+                     "Sending direct message")))
         request)
     (user-error "Current view is not a direct-message conversation")))
 
@@ -970,6 +1277,186 @@ Disjoint focused fragments are bridged through older history before merging."
     (if arg
         (insert "\n")
       (chirp-dm-submit))))
+
+(defun chirp-dm-conversation--event-at-point (state)
+  "Return canonical message event at point in conversation STATE."
+  (let ((projected (get-text-property (point) 'chirp-dm-event))
+        (key (appkit-chat-timeline-key-at-point)))
+    (chirp-dm-conversation--message-by-id
+     state
+     (or (plist-get projected :sequence-id)
+         (plist-get projected :id)
+         key))))
+
+(defun chirp-dm-conversation--target-event-at-point (state action)
+  "Return actionable message event at point in STATE for ACTION."
+  (let ((event (chirp-dm-conversation--event-at-point state)))
+    (unless (and (listp event)
+                 (eq (plist-get event :kind) 'message)
+                 (stringp (plist-get event :encoded-event))
+                 (not (string-empty-p
+                       (plist-get event :encoded-event))))
+      (user-error "Point is not on a message that can %s" action))
+    event))
+
+(defun chirp-dm-reply-to-message ()
+  "Set the message at point as the next direct-message reply target."
+  (interactive)
+  (if-let* ((view (chirp-dm-conversation--current-view)))
+      (let* ((state (chirp-dm-conversation--state view))
+             (event
+              (chirp-dm-conversation--target-event-at-point
+               state "be replied to"))
+             (message-id
+              (or (plist-get event :sequence-id)
+                  (plist-get event :id))))
+        (when (appkit-compose-operation-active-p)
+          (user-error "A direct message is already being sent"))
+        (appkit-chatbuf-aux-set
+         (list :aux-type 'reply
+               :aux-msg event
+               :message-id message-id))
+        (appkit-request-sync view :part 'frame :position t)
+        (appkit-chatbuf-focus-input)
+        (message "Next direct message will reply to %s" message-id))
+    (user-error "Current view is not a direct-message conversation")))
+
+(defun chirp-dm-cancel-reply ()
+  "Cancel the current direct-message reply context."
+  (interactive)
+  (if-let* ((view (chirp-dm-conversation--current-view)))
+      (progn
+        (when (appkit-compose-operation-active-p)
+          (user-error "A direct message is already being sent"))
+        (if (eq (appkit-chatbuf-aux-type) 'reply)
+            (progn
+              (appkit-chatbuf-aux-reset)
+              (appkit-request-sync view :part 'frame :position t)
+              (message "Direct-message reply cancelled"))
+          (message "No direct-message reply is active")))
+    (user-error "Current view is not a direct-message conversation")))
+
+(defun chirp-dm-conversation--reaction-selected-p (event emoji)
+  "Return non-nil when the current user selected EMOJI on EVENT."
+  (when-let* ((user-id
+               (chirp--session-xchat-user-id (chirp--session)))
+              (reaction
+               (cl-find emoji (plist-get event :reactions)
+                        :key (lambda (item) (plist-get item :emoji))
+                        :test #'equal)))
+    (member user-id (plist-get reaction :senders))))
+
+(defun chirp-dm-conversation--default-reaction (event)
+  "Return the best default reaction for EVENT."
+  (or (when-let* ((user-id
+                   (chirp--session-xchat-user-id (chirp--session)))
+                  (selected
+                   (cl-find-if
+                    (lambda (reaction)
+                      (member user-id (plist-get reaction :senders)))
+                    (plist-get event :reactions))))
+        (plist-get selected :emoji))
+      (plist-get (car (plist-get event :reactions)) :emoji)
+      "👍"))
+
+(defun chirp-dm-conversation--reaction-owner-current-p
+    (view state key owner)
+  "Return non-nil when OWNER still owns reaction KEY in VIEW and STATE."
+  (and (appkit-view-live-p view)
+       (eq state (appkit-view-state view))
+       (eq owner
+           (gethash key (plist-get state :reaction-operations)))))
+
+(defun chirp-dm-conversation--settle-reaction-error
+    (view state key owner message)
+  "Settle reaction OWNER for KEY in VIEW and STATE with error MESSAGE."
+  (when (chirp-dm-conversation--reaction-owner-current-p
+         view state key owner)
+    (remhash key (plist-get state :reaction-operations))
+    (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
+
+(defun chirp-dm-conversation--settle-reaction-success
+    (view state key owner event emoji remove-p)
+  "Settle acknowledged reaction OWNER with EVENT in VIEW and STATE.
+
+KEY identifies the target and EMOJI.  REMOVE-P describes the acknowledged
+operation."
+  (when (chirp-dm-conversation--reaction-owner-current-p
+         view state key owner)
+    (remhash key (plist-get state :reaction-operations))
+    (let ((conversation (chirp-dm-conversation--conversation state)))
+      (chirp-dm-state-set-events
+       conversation
+       (chirp-dm-state-merge-events
+        (plist-get conversation :events) (list event)))
+      (chirp-dm-state-publish conversation)
+      (when (and (chirp-dm-conversation--decryption-needed-p state)
+                 (null (plist-get state :decrypt-generation)))
+        (chirp-dm-conversation--decrypt-view view t)))
+    (message "Reaction %s: %s"
+             (if remove-p "removed" "added") emoji)))
+
+(defun chirp-dm-toggle-reaction (&optional emoji)
+  "Toggle the current user's EMOJI reaction on the message at point."
+  (interactive)
+  (if-let* ((view (chirp-dm-conversation--current-view)))
+      (let* ((state (chirp-dm-conversation--state view))
+             (event
+              (chirp-dm-conversation--target-event-at-point
+               state "receive a reaction"))
+             (default (chirp-dm-conversation--default-reaction event))
+             (emoji
+              (string-trim
+               (or emoji
+                   (read-string (format-prompt "Reaction" default)
+                                nil nil default))))
+             (target-id
+              (or (plist-get event :sequence-id)
+                  (plist-get event :id)))
+             (key (list target-id emoji))
+             (operations (plist-get state :reaction-operations))
+             (remove-p
+              (and (chirp-dm-conversation--reaction-selected-p event emoji)
+                   t))
+             (owner (list 'dm-reaction target-id emoji))
+             callback-ran-p request)
+        (when (string-empty-p emoji)
+          (user-error "Reaction emoji cannot be empty"))
+        (when (gethash key operations)
+          (user-error "This reaction operation is already running"))
+        (puthash key owner operations)
+        (condition-case err
+            (setq request
+                  (chirp-backend-dm-send-reaction
+                   (chirp-dm-conversation--id state)
+                   (plist-get event :encoded-event)
+                   emoji remove-p
+                   (lambda (acknowledged _envelope)
+                     (setq callback-ran-p t)
+                     (chirp-dm-conversation--settle-reaction-success
+                      view state key owner acknowledged emoji remove-p))
+                   :errback
+                   (lambda (text)
+                     (setq callback-ran-p t)
+                     (chirp-dm-conversation--settle-reaction-error
+                      view state key owner text))
+                   :owner view))
+          ((error quit)
+           (chirp-dm-conversation--settle-reaction-error
+            view state key owner (error-message-string err))
+           (signal (car err) (cdr err))))
+        (when (and (not callback-ran-p)
+                   (chirp-dm-conversation--reaction-owner-current-p
+                    view state key owner)
+                   (not (buffer-live-p request)))
+          (chirp-dm-conversation--settle-reaction-error
+           view state key owner "XChat reaction request did not start"))
+        (when (chirp-dm-conversation--reaction-owner-current-p
+               view state key owner)
+          (message "%s reaction..."
+                   (if remove-p "Removing" "Adding")))
+        request)
+    (user-error "Current view is not a direct-message conversation")))
 
 (defun chirp-dm-refresh-conversation ()
   "Refresh the current XChat conversation without acknowledging reads."
@@ -1026,10 +1513,12 @@ Disjoint focused fragments are bridged through older history before merging."
 
 (defvar-keymap chirp-dm-conversation--timeline-mode-map
   :doc "Timeline-only keymap active outside the XChat composer."
+  "!" #'chirp-dm-toggle-reaction
   "g" #'chirp-dm-refresh-conversation
   "N" #'chirp-dm-load-older-messages
   "n" #'chirp-dm-next-message
   "p" #'chirp-dm-previous-message
+  "r" #'chirp-dm-reply-to-message
   "q" #'chirp-quit-current-buffer)
 
 (define-minor-mode chirp-dm-conversation--timeline-mode
@@ -1041,7 +1530,10 @@ Disjoint focused fragments are bridged through older history before merging."
 (defvar-keymap chirp-dm-conversation--mode-map
   :doc "Keymap for `chirp-dm-conversation--mode'."
   "RET" #'chirp-dm-return-dwim
+  "C-c C-a" #'chirp-dm-attach
+  "C-c C-f" #'chirp-dm-attach-file
   "C-c C-c" #'chirp-dm-submit
+  "C-c C-k" #'chirp-dm-cancel-reply
   "C-c C-r" #'chirp-dm-refresh-conversation
   "C-c C-n" #'chirp-dm-load-older-messages)
 
@@ -1057,7 +1549,9 @@ Disjoint focused fragments are bridged through older history before merging."
        "g r" #'chirp-dm-refresh-conversation)
       (:map chirp-dm-conversation--timeline-mode-map
        :nm
+       "!" #'chirp-dm-toggle-reaction
        "q" #'chirp-quit-current-buffer
+       "r" #'chirp-dm-reply-to-message
        "i" #'appkit-evil-chatbuf-enter-input
        "g j" #'chirp-dm-next-message
        "g k" #'chirp-dm-previous-message
@@ -1068,14 +1562,14 @@ Disjoint focused fragments are bridged through older history before merging."
   (chirp-dm-conversation--setup-evil))
 
 (define-derived-mode chirp-dm-conversation--mode appkit-chatbuf-mode "Chirp-DM"
-  "Major mode for one XChat conversation with a plain-text composer."
+  "Major mode for one XChat conversation with structured attachments."
   (setq-local line-spacing 0)
   (appkit-compose-setup
    :snapshot-function #'appkit-chatbuf-input-string
    :source-bounds-function #'appkit-chatbuf-input-region-bounds)
   (appkit-markup-compose-setup
    :codecs '(plain)
-   :object-classifier #'chirp-dm-conversation--reject-compose-object)
+   :object-classifier #'chirp-dm-conversation--classify-compose-object)
   (add-hook 'chirp-dm-conversation--timeline-mode-hook
             #'appkit-evil-normalize-keymaps nil t)
   (appkit-chatbuf-use-timeline-mode #'chirp-dm-conversation--timeline-mode))

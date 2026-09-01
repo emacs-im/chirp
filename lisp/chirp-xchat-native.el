@@ -31,6 +31,14 @@
                   (session conversation-id key-version encrypted-base64))
 (declare-function chirp-xchat-native-encrypt-text
                   "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-encrypt-reply
+                  "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-encrypt-reaction
+                  "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-prepare-media
+                  "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-release-media
+                  "chirp-xchat-native-module" (session stage-id))
 (declare-function chirp-xchat-native-recovery-start
                   "chirp-xchat-native-module"
                   (session epoch pin input-json))
@@ -51,7 +59,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 
 ;;; Constants
 
-(defconst chirp-xchat-native--expected-version "0.2.4/chat-xdk-0.4.3"
+(defconst chirp-xchat-native--expected-version "0.2.5/chat-xdk-0.4.3"
   "Native adapter and official XChat SDK version required by Chirp.")
 
 ;;; Variables
@@ -73,8 +81,12 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
                       chirp-xchat-native-session-live-p
                       chirp-xchat-native-session-unlocked-p
                       chirp-xchat-native-decrypt
-                      chirp-xchat-native-encrypt-text
                       chirp-xchat-native-decrypt-media
+                      chirp-xchat-native-encrypt-text
+                      chirp-xchat-native-encrypt-reply
+                      chirp-xchat-native-encrypt-reaction
+                      chirp-xchat-native-prepare-media
+                      chirp-xchat-native-release-media
                       chirp-xchat-native-recovery-start
                       chirp-xchat-native-recovery-poll
                       chirp-xchat-native-recovery-cancel))
@@ -193,7 +205,13 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
   "Maximum verified attachments accepted for one native message.")
 
 (defconst chirp-xchat-native--max-media-bytes (* 50 1024 1024)
-  "Maximum encrypted or plaintext bytes accepted for one XChat attachment.")
+  "Maximum plaintext bytes accepted for one XChat attachment.")
+
+(defconst chirp-xchat-native--max-media-ciphertext-bytes
+  (+ chirp-xchat-native--max-media-bytes
+     (* 17 (/ chirp-xchat-native--max-media-bytes 1024))
+     24)
+  "Maximum ciphertext bytes for one bounded XChat attachment.")
 
 (defun chirp-xchat-native--optional-string (object key limit label)
   "Decode optional string KEY from OBJECT up to LIMIT bytes for LABEL."
@@ -380,7 +398,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
   (unless (and (stringp encrypted)
                (not (multibyte-string-p encrypted))
                (<= (string-bytes encrypted)
-                   chirp-xchat-native--max-media-bytes))
+                   chirp-xchat-native--max-media-ciphertext-bytes))
     (error "XChat media ciphertext is invalid"))
   (let (input-base64 output-base64 plaintext)
     (unwind-protect
@@ -402,21 +420,112 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
       (when (stringp output-base64)
         (clear-string output-base64)))))
 
-(defun chirp-xchat-native-prepare-text (conversation-id text)
-  "Prepare encrypted XChat TEXT for CONVERSATION-ID.
-
-The native session supplies the sender identity bound during key recovery."
+(defun chirp-xchat-native-prepare-media-file (conversation-id file)
+  "Encrypt FILE for CONVERSATION-ID and return native staging metadata."
   (let (input-json output-json)
     (unwind-protect
-        (let* ((input
-                `(("conversation_id" . ,conversation-id)
-                  ("text" . ,text)))
-               (parsed
+        (let* ((parsed
+                (progn
+                  (setq input-json
+                        (json-encode
+                         `(("conversation_id" . ,conversation-id)
+                           ("file_path" . ,(expand-file-name file))))
+                        output-json
+                        (chirp-xchat-native-prepare-media
+                         (chirp-xchat-native--session) input-json))
+                  (json-parse-string
+                   output-json :object-type 'alist :array-type 'list
+                   :null-object nil :false-object :json-false)))
+               (stage-id (alist-get 'stage_id parsed))
+               (encrypted-file (alist-get 'encrypted_file parsed))
+               (encrypted-bytes (alist-get 'encrypted_bytes parsed))
+               (plaintext-bytes (alist-get 'plaintext_bytes parsed))
+               (key-version (alist-get 'key_version parsed))
+               (filename (alist-get 'filename parsed))
+               (mime-type (alist-get 'mime_type parsed))
+               (media-type (alist-get 'media_type parsed))
+               (width (alist-get 'width parsed))
+               (height (alist-get 'height parsed)))
+          (unless
+              (and (integerp stage-id) (> stage-id 0)
+                   (stringp encrypted-file)
+                   (file-regular-p encrypted-file)
+                   (file-readable-p encrypted-file)
+                   (integerp encrypted-bytes) (> encrypted-bytes 0)
+                   (= encrypted-bytes
+                      (file-attribute-size (file-attributes encrypted-file)))
+                   (integerp plaintext-bytes)
+                   (<= 1 plaintext-bytes chirp-xchat-native--max-media-bytes)
+                   (stringp key-version)
+                   (not (string-empty-p key-version))
+                   (stringp filename) (not (string-empty-p filename))
+                   (stringp mime-type) (not (string-empty-p mime-type))
+                   (integerp media-type) (<= 1 media-type 6)
+                   (integerp width) (>= width 0)
+                   (integerp height) (>= height 0))
+            (when (and (integerp stage-id) (> stage-id 0))
+              (ignore-errors
+                (chirp-xchat-native-release-media
+                 (chirp-xchat-native--session) stage-id)))
+            (error "XChat native module returned invalid media staging metadata"))
+          (list :stage-id stage-id
+                :encrypted-file encrypted-file
+                :encrypted-bytes encrypted-bytes
+                :plaintext-bytes plaintext-bytes
+                :key-version key-version
+                :filename filename
+                :mime-type mime-type
+                :media-type media-type
+                :width width
+                :height height))
+      (when (stringp input-json)
+        (clear-string input-json))
+      (when (stringp output-json)
+        (clear-string output-json)))))
+
+(defun chirp-xchat-native-release-media-stage (stage-id)
+  "Release native encrypted-media STAGE-ID."
+  (chirp-xchat-native-release-media
+   (chirp-xchat-native--session) stage-id))
+
+(defun chirp-xchat-native--encode-media-attachments (attachments)
+  "Return ATTACHMENTS as bounded native JSON objects."
+  (vconcat
+   (mapcar
+    (lambda (attachment)
+      `(("media_hash_key" . ,(plist-get attachment :media-hash-key))
+        ("width" . ,(or (plist-get attachment :width) 0))
+        ("height" . ,(or (plist-get attachment :height) 0))
+        ("filesize_bytes" . ,(plist-get attachment :plaintext-bytes))
+        ("filename" . ,(plist-get attachment :filename))
+        ("media_type" . ,(plist-get attachment :media-type))
+        ,@(when-let* ((duration (plist-get attachment :duration-millis)))
+            `(("duration_millis" . ,duration)))))
+    attachments)))
+
+(defun chirp-xchat-native--attachment-key-version (attachments)
+  "Return the one verified key version shared by ATTACHMENTS."
+  (let ((versions
+         (delete-dups
+          (mapcar (lambda (attachment)
+                    (plist-get attachment :key-version))
+                  attachments))))
+    (unless (and (= (length versions) 1)
+                 (stringp (car versions))
+                 (not (string-empty-p (car versions))))
+      (error "XChat uploaded attachments do not share one key version"))
+    (car versions)))
+
+(defun chirp-xchat-native--prepare-send (input native-function)
+  "Prepare public XChat send fields from INPUT using NATIVE-FUNCTION."
+  (let (input-json output-json)
+    (unwind-protect
+        (let* ((parsed
                 (progn
                   (setq input-json (json-encode input)
                         output-json
-                        (chirp-xchat-native-encrypt-text
-                         (chirp-xchat-native--session) input-json))
+                        (funcall native-function
+                                 (chirp-xchat-native--session) input-json))
                   (json-parse-string
                    output-json :object-type 'alist :array-type 'list
                    :null-object nil :false-object :json-false)))
@@ -436,6 +545,52 @@ The native session supplies the sender identity bound during key recovery."
         (clear-string input-json))
       (when (stringp output-json)
         (clear-string output-json)))))
+
+(defun chirp-xchat-native-prepare-text
+    (conversation-id text &optional attachments)
+  "Prepare encrypted XChat TEXT and optional ATTACHMENTS for CONVERSATION-ID.
+
+The native session supplies the sender identity bound during key recovery."
+  (chirp-xchat-native--prepare-send
+   `(("conversation_id" . ,conversation-id)
+     ("text" . ,text)
+     ,@(when attachments
+         `(("conversation_key_version" .
+            ,(chirp-xchat-native--attachment-key-version attachments))))
+     ("attachments" .
+      ,(chirp-xchat-native--encode-media-attachments attachments)))
+   #'chirp-xchat-native-encrypt-text))
+
+(defun chirp-xchat-native-prepare-reply
+    (conversation-id text target-event key-events &optional attachments)
+  "Prepare encrypted XChat TEXT replying to TARGET-EVENT in CONVERSATION-ID.
+
+KEY-EVENTS supplies bounded raw conversation-key events needed to validate an
+older reply target.  ATTACHMENTS are optional uploaded-media descriptors."
+  (chirp-xchat-native--prepare-send
+   `(("conversation_id" . ,conversation-id)
+     ("text" . ,text)
+     ,@(when attachments
+         `(("conversation_key_version" .
+            ,(chirp-xchat-native--attachment-key-version attachments))))
+     ("target_event" . ,target-event)
+     ("key_events" . ,(vconcat key-events))
+     ("attachments" .
+      ,(chirp-xchat-native--encode-media-attachments attachments)))
+   #'chirp-xchat-native-encrypt-reply))
+
+(defun chirp-xchat-native-prepare-reaction
+    (conversation-id target-event emoji remove-p)
+  "Prepare an encrypted reaction operation for CONVERSATION-ID.
+
+TARGET-EVENT is the exact raw message event.  EMOJI identifies the reaction;
+when REMOVE-P is non-nil, prepare a removal instead of an addition."
+  (chirp-xchat-native--prepare-send
+   `(("conversation_id" . ,conversation-id)
+     ("target_event" . ,target-event)
+     ("emoji" . ,emoji)
+     ("remove" . ,(and remove-p t)))
+   #'chirp-xchat-native-encrypt-reaction))
 
 ;;; Recovery Commands
 

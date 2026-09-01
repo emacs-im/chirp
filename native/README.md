@@ -1,10 +1,22 @@
 # Optional XChat native module
 
-`chirp-xchat-module` is an optional GNU Emacs dynamic module built around X's official Rust `chat-xdk`. It owns XChat private keys, versioned conversation keys, signature verification, message and downloaded-media decryption, and outgoing encryption/signing without exposing key material to Emacs Lisp. Direct-message entry requires it, while other Chirp features remain usable without it.
+`chirp-xchat-module` is an optional GNU Emacs dynamic module built around X's official Rust `chat-xdk`. It owns XChat private keys, versioned conversation keys, signature verification, message and downloaded-media decryption, local-media stream encryption, and outgoing message encryption/signing without exposing key material to Emacs Lisp. Direct-message entry requires it, while other Chirp features remain usable without it.
 
-The release module enables the official XDK Juicebox integration. Each explicit `M-x chirp-direct-messages` unlock submission creates one native job and one `recover_private_key` call, with no Chirp-level retry; the inbox opens only after recovery succeeds. The requested X user is checked against the registered-key response and becomes the native session's sender identity only after the recovered identity key matches that record; outgoing message input cannot override it. X GraphQL and authenticated Chat media downloads remain in Lisp, while the official native SDK contacts the validated HTTPS Juicebox realms and decrypts downloaded ciphertext with an exact verified conversation-key version retained from the corresponding event batch. PINs, recovered private keys, and conversation keys never cross back into Lisp; only status, signature-verified domain data, decrypted attachment bytes, and opaque outgoing envelopes do.
+## Security and lifecycle boundary
 
-Recovery workers own only Rust values and never retain an Emacs environment or Lisp value. Epoch and job identities reject stale polling and cancellation, a 60-second outer timeout reports an uncertain result, and cancellation drops the in-flight Tokio future. Outgoing plaintext enters the module only for a synchronous bounded SDK call; Lisp receives an opaque message event and signature envelope, which it submits once through the fixed X write operation. Explicit session destruction cancels and joins before dropping the official SDK state. The user-pointer finalizer only requests cancellation and detaches, so GC cannot block on a worker.
+### Unlock and identity
+
+Each explicit `M-x chirp-direct-messages` unlock submission creates one native job and one official `recover_private_key` call, with no Chirp-level retry; the inbox opens only after recovery succeeds. The requested X user becomes the native session's sender identity only after the recovered identity key matches the registered-key response, and per-message input cannot override it. The official native SDK contacts only validated HTTPS Juicebox realms. PINs, recovered private keys, and conversation keys never cross back into Lisp; Lisp receives only status, signature-verified domain data, decrypted attachment bytes, encrypted staging metadata, and opaque outgoing envelopes.
+
+### Media and outgoing messages
+
+X GraphQL, the official three-step Chat media upload, and authenticated Chat media downloads remain in Lisp. For outgoing media, the native module reads the user-selected file, enforces the size bound and detected content type, and stream-encrypts it into a session-owned temporary ciphertext file. The returned staging metadata includes the opaque verified conversation-key version; final message encryption is pinned to that same version so a concurrent key rotation cannot separate the media ciphertext from its envelope. Release, failure, cancellation, or session destruction removes the staging file.
+
+Outgoing text, typed uploaded-media descriptors, reply target events, bounded key-event envelopes, and reaction operations enter the module only for synchronous bounded SDK calls. Lisp receives a message event and signature envelope and submits it once through the fixed X write operation.
+
+### Cancellation and destruction
+
+Recovery workers own only Rust values and never retain an Emacs environment or Lisp value. Epoch and job identities reject stale polling and cancellation, a 60-second outer timeout reports an uncertain result, and cancellation drops the in-flight Tokio future. Explicit session destruction cancels and joins recovery before dropping official SDK state and native media stages. The user-pointer finalizer only requests cancellation and detaches from recovery, so GC cannot block on a worker.
 
 ## Build and test
 

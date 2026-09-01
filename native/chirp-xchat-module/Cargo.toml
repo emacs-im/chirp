@@ -1,6 +1,6 @@
 [package]
 name = "chirp-xchat-native"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -20,6 +20,7 @@ chat-xdk-core = { path = "../.deps/chat-xdk/crates/core", default-features = fal
 emacs = "=0.21.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tempfile = "3.20"
 tokio = { version = "1.0", features = ["macros", "rt", "time"], optional = true }
 url = "2.5"
 zeroize = "1.7"
