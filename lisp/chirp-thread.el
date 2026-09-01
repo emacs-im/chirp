@@ -465,7 +465,6 @@ REFRESH reloads the thread; optional ID overrides its Appkit identity."
 
 (defun chirp-thread-open (tweet-id)
   "Open a thread focused on TWEET-ID."
-  (interactive "sTweet ID: ")
   (chirp-thread--open tweet-id))
 
 (defun chirp-thread-open-tweet (tweet)

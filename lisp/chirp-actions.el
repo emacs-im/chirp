@@ -23,9 +23,9 @@
 
 (declare-function chirp-timeline-open-home "chirp-timeline" ())
 (declare-function chirp-timeline-open-following "chirp-timeline" ())
-(declare-function chirp-timeline-open-bookmarks "chirp-timeline" (&optional buffer))
-(declare-function chirp-timeline-open-likes "chirp-timeline" (&optional handle buffer))
-(declare-function chirp-timeline-open-list "chirp-timeline" (list-target &optional buffer))
+(declare-function chirp-timeline-open-bookmarks "chirp-timeline" ())
+(declare-function chirp-timeline-open-likes "chirp-timeline" (&optional handle))
+(declare-function chirp-timeline-open-list "chirp-timeline" (&optional list-target))
 (declare-function chirp-me "chirp" ())
 (declare-function chirp-unsent-drafts "chirp-unsent" ())
 (declare-function chirp-unsent-scheduled "chirp-unsent" ())
@@ -603,8 +603,7 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
        (with-current-buffer buffer
          (appkit-compose-operation-current-p owner))))
 
-(defun chirp-compose--settle-editable
-    (buffer owner temp-attachments outcome &optional reason)
+(defun chirp-compose--settle-editable (buffer owner temp-attachments outcome)
   "Settle OWNER in BUFFER and restore TEMP-ATTACHMENTS for OUTCOME."
   (cond
    ((not (buffer-live-p buffer))
@@ -635,8 +634,7 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
         (cond
          ((appkit-compose-operation-current-p owner)
           (chirp-compose--settle-editable
-           buffer owner temp-attachments 'unknown
-           "The canceled X write may already have reached the server"))
+           buffer owner temp-attachments 'unknown))
          ((equal temp-attachments chirp-compose--submit-temps)
           ;; Session shutdown invalidates its owner before invoking the cancel
           ;; hook.  No editable draft remains to reclaim these private files.
@@ -1286,7 +1284,7 @@ shown.  A stored draft or scheduled object is deleted after acceptance."
              'unknown
            'rejected)))
     (when (chirp-compose--settle-editable
-           compose-buffer owner temp-attachments outcome message)
+           compose-buffer owner temp-attachments outcome)
       (chirp-actions-show-error message))))
 
 (defun chirp-compose--send-next
@@ -1367,7 +1365,7 @@ until the final settlement."
       ((error quit)
        (if owner
            (chirp-compose--settle-editable
-            compose-buffer owner temp-attachments 'rejected error-data)
+            compose-buffer owner temp-attachments 'rejected)
          (setq-local chirp-compose-temp-attachments
                      (append temp-attachments
                              chirp-compose-temp-attachments)))
@@ -1432,7 +1430,7 @@ until the final settlement."
       ((error quit)
        (when owner
          (chirp-compose--settle-editable
-          compose-buffer owner nil 'rejected error-data))
+          compose-buffer owner nil 'rejected))
        (signal (car error-data) (cdr error-data))))))
 
 (defun chirp-compose-schedule (execute-at)
@@ -1482,7 +1480,7 @@ for a local date and time."
       ((error quit)
        (if owner
            (chirp-compose--settle-editable
-            compose-buffer owner temp-attachments 'rejected error-data)
+            compose-buffer owner temp-attachments 'rejected)
          (setq-local chirp-compose-temp-attachments
                      (append temp-attachments
                              chirp-compose-temp-attachments)))

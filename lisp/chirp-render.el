@@ -11,12 +11,10 @@
 
 (declare-function nerd-icons-faicon "nerd-icons" (icon-name &rest args))
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
-(declare-function chirp-profile-open "chirp-profile"
-                  (handle &optional buffer))
+(declare-function chirp-profile-open "chirp-profile" (handle &optional mode))
 (declare-function chirp-profile-open-followers "chirp-profile" (handle))
 (declare-function chirp-profile-open-following-users "chirp-profile" (handle))
-(declare-function chirp-timeline-open-search "chirp-timeline"
-                  (query &optional buffer))
+(declare-function chirp-timeline-open-search "chirp-timeline" (query))
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-reply-at-point "chirp-actions" ())
 (declare-function chirp-toggle-retweet-at-point "chirp-actions" ())

@@ -189,7 +189,7 @@ REFRESH reloads the selected MODE."
   (appkit-invalidate view :structure t :part 'frame :position t)
   (appkit-sync-invalidations view))
 
-(defun chirp-profile--open-user-list (kind handle &optional _buffer)
+(defun chirp-profile--open-user-list (kind handle)
   "Open KIND user list for HANDLE."
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (title (chirp-profile--list-title kind clean-handle))
@@ -325,21 +325,20 @@ When TARGET is `:next', cycle through the available profile modes."
                       chirp-profile--available-modes)
                    target))))
     (unless (eq mode (with-current-buffer buffer chirp--profile-view-mode))
-      (chirp-profile-open handle buffer mode))))
+      (chirp-profile-open handle mode))))
 
 ;;; Commands
 
-(defun chirp-profile-open (handle &optional _buffer mode)
+(defun chirp-profile-open (handle &optional mode)
   "Open HANDLE's profile.
 
 MODE selects the active profile subview and defaults to `posts'."
-  (interactive "sProfile handle: ")
   (let* ((clean-handle (string-remove-prefix "@" handle))
          (mode (or mode 'posts))
          (title (chirp-profile--title clean-handle mode))
          (refresh (lambda ()
                     (chirp-backend-invalidate-user clean-handle)
-                    (chirp-profile-open clean-handle nil mode)))
+                    (chirp-profile-open clean-handle mode)))
          (view (chirp-profile--ensure-view clean-handle title refresh mode))
          (buffer (appkit-view-buffer view))
          (token nil)
@@ -468,17 +467,13 @@ MODE selects the active profile subview and defaults to `posts'."
        chirp-profile-post-limit)
       buffer)))
 
-;;;###autoload
-(defun chirp-profile-open-followers (handle &optional buffer)
-  "Open followers for HANDLE in BUFFER."
-  (interactive "sProfile handle: ")
-  (chirp-profile--open-user-list 'followers handle buffer))
+(defun chirp-profile-open-followers (handle)
+  "Open followers for HANDLE."
+  (chirp-profile--open-user-list 'followers handle))
 
-;;;###autoload
-(defun chirp-profile-open-following-users (handle &optional buffer)
-  "Open followed accounts for HANDLE in BUFFER."
-  (interactive "sProfile handle: ")
-  (chirp-profile--open-user-list 'following handle buffer))
+(defun chirp-profile-open-following-users (handle)
+  "Open followed accounts for HANDLE."
+  (chirp-profile--open-user-list 'following handle))
 
 (provide 'chirp-profile)
 
