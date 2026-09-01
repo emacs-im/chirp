@@ -253,6 +253,7 @@
         :title "Alice"
         :participants '((:id "42" :name "Alice" :handle "alice"))
         :events events
+        :latest-event (car (last events))
         :preview (and events (plist-get (car (last events)) :text))
         :updated-at-msec "1700000000000"
         :has-more t
@@ -274,6 +275,7 @@
          (entry
           (appkit-directory-entry-create
            :key "conversation-1"
+           :label "Alice"
            :payload
            (list :id "conversation-1"
                  :title "Alice"
@@ -286,10 +288,132 @@
       (goto-char (point-min))
       (search-forward "6小时")
       (should
-       (equal
-        (get-text-property (1- (match-beginning 0)) 'display)
-        `(space :align-to
-                (- right (,(string-width "6小时") . width))))))))
+       (eq (get-text-property (match-beginning 0) 'face) 'shadow))
+      (goto-char (match-end 0))
+      (should (= (current-column) (chirp--view-width))))))
+
+(ert-deftest chirp-dm-inbox-row-inserts-ready-participant-avatar ()
+  "A direct-conversation row should display its ready participant avatar."
+  (let ((entry
+         (appkit-directory-entry-create
+          :key "conversation-1"
+          :label "Alice"
+          :payload
+          '(:id "conversation-1" :type direct :title "Alice"
+            :participants
+            ((:id "42" :name "Alice"
+              :avatar-url "https://example.invalid/alice.jpg")))))
+        seen)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'appkit-current-view)
+                 (lambda () :view))
+                ((symbol-function 'chirp-dm--inbox-avatar-key)
+                 (lambda (view conversation)
+                   (should (eq view :view))
+                   (should (equal (plist-get conversation :id)
+                                  "conversation-1"))
+                   '(xchat-avatar "42")))
+                ((symbol-function 'chirp-media-avatar-resource-image)
+                 (lambda (view resource-key &optional _pixel-size)
+                   (setq seen (list view resource-key))
+                   :avatar-image))
+                ((symbol-function 'insert-image)
+                 (lambda (image &optional string _area _slice)
+                   (should (eq image :avatar-image))
+                   (insert (or string " ")))))
+        (chirp-dm--insert-inbox-item nil entry))
+      (should (equal seen '(:view (xchat-avatar "42"))))
+      (should (string-match-p "\\[Alice" (buffer-string)))
+      (should (equal
+               (get-text-property (point-min) 'chirp-dm-conversation-id)
+               "conversation-1")))))
+
+(ert-deftest chirp-dm-inbox-projection-retains-recent-activity-metadata ()
+  "Inbox projection should keep recent order and honest activity metadata."
+  (let* ((regular
+          '(:id "regular" :type direct :title "Alice" :preview "hello"
+            :updated-at-msec "20" :muted-p t :participants nil :events nil))
+         (request
+          '(:id "request" :type direct :title "Visitor" :preview "request"
+            :updated-at-msec "21" :message-request-p t
+            :participants nil :events nil))
+         entries)
+    (cl-letf (((symbol-function 'chirp-dm--view-user-id)
+               (lambda (_view) "99")))
+      (setq
+       entries
+       (chirp-dm--project-inbox
+        :view
+        (list :type 'dm-inbox :instance 1
+              :items (list request regular)
+              :status '(:phase idle :message nil)))))
+    (should
+     (equal (mapcar #'appkit-directory-entry-key entries)
+            '((dm-inbox summary)
+              (dm-inbox recent)
+              (dm-conversation "request")
+              (dm-conversation "regular"))))
+    (should
+     (equal (appkit-directory-entry-label (car entries))
+            "2 conversations · 1 request · 1 muted"))
+    (let ((request-entry (nth 2 entries)))
+      (should-not (appkit-directory-entry-unread-p request-entry))
+      (should
+       (equal (appkit-directory-entry-section-key request-entry)
+              '(dm-inbox recent)))
+      (should (appkit-directory-entry-stamp request-entry)))))
+
+(ert-deftest chirp-dm-inbox-activity-model-labels-group-sender ()
+  "A group activity preview should identify its latest sender."
+  (let* ((alice '(:id "42" :name "Alice" :handle "alice"))
+         (self '(:id "99" :name "Me" :handle "me"))
+         (event
+          (chirp-dm-test--normalized-event "20" "20" "hello" "42"))
+         (group
+          (list :type 'group :title "Team" :preview "hello"
+                :participants (list self alice) :latest-event event))
+         preview)
+    (cl-letf (((symbol-function 'chirp-dm--view-user-id)
+               (lambda (_view) "99")))
+      (setq preview (chirp-dm--inbox-preview-model :view group)))
+    (should (equal (appkit-ui-one-line-preview-label preview) "Alice"))
+    (should (equal (appkit-ui-one-line-preview-separator preview) ":"))
+    (should (equal (appkit-ui-one-line-preview-text preview) "hello"))))
+
+(ert-deftest chirp-dm-inbox-projects-only-the-direct-peer-avatar ()
+  "A direct inbox row should use the peer avatar and retain its normalized title."
+  (let* ((self
+          '(:id "99" :name "Me"
+            :avatar-url "https://example.invalid/me.jpg"))
+         (alice
+          '(:id "42" :name "Alice"
+            :avatar-url "https://example.invalid/alice.jpg"))
+         (direct
+          (list :id "direct" :type 'direct :title "Me, Alice"
+                :participants (list self alice)))
+         (group
+          (list :id "group" :type 'group :title "Team"
+                :participants (list self alice)))
+         avatar-key
+         opened
+         requested direct-entry)
+    (cl-letf (((symbol-function 'chirp-dm--view-user-id)
+               (lambda (_view) "99"))
+              ((symbol-function 'chirp-dm--request-participant-avatar)
+               (lambda (_view participant)
+                 (push participant requested))))
+      (setq direct-entry
+            (chirp-dm--inbox-conversation-entry :view direct))
+      (setq avatar-key (chirp-dm--inbox-avatar-key :view direct))
+      (chirp-dm--inbox-conversation-entry :view group))
+    (cl-letf (((symbol-function 'chirp-dm--open-conversation)
+               (lambda (conversation &rest _options)
+                 (setq opened conversation))))
+      (chirp-dm--activate-inbox-item nil direct-entry))
+    (should (equal requested (list alice)))
+    (should (equal (appkit-directory-entry-label direct-entry) "Me, Alice"))
+    (should (equal (plist-get opened :title) "Me, Alice"))
+    (should (equal avatar-key '(xchat-avatar "42")))))
 
 (ert-deftest chirp-dm-message-time-is-localized-and-right-aligned ()
   "Message headings should put compact localized time at the right edge."
@@ -494,6 +618,7 @@
            (next (chirp-backend-envelope-next-cursor envelope)))
       (should (equal (plist-get conversation :title) "Alice"))
       (should (equal (plist-get conversation :preview) "hello from XChat"))
+      (should (equal (plist-get conversation :latest-event) event))
       (should (plist-get conversation :has-more))
       (should (equal (plist-get event :text) "hello from XChat"))
       (should (= (plist-get event :attachment-count) 1))
@@ -1015,7 +1140,10 @@
               (with-current-buffer buffer
                 (should (string-match-p "projected later" (buffer-string)))
                 (goto-char (point-min))
-                (forward-line 1)
+                (should (string-match-p
+                         "1 conversation · 0 requests · 0 muted"
+                         (buffer-string)))
+                (appkit-directory-next-item)
                 (should (equal (appkit-directory-key-at-point)
                                '(dm-conversation "conversation-1")))))))
       (chirp-stop)
@@ -1167,7 +1295,7 @@
                        '(xchat-media "conversation-1" "20" 0))))
       (let* ((rows
               (chirp-dm--project-conversation-events
-               '(:participants nil) (list image-event reply-event)))
+               nil '(:participants nil) (list image-event reply-event)))
              (reply-model
               (plist-get
                (appkit-chat-timeline-row-context (cadr rows)) :reply)))
@@ -1183,6 +1311,143 @@
       (should-not
        (chirp-dm--trusted-media-url-p
         "https://pbs.twimg.com:444/media/private.jpg")))))
+
+(ert-deftest chirp-dm-message-avatars-use-appkit-prefix-geometry ()
+  "Message rows should project participant avatars into two-line prefixes."
+  (let* ((event
+          (chirp-dm-test--normalized-event
+           "20" "20" "first line\nsecond line"))
+         (state
+          '(:participants
+            ((:id "42" :name "Alice"
+              :avatar-url "https://example.invalid/alice.jpg"))))
+         (row
+          (car (chirp-dm--project-conversation-events
+                nil state (list event))))
+         seen)
+    (should
+     (equal (appkit-chat-timeline-row-dependencies row)
+            '((xchat-avatar "42"))))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'appkit-current-view)
+                 (lambda () :view))
+                ((symbol-function 'appkit-chat-avatar-two-line-pixel-size)
+                 (lambda () 42))
+                ((symbol-function 'chirp-media-avatar-resource-image)
+                 (lambda (view resource-key pixel-size)
+                   (setq seen (list view resource-key pixel-size))
+                   :avatar-image))
+                ((symbol-function 'appkit-chat-avatar-prefixes)
+                 (lambda (image fallback &rest options)
+                   (should (eq image :avatar-image))
+                   (should (equal fallback "@"))
+                   (should (equal options
+                                  '(:pixel-size 42 :resize t)))
+                   '(:header "TOP " :first-body "BOTTOM "
+                     :rest-body "REST "))))
+        (chirp-dm--print-event-row row))
+      (should (equal seen '(:view (xchat-avatar "42") 42)))
+      (goto-char (point-min))
+      (should (equal (get-text-property (point) 'line-prefix) "TOP "))
+      (should
+       (equal
+        (get-text-property
+         0 'chirp-dm-avatar-sender-id
+         (get-text-property (point) 'line-prefix))
+        "42"))
+      (forward-line 1)
+      (should (equal (get-text-property (point) 'line-prefix) "BOTTOM "))
+      (forward-line 1)
+      (should (equal (get-text-property (point) 'line-prefix) "REST ")))))
+
+(ert-deftest chirp-dm-conversation-projection-ensures-visible-row-resources ()
+  "Timeline projection should ensure resources only for projected events."
+  (let* ((visible
+          (chirp-dm-test--normalized-event "20" "20" "visible" "42"))
+         (state
+          '(:participants
+            ((:id "42" :name "Alice"
+              :avatar-url "https://example.invalid/alice.jpg")
+             (:id "99" :name "Bob"
+              :avatar-url "https://example.invalid/bob.jpg"))))
+         participants media rows)
+    (setf (plist-get visible :attachments)
+          '((:kind image :resource-key (xchat-media "20"))
+            (:kind file :resource-key (xchat-media "ignored"))))
+    (cl-letf (((symbol-function 'chirp-dm--request-participant-avatar)
+               (lambda (view participant)
+                 (should (eq view :view))
+                 (push (plist-get participant :id) participants)))
+              ((symbol-function 'chirp-dm--request-event-media)
+               (lambda (view event)
+                 (should (eq view :view))
+                 (push (plist-get event :id) media))))
+      (setq rows
+            (chirp-dm--project-conversation-events
+             :view state (list visible))))
+    (should (equal participants '("42")))
+    (should (equal media '("20")))
+    (should
+     (equal (appkit-chat-timeline-row-dependencies (car rows))
+            '((xchat-avatar "42") (xchat-media "20"))))))
+
+(ert-deftest chirp-dm-participant-avatar-resources-redraw-dependent-rows ()
+  "Avatar completion should redraw only messages from that participant."
+  (let ((chirp--app nil)
+        buffer resource success printed)
+    (unwind-protect
+        (save-window-excursion
+          (let* ((alice
+                  (chirp-dm-test--normalized-event
+                   "20" "20" "hello" "42"))
+                 (bob
+                  (chirp-dm-test--normalized-event
+                   "21" "21" "hi" "99"))
+                 (conversation
+                  (chirp-dm-test--normalized-conversation alice bob))
+                 (printer (symbol-function 'chirp-dm--print-event-row)))
+            (setf
+             (plist-get conversation :participants)
+             '((:id "42" :name "Alice"
+                :avatar-url "https://example.invalid/alice.jpg")
+               (:id "99" :name "Bob")))
+            (cl-letf (((symbol-function 'chirp-media--prefetch-enabled-p)
+                       (lambda () t))
+                      ((symbol-function 'appkit-media-image-cache-existing-file)
+                       (lambda (_cache-base) nil))
+                      ((symbol-function 'chirp-media--valid-cache-file-p)
+                       (lambda (path)
+                         (equal path "/tmp/chirp-dm-avatar.jpg")))
+                      ((symbol-function 'appkit-media-cache-image-resource-async)
+                       (lambda (requested-resource _cache-base callback
+                                _errback &rest _options)
+                         (setq resource requested-resource
+                               success callback)
+                         nil))
+                      ((symbol-function 'chirp-dm--print-event-row)
+                       (lambda (row)
+                         (push (plist-get
+                                (appkit-chat-timeline-row-payload row) :id)
+                               printed)
+                         (funcall printer row))))
+              (setq buffer (chirp-dm--open-conversation conversation))
+              (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                     (store
+                      (appkit-app-resource-store (appkit-view-app view)))
+                     (resource-key '(xchat-avatar "42")))
+                (should (equal (alist-get 'url resource)
+                               "https://example.invalid/alice.jpg"))
+                (should (eq (plist-get (gethash resource-key store) :status)
+                            'pending))
+                (setq printed nil)
+                (funcall success "/tmp/chirp-dm-avatar.jpg")
+                (appkit-sync-invalidations view)
+                (should (eq (plist-get (gethash resource-key store) :status)
+                            'ready))
+                (should (equal printed '("20")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest chirp-dm-image-resources-use-appkit-and-row-dependencies ()
   "Verified images should use Appkit acquisition and resource invalidation."
