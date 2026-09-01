@@ -1586,8 +1586,8 @@ When PROMOTED-P is non-nil, mark the inner tweet as promoted."
               copy)
           marked)))))
 
-(defun chirp-backend--timeline-entry-tweets (entry)
-  "Return raw tweets carried directly or inside module ENTRY."
+(defun chirp-backend--timeline-entry-tweet-items (entry)
+  "Return raw tweet occurrence items carried by timeline ENTRY."
   (let* ((content (chirp-get entry "content"))
          (item-content (or (chirp-get content "itemContent")
                            (chirp-get-in entry '("item" "itemContent"))))
@@ -1595,23 +1595,29 @@ When PROMOTED-P is non-nil, mark the inner tweet as promoted."
          (promoted-p (or (chirp-get item-content "promotedMetadata")
                          (and (stringp entry-id)
                               (string-prefix-p "promoted-" entry-id))))
-         tweets)
+         items)
     (when-let* ((result (chirp-get-in item-content
                                       '("tweet_results" "result"))))
-      (push (chirp-backend--timeline-tweet result promoted-p) tweets))
+      (push (list :entry-id entry-id
+                  :tweet (chirp-backend--timeline-tweet result promoted-p))
+            items))
     (dolist (nested (chirp-get content "items"))
       (when-let* ((nested-content (chirp-get-in nested
                                                 '("item" "itemContent")))
                   (result (chirp-get-in nested-content
                                         '("tweet_results" "result"))))
-        (push (chirp-backend--timeline-tweet
-               result
-               (or (chirp-get nested-content "promotedMetadata")
-                   (let ((nested-id (chirp-get nested "entryId")))
-                     (and (stringp nested-id)
-                          (string-prefix-p "promoted-" nested-id)))))
-              tweets)))
-    (nreverse tweets)))
+        (let ((nested-id (chirp-get nested "entryId")))
+          (push
+           (list
+            :entry-id (or nested-id entry-id)
+            :tweet
+            (chirp-backend--timeline-tweet
+             result
+             (or (chirp-get nested-content "promotedMetadata")
+                 (and (stringp nested-id)
+                      (string-prefix-p "promoted-" nested-id)))))
+           items))))
+    (nreverse items)))
 
 (defun chirp-backend--timeline-entries (instructions)
   "Return flat timeline entries and module items from INSTRUCTIONS."
@@ -1643,9 +1649,37 @@ Chirp pagination envelope."
     (unless (and timeline (listp instructions))
       (error "X did not return %s" label))
     (let* ((entries (chirp-backend--timeline-entries instructions))
-           (raw-tweets (cl-mapcan #'chirp-backend--timeline-entry-tweets
-                                  entries))
-           (tweets (chirp--top-level-tweets-from-x raw-tweets))
+           (pinned-entries
+            (cl-loop for instruction in instructions
+                     when (equal (chirp-get instruction "type")
+                                 "TimelinePinEntry")
+                     when (chirp-get instruction "entry")
+                     collect it))
+           (tweet-items
+            (cl-loop for entry in entries
+                     for context = (and (memq entry pinned-entries) 'pinned)
+                     append
+                     (cl-loop
+                      for item in
+                      (chirp-backend--timeline-entry-tweet-items entry)
+                      collect
+                      (if context
+                          (plist-put item :timeline-context context)
+                        item))))
+           (tweets
+            (cl-loop for item in tweet-items
+                     for tweet =
+                     (car (chirp--top-level-tweets-from-x
+                           (list (plist-get item :tweet))))
+                     when tweet
+                     collect
+                     (let ((entry-id (plist-get item :entry-id))
+                           (context (plist-get item :timeline-context)))
+                       (when entry-id
+                         (plist-put tweet :timeline-entry-id entry-id))
+                       (when context
+                         (plist-put tweet :timeline-context context))
+                       tweet)))
            (cursor (chirp-backend--timeline-next-cursor entries))
            (envelope (and cursor
                           `(("pagination" . (("nextCursor" . ,cursor)))))))
@@ -1664,8 +1698,10 @@ Chirp pagination envelope."
     (unless (and timeline (listp instructions))
       (error "X did not return tweet edit history"))
     (let* ((entries (chirp-backend--timeline-entries instructions))
-           (raw-tweets
-            (cl-mapcan #'chirp-backend--timeline-entry-tweets entries))
+           (tweet-items
+            (cl-mapcan #'chirp-backend--timeline-entry-tweet-items entries))
+           (raw-tweets (mapcar (lambda (item) (plist-get item :tweet))
+                               tweet-items))
            (tweets (chirp--top-level-tweets-from-x raw-tweets)))
       (unless tweets
         (error "X returned tweet edit history Chirp could not parse"))

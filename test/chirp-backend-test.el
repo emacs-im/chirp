@@ -22,13 +22,17 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     `(("entryId" . "tweet-1")
       ("content" . (("itemContent" . ,item))))))
 
-(defun chirp-backend-test--module-entry (tweet)
-  "Return one nested timeline module entry carrying TWEET."
+(defun chirp-backend-test--module-entry (tweet &optional nested-entry-id)
+  "Return one nested timeline module entry carrying TWEET.
+
+NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
   (let ((item-content `(("tweet_results" . (("result" . ,tweet))))))
     `(("entryId" . "conversation-thread-1")
       ("content" .
        (("items" .
-         ((("item" . (("itemContent" . ,item-content)))))))))))
+         ((("entryId" .
+            ,(or nested-entry-id "conversation-thread-1-tweet-1"))
+           ("item" . (("itemContent" . ,item-content)))))))))))
 
 (defun chirp-backend-test--module-item (tweet)
   "Return one instruction-level module item carrying TWEET."
@@ -320,7 +324,7 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
     (should (equal (alist-get "cursor" variables nil nil #'string=)
                    "cursor-prev"))
     (should (equal (length raw-tweets) 1))
-    (should (equal tweets '((:id "1"))))
+    (should (equal tweets '((:id "1" :timeline-entry-id "tweet-1"))))
     (should (equal next-cursor "cursor-next"))))
 
 (ert-deftest chirp-backend-timeline-preserves-reply-control-envelope ()
@@ -445,6 +449,43 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
                 payload '(("data" "timeline")) 10 "the test timeline")))
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) (car page))
                    '("1" "2")))))
+
+(ert-deftest chirp-backend-timeline-preserves-pinned-tweet-in-module ()
+  "Timeline adaptation should preserve distinct occurrences of one tweet."
+  (let* ((tweet-id "2094737512484970656")
+         (nested-entry-id
+          "profile-conversation-2094846962946801665-tweet-2094737512484970656")
+         (raw
+          `(("rest_id" . ,tweet-id)
+            ("legacy" . (("full_text" . "Pinned and nested")))))
+         (pinned-entry (chirp-backend-test--timeline-entry raw))
+         (conversation-entry
+          (chirp-backend-test--module-entry raw nested-entry-id))
+         (instructions
+          (list
+           (list '("type" . "TimelinePinEntry")
+                 (cons "entry" pinned-entry))
+           (list '("type" . "TimelineAddEntries")
+                 (cons "entries" (list conversation-entry)))))
+         (payload
+          (chirp-backend-test--payload-at-path
+           '("data" "timeline")
+           (list (cons "instructions" instructions))))
+         (tweets
+          (car (chirp-backend--timeline-page
+                payload '(("data" "timeline")) 10 "the test timeline"))))
+    (should (equal (mapcar (lambda (tweet) (plist-get tweet :id)) tweets)
+                   (list tweet-id tweet-id)))
+    (should
+     (equal (mapcar (lambda (tweet)
+                      (plist-get tweet :timeline-entry-id))
+                    tweets)
+            (list "tweet-1" nested-entry-id)))
+    (should
+     (equal (mapcar (lambda (tweet)
+                      (plist-get tweet :timeline-context))
+                    tweets)
+            '(pinned nil)))))
 
 (ert-deftest chirp-backend-simple-mutations-map-to-direct-x-operations ()
   "Simple state and delete actions should map directly to X mutations."

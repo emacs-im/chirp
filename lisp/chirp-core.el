@@ -674,7 +674,10 @@ current line metrics."
     (if (and tweet-id (buffer-live-p target))
         (if-let* ((view (chirp--live-projection-view target)))
             (appkit-request-sync
-             view :entry (list 'tweet tweet-id) :position t
+             view
+             :entry (list 'tweet tweet-id)
+             :resource (list 'tweet tweet-id)
+             :position t
              :delay (or delay chirp-rerender-idle-delay))
           (chirp-request-rerender target delay))
       (chirp-request-rerender target delay))))
