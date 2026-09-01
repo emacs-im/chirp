@@ -17,9 +17,19 @@
 (require 'chirp-x)
 (require 'chirp-xchat)
 (require 'chirp-url)
-
 (declare-function chirp-xchat-native-prepare-text
-                  "chirp-xchat-native" (conversation-id text))
+                  "chirp-xchat-native" (conversation-id text &optional attachments))
+(declare-function chirp-xchat-native-prepare-reply
+                  "chirp-xchat-native"
+                  (conversation-id text target-event key-events
+                                   &optional attachments))
+(declare-function chirp-xchat-native-prepare-reaction
+                  "chirp-xchat-native"
+                  (conversation-id target-event emoji remove-p))
+(declare-function chirp-xchat-native-prepare-media-file
+                  "chirp-xchat-native" (conversation-id file))
+(declare-function chirp-xchat-native-release-media-stage
+                  "chirp-xchat-native" (stage-id))
 
 ;;; Options
 
@@ -1388,13 +1398,12 @@ failures, and OWNER owns the request lifecycle."
        conversation-id media-hash callback
        :errback error-fn :owner owner)))))
 
-(cl-defun chirp-backend-dm-send-text
-    (conversation-id text callback &key errback owner)
-  "Encrypt and send TEXT to XChat CONVERSATION-ID, then call CALLBACK.
+(cl-defun chirp-backend--dm-send-prepared
+    (conversation-id prepare callback &key errback owner)
+  "Send CONVERSATION-ID's native PREPARE payload and call CALLBACK.
 
-The current Chirp session supplies the authenticated sender identity.  ERRBACK
-handles preflight, transport, or acknowledgement failures, and OWNER owns the
-single non-retrying write.  CALLBACK receives the acknowledged normalized
+ERRBACK handles preflight, transport, or acknowledgement failures.  OWNER owns
+the single non-retrying write.  CALLBACK receives the acknowledged normalized
 event and a nil envelope."
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
          (sender-id
@@ -1406,17 +1415,11 @@ event and a nil envelope."
      ((not (and (stringp sender-id)
                 (string-match-p "\\`[0-9]+\\'" sender-id)))
       (funcall error-fn "XChat sender identity is unavailable"))
-     ((not (and (stringp text)
-                (not (string-empty-p (string-trim text)))
-                (<= (string-bytes text) (* 16 1024))))
-      (funcall error-fn
-               "XChat message must contain between 1 and 16384 UTF-8 bytes"))
      (t
       (require 'chirp-xchat-native)
       (let (prepared variables preflight-error)
         (condition-case err
-            (setq prepared
-                  (chirp-xchat-native-prepare-text conversation-id text)
+            (setq prepared (funcall prepare)
                   variables
                   (chirp-xchat-send-variables conversation-id prepared))
           (error
@@ -1444,6 +1447,245 @@ event and a nil envelope."
                  (funcall callback event nil))))
            :errback error-fn
            :owner owner)))))))
+
+(defun chirp-backend--dm-valid-text-p (text)
+  "Return non-nil when TEXT fits one XChat message."
+  (and (stringp text)
+       (not (string-empty-p (string-trim text)))
+       (<= (string-bytes text) (* 16 1024))))
+
+(cl-defun chirp-backend-dm-send-text
+    (conversation-id text callback &key errback owner)
+  "Encrypt and send TEXT to XChat CONVERSATION-ID, then call CALLBACK."
+  (if (not (chirp-backend--dm-valid-text-p text))
+      (funcall (or errback (lambda (message) (message "%s" message)))
+               "XChat message must contain between 1 and 16384 UTF-8 bytes")
+    (chirp-backend--dm-send-prepared
+     conversation-id
+     (lambda ()
+       (chirp-xchat-native-prepare-text conversation-id text))
+     callback :errback errback :owner owner)))
+
+(cl-defun chirp-backend-dm-send-reply
+    (conversation-id text target-event key-events callback &key errback owner)
+  "Encrypt and send TEXT replying to TARGET-EVENT in CONVERSATION-ID.
+
+KEY-EVENTS carries bounded raw conversation-key events required to validate an
+older target.  CALLBACK, ERRBACK, and OWNER follow
+`chirp-backend-dm-send-text'."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (cond
+     ((not (chirp-backend--dm-valid-text-p text))
+      (funcall error-fn
+               "XChat reply must contain between 1 and 16384 UTF-8 bytes"))
+     ((not (and (stringp target-event)
+                (not (string-empty-p target-event))))
+      (funcall error-fn "XChat reply target event is unavailable"))
+     ((not (and (listp key-events)
+                (<= (length key-events) 64)
+                (cl-every #'stringp key-events)))
+      (funcall error-fn "XChat reply key history is invalid"))
+     (t
+      (chirp-backend--dm-send-prepared
+       conversation-id
+       (lambda ()
+         (chirp-xchat-native-prepare-reply
+          conversation-id text target-event key-events))
+       callback :errback errback :owner owner)))))
+
+(cl-defun chirp-backend-dm-send-attachments
+    (conversation-id text attachments callback
+                     &key target-event key-events errback owner progress)
+  "Encrypt, upload, and send typed ATTACHMENTS with TEXT to CONVERSATION-ID.
+
+Each attachment supplies `:path' and `:attachment-kind'.  TARGET-EVENT and
+KEY-EVENTS select reply semantics.  CALLBACK receives the acknowledged
+normalized event and a nil envelope.  ERRBACK and OWNER own the complete
+staged-media, upload, and non-retrying send lifecycle.  PROGRESS receives
+upload phase plists."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message))))
+        (attachment-count (and (listp attachments) (length attachments)))
+        stages workflow-handle settled-p)
+    (cl-labels
+        ((release-stages
+           ()
+           (dolist (stage stages)
+             (when-let* ((stage-id (plist-get stage :stage-id)))
+               (ignore-errors
+                 (chirp-xchat-native-release-media-stage stage-id))))
+           (setq stages nil))
+         (retire-workflow
+           ()
+           (when (and (appkit-handle-p workflow-handle)
+                      (appkit-handle-alive-p workflow-handle))
+             (appkit-retire-handle workflow-handle)
+             (setq workflow-handle nil)))
+         (fail
+           (message)
+           (unless settled-p
+             (setq settled-p t)
+             (release-stages)
+             (retire-workflow)
+             (funcall error-fn message)))
+         (finish-send
+           (uploaded)
+           (unless settled-p
+             (release-stages)
+             (retire-workflow)
+             (let ((prepare
+                    (if target-event
+                        (lambda ()
+                          (chirp-xchat-native-prepare-reply
+                           conversation-id text target-event key-events
+                           uploaded))
+                      (lambda ()
+                        (chirp-xchat-native-prepare-text
+                         conversation-id text uploaded)))))
+               (chirp-backend--dm-send-prepared
+                conversation-id prepare
+                (lambda (event envelope)
+                  (unless settled-p
+                    (setq settled-p t)
+                    (funcall callback event envelope)))
+                :errback #'fail :owner owner))))
+         (upload-next
+           (remaining uploaded index)
+           (unless settled-p
+             (if (null remaining)
+                 (finish-send (nreverse uploaded))
+               (let ((stage (car remaining)))
+                 (chirp-x-upload-chat-media
+                  conversation-id
+                  (plist-get stage :encrypted-file)
+                  (plist-get stage :encrypted-bytes)
+                  (lambda (media-hash)
+                    (when-let* ((stage-id (plist-get stage :stage-id)))
+                      (ignore-errors
+                        (chirp-xchat-native-release-media-stage stage-id))
+                      (setq stages (delq stage stages)))
+                    (upload-next
+                     (cdr remaining)
+                     (cons
+                      (list :media-hash-key media-hash
+                            :width (plist-get stage :width)
+                            :height (plist-get stage :height)
+                            :plaintext-bytes
+                            (plist-get stage :plaintext-bytes)
+                            :key-version (plist-get stage :key-version)
+                            :filename (plist-get stage :filename)
+                            :media-type (plist-get stage :media-type))
+                      uploaded)
+                     (1+ index)))
+                  :errback #'fail
+                  :owner owner
+                  :progress
+                  (and progress
+                       (lambda (event)
+                         (funcall
+                          progress
+                          (append
+                           (list :attachment-index (1+ index)
+                                 :attachment-count attachment-count)
+                           event))))))))))
+      (condition-case err
+          (progn
+            (unless (functionp callback)
+              (error "XChat attachment callback is not callable"))
+            (unless (functionp error-fn)
+              (error "XChat attachment error callback is not callable"))
+            (unless
+                (and (listp attachments)
+                     (<= 1 (length attachments) 10)
+                     (cl-every
+                      (lambda (attachment)
+                        (let ((file (plist-get attachment :path))
+                              (kind (plist-get attachment :attachment-kind)))
+                          (and (listp attachment)
+                               (memq kind '(photo video audio file gif))
+                               (stringp file)
+                               (file-regular-p file)
+                               (file-readable-p file))))
+                      attachments))
+              (error "XChat attachments must be 1 to 10 typed readable files"))
+            (unless (and (stringp text)
+                         (<= (string-bytes text) (* 16 1024))
+                         (or (not (string-empty-p (string-trim text)))
+                             attachments))
+              (error "XChat attachment caption is invalid"))
+            (when target-event
+              (unless (and (stringp target-event)
+                           (not (string-empty-p target-event))
+                           (listp key-events)
+                           (<= (length key-events) 64)
+                           (cl-every #'stringp key-events))
+                (error "XChat attachment reply target is invalid")))
+            (require 'chirp-xchat-native)
+            (dolist (attachment attachments)
+              (let* ((kind (plist-get attachment :attachment-kind))
+                     (stage
+                      (append
+                       (chirp-xchat-native-prepare-media-file
+                        conversation-id (plist-get attachment :path))
+                       (list :attachment-kind kind))))
+                (push stage stages)
+                (let ((actual (plist-get stage :media-type))
+                      (expected
+                       (pcase kind
+                         ('photo 1)
+                         ('gif 2)
+                         ('video 3)
+                         ('audio 4)
+                         ('file 5))))
+                  (unless (or (eq kind 'file) (= actual expected))
+                    (error
+                     "XChat %s attachment content does not match the selected type"
+                     kind))
+                  (setf (plist-get stage :media-type) expected))))
+            (setq stages (nreverse stages))
+            (when (and (> (length stages) 1)
+                       (cl-some
+                        (lambda (stage)
+                          (not (memq (plist-get stage :media-type) '(1 2 3))))
+                        stages))
+              (error
+               "Multiple XChat attachments must all be images, GIFs, or videos"))
+            (setq workflow-handle
+                  (appkit-register-handle
+                   (or owner (chirp-app)) 'function
+                   (lambda () (fail "XChat attachment send was canceled"))))
+            (upload-next stages nil 0))
+        ((error quit)
+         (let ((message (error-message-string err)))
+           (fail message)
+           (when (eq (car err) 'quit)
+             (signal (car err) (cdr err))))
+         nil)))))
+
+(cl-defun chirp-backend-dm-send-reaction
+    (conversation-id target-event emoji remove-p callback &key errback owner)
+  "Add or remove EMOJI on TARGET-EVENT in XChat CONVERSATION-ID.
+
+REMOVE-P selects removal.  CALLBACK, ERRBACK, and OWNER follow
+`chirp-backend-dm-send-text'."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (cond
+     ((not (and (stringp target-event)
+                (not (string-empty-p target-event))))
+      (funcall error-fn "XChat reaction target event is unavailable"))
+     ((not (and (stringp emoji)
+                (not (string-empty-p (string-trim emoji)))
+                (<= (string-bytes emoji) 256)
+                (not (string-match-p "[[:cntrl:]]" emoji))))
+      (funcall error-fn "XChat reaction emoji is invalid"))
+     ((not (memq remove-p '(nil t)))
+      (funcall error-fn "XChat reaction operation is invalid"))
+     (t
+      (chirp-backend--dm-send-prepared
+       conversation-id
+       (lambda ()
+         (chirp-xchat-native-prepare-reaction
+          conversation-id target-event emoji remove-p))
+       callback :errback errback :owner owner)))))
 
 (cl-defun chirp-backend-dm-inbox
     (callback &key cursor (max-results 20) errback owner)

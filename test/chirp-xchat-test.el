@@ -595,6 +595,259 @@
             (should (string-prefix-p "X write outcome is unknown" failure))))
       (chirp-stop))))
 
+(ert-deftest chirp-backend-xchat-reply-and-reaction-share-acknowledged-write ()
+  "Replies and reactions should prepare once and settle only from X's ack."
+  (let ((chirp--app nil)
+        prepared writes acknowledged)
+    (unwind-protect
+        (progn
+          (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+          (cl-letf
+              (((symbol-function 'chirp-xchat-native-prepare-reply)
+                (lambda (conversation-id text target-event key-events)
+                  (push (list 'reply conversation-id text target-event key-events)
+                        prepared)
+                  '(:message-id "01234567-89ab-cdef-0123-456789abcdef"
+                    :encoded-message-create-event "cmVwbHk="
+                    :encoded-message-event-signature "c2ln")))
+               ((symbol-function 'chirp-xchat-native-prepare-reaction)
+                (lambda (conversation-id target-event emoji remove-p)
+                  (push (list 'reaction conversation-id target-event
+                              emoji remove-p)
+                        prepared)
+                  '(:message-id "fedcba98-7654-3210-fedc-ba9876543210"
+                    :encoded-message-create-event "cmVhY3Rpb24="
+                    :encoded-message-event-signature "c2ln")))
+               ((symbol-function 'chirp-x-graphql-request)
+                (lambda (_operation variables callback &rest _options)
+                  (let* ((message-id
+                          (cdr (assoc "message_id" variables)))
+                         (encoded
+                          (chirp-dm-test--event
+                           :sequence
+                           (if (string-prefix-p "0123" message-id) "30" "31")
+                           :message-id message-id
+                           :sender-id "42"
+                           :conversation-id "42:99"
+                           :text "ack"
+                           :key-version "1")))
+                    (push variables writes)
+                    (funcall
+                     callback
+                     `(("data" .
+                        (("xchat_send_create_message_event" .
+                          (("__typename" .
+                            "XChatSendMessageCreateEventResponse")
+                           ("encoded_message_event" . ,encoded))))))))
+                  'request)))
+            (chirp-backend-dm-send-reply
+             "42-99" "reply" "dGFyZ2V0" '("a2V5")
+             (lambda (event _envelope) (push event acknowledged)))
+            (chirp-backend-dm-send-reaction
+             "42-99" "dGFyZ2V0" "🔥" t
+             (lambda (event _envelope) (push event acknowledged)))))
+      (chirp-stop))
+    (should
+     (equal
+      (nreverse prepared)
+      '((reply "42-99" "reply" "dGFyZ2V0" ("a2V5"))
+        (reaction "42-99" "dGFyZ2V0" "🔥" t))))
+    (should (= (length writes) 2))
+    (should (= (length acknowledged) 2))))
+
+(ert-deftest chirp-backend-xchat-typed-attachment-binds-upload-and-ack ()
+  "A typed file should upload once, preserve file semantics, and require ack."
+  (let ((chirp--app nil)
+        (file (make-temp-file "chirp-xchat-file-" nil ".jpg" "ciphertext"))
+        released prepared acknowledged failure uploads)
+    (unwind-protect
+        (progn
+          (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+          (cl-letf
+              (((symbol-function 'chirp-xchat-native-prepare-media-file)
+                (lambda (conversation-id source)
+                  (should (equal conversation-id "42-99"))
+                  (should (equal source file))
+                  (list :stage-id 7
+                        :encrypted-file file
+                        :encrypted-bytes
+                        (file-attribute-size (file-attributes file))
+                        :plaintext-bytes 4
+                        :filename "photo.jpg"
+                        :mime-type "image/jpeg"
+                        :media-type 1
+                        :key-version "7"
+                        :width 40
+                        :height 20)))
+               ((symbol-function 'chirp-xchat-native-release-media-stage)
+                (lambda (stage-id)
+                  (push stage-id released)
+                  t))
+               ((symbol-function 'chirp-x-upload-chat-media)
+                (lambda (conversation-id source size callback &rest _options)
+                  (push (list conversation-id source size) uploads)
+                  (funcall callback "media-hash")
+                  'upload-request))
+               ((symbol-function 'chirp-xchat-native-prepare-text)
+                (lambda (conversation-id text &optional attachments)
+                  (setq prepared (list conversation-id text attachments))
+                  '(:message-id "01234567-89ab-cdef-0123-456789abcdef"
+                    :encoded-message-create-event "YXR0YWNobWVudA=="
+                    :encoded-message-event-signature "c2ln")))
+               ((symbol-function 'chirp-x-graphql-request)
+                (lambda (_operation variables callback &rest _options)
+                  (let ((encoded
+                         (chirp-dm-test--event
+                          :sequence "30"
+                          :message-id
+                          (cdr (assoc "message_id" variables))
+                          :sender-id "42"
+                          :conversation-id "42:99"
+                          :text ""
+                          :key-version "1"
+                          :attachment-count 1)))
+                    (funcall
+                     callback
+                     `(("data" .
+                        (("xchat_send_create_message_event" .
+                          (("__typename" .
+                            "XChatSendMessageCreateEventResponse")
+                           ("encoded_message_event" . ,encoded))))))))
+                  'send-request)))
+            (chirp-backend-dm-send-attachments
+             "42-99" ""
+             (list (list :path file :attachment-kind 'file))
+             (lambda (event _envelope) (setq acknowledged event))
+             :errback (lambda (message) (setq failure message)))
+            (should-not failure)
+            (should acknowledged)
+            (should (= (length uploads) 1))
+            (should (equal released '(7)))
+            (should (equal (car prepared) "42-99"))
+            (should (equal (cadr prepared) ""))
+            (let ((attachment (car (caddr prepared))))
+              (should (equal (plist-get attachment :media-hash-key)
+                             "media-hash"))
+              (should (equal (plist-get attachment :key-version) "7"))
+              (should (= (plist-get attachment :media-type) 5))
+              (should (= (plist-get attachment :width) 40))
+              (should (= (plist-get attachment :height) 20)))))
+      (chirp-stop)
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest chirp-backend-xchat-attachment-rejects-content-kind-mismatch ()
+  "Typed media should fail before upload when bytes do not match its kind."
+  (let ((chirp--app nil)
+        (file (make-temp-file "chirp-xchat-photo-" nil ".jpg" "video"))
+        released uploaded failure)
+    (unwind-protect
+        (progn
+          (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+          (cl-letf
+              (((symbol-function 'chirp-xchat-native-prepare-media-file)
+                (lambda (_conversation-id _source)
+                  (list :stage-id 9
+                        :encrypted-file file
+                        :encrypted-bytes
+                        (file-attribute-size (file-attributes file))
+                        :plaintext-bytes 5
+                        :filename "wrong.jpg"
+                        :mime-type "video/mp4"
+                        :media-type 3
+                        :key-version "7"
+                        :width 0
+                        :height 0)))
+               ((symbol-function 'chirp-xchat-native-release-media-stage)
+                (lambda (stage-id)
+                  (push stage-id released)
+                  t))
+               ((symbol-function 'chirp-x-upload-chat-media)
+                (lambda (&rest _args) (setq uploaded t))))
+            (chirp-backend-dm-send-attachments
+             "42-99" "caption"
+             (list (list :path file :attachment-kind 'photo))
+             #'ignore
+             :errback (lambda (message) (setq failure message)))
+            (should (string-match-p "does not match" failure))
+            (should-not uploaded)
+            (should (equal released '(9)))))
+      (chirp-stop)
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest chirp-xchat-media-upload-uses-official-three-step-api ()
+  "Encrypted media should initialize, append bounded parts, and finalize once."
+  (let ((chirp--app nil)
+        (file (make-temp-file "chirp-xchat-upload-"))
+        requests media-hash failure)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (set-buffer-multibyte nil)
+            (insert (make-string (+ (* 3 1024 1024) 7) ?x)))
+          (let ((size (file-attribute-size (file-attributes file))))
+            (cl-letf
+                (((symbol-function 'chirp-x--request)
+                  (lambda (url method callback &rest options)
+                    (let ((data
+                           (json-parse-string
+                            (plist-get options :data)
+                            :object-type 'alist
+                            :array-type 'list
+                            :null-object nil
+                            :false-object :json-false)))
+                      (push (list url method data) requests)
+                      (cond
+                       ((string-suffix-p "/initialize" url)
+                        (funcall
+                         callback
+                         '(("data" .
+                            (("session_id" . "123")
+                             ("media_hash_key" . "media_hash"))))))
+                       ((string-suffix-p "/append" url)
+                        (funcall callback '(("data" . (("expires_at" . 1))))))
+                       ((string-suffix-p "/finalize" url)
+                        (funcall callback '(("data" . (("success" . t)))))))
+                      'request))))
+              (chirp-x-upload-chat-media
+               "42:99" file size
+               (lambda (value) (setq media-hash value))
+               :errback (lambda (message) (setq failure message))
+               :owner (chirp-app))))
+          (setq requests (nreverse requests))
+          (should-not failure)
+          (should (equal media-hash "media_hash"))
+          (should (= (length requests) 4))
+          (let ((initialize (nth 0 requests))
+                (first-part (nth 1 requests))
+                (second-part (nth 2 requests))
+                (finalize (nth 3 requests)))
+            (should
+             (string-suffix-p
+              "/2/chat/media/upload/initialize" (car initialize)))
+            (should (eq (cadr initialize) 'post))
+            (should
+             (= (alist-get 'total_bytes (caddr initialize))
+                (+ (* 3 1024 1024) 7)))
+            (should (= (alist-get 'segment_index (caddr first-part)) 0))
+            (should
+             (= (length
+                 (base64-decode-string
+                  (alist-get 'media (caddr first-part))))
+                (* 3 1024 1024)))
+            (should (= (alist-get 'segment_index (caddr second-part)) 1))
+            (should
+             (= (length
+                 (base64-decode-string
+                  (alist-get 'media (caddr second-part))))
+                7))
+            (should
+             (equal (alist-get 'num_parts (caddr finalize)) "2"))))
+      (chirp-stop)
+      (when (file-exists-p file)
+        (delete-file file)))))
+
 (ert-deftest chirp-xchat-send-acknowledgement-binds-message-and-participants ()
   "A send acknowledgement should match its message, sender, and conversation."
   (let* ((message-id "01234567-89ab-cdef-0123-456789abcdef")

@@ -63,15 +63,42 @@ To route those links from ~browse-url~:
              (cons chirp-url-browse-regexp #'chirp-open-url))
 #+end_src
 
-~M-x chirp-direct-messages~ requires one user-confirmed XChat unlock.  Its recent-conversation inbox shows participant avatars, latest-message previews, compact local times, and request or muted status trails; ~RET~ or mouse-1 opens the current row.
+* Direct messages
 
-While the Chirp application remains active, one Appkit-owned XChat websocket receives bounded binary events, updates canonical conversations and open inboxes immediately, decrypts new messages for open conversations, sends the official keepalive, and reconnects after transport closure without retrying writes.
+** Session and synchronization
 
-Conversations decode signature-verified plain text through Appkit's semantic markup codec, and the composer encodes the same plain codec before native encryption.  Verified reaction additions and removals update compact Appkit chips beneath their exact target message instead of becoming separate conversation rows; reactions selected by the current account use a distinct blue chosen style.
+~M-x chirp-direct-messages~ performs one user-confirmed XChat unlock, then opens a recent-conversation inbox with participant avatars, latest-message previews, compact local times, and request or muted status trails.  ~RET~ or mouse-1 opens the current row.  ~M-x chirp-dm-cancel-unlock~ cancels active recovery and reports an uncertain outcome.
 
-Chirp downloads encrypted attachment blobs from X's cookie-authenticated TON media service and decrypts each with the exact verified conversation-key version carried by its message.  Images, GIFs, and SVGs render inline; downloaded videos, audio, and files become native Emacs actions; attached posts render as actionable Chirp tweet cards; other links remain explicit URL actions.  Decrypted attachments are stored in ~chirp-cache-directory~ like other Chirp media, so protect or clear that directory according to the local machine's confidentiality requirements.
+While the Chirp application remains active, one Appkit-owned XChat websocket receives bounded binary events, updates canonical conversations and open inboxes immediately, decrypts new messages for open conversations, sends the official keepalive, and reconnects after transport closure without retrying writes.  Conversation facts are shared across fresh views; each buffer keeps its own history window, position, reply context, and draft.
 
-Direct-message reads never send read acknowledgments.  Sends are never retried or inserted optimistically.
+** Message interactions
+
+Conversations decode signature-verified plain text through Appkit's semantic markup codec, and the composer encodes the same plain codec before native encryption.  Verified reactions appear as compact chips beneath their exact target message instead of becoming separate rows; the current account's reactions use a distinct blue chosen style.  Replies keep a view-local Appkit context card above the composer.
+
+| Key | Action |
+|-----+--------|
+| ~RET~ / mouse-1 | activate an attachment or embedded post; otherwise move to the composer |
+| ~r~ | reply to the message at point |
+| ~!~ | add or remove a prompted reaction |
+| ~N~ | fetch older message history.  Evil: ~g n~ |
+| ~i~ | move to the composer and enter Evil insert state |
+| ~C-c C-a~ | open the typed photo, GIF, video, audio, or file selector |
+| ~C-c C-f~ | attach a document directly |
+| ~C-c C-k~ | cancel the current reply context |
+| ~RET~ in composer | send the captured draft |
+| ~C-u RET~ | insert a composer newline |
+| ~C-c C-c~ | send the captured draft |
+| ~M-p~ / ~M-n~ | previous or next sent input |
+
+** Attachments
+
+Incoming encrypted attachment blobs are downloaded from X's cookie-authenticated TON media service and decrypted with the exact verified conversation-key version carried by their message.  Images, GIFs, and SVGs render inline; downloaded videos, audio, and files become native Emacs actions; attached posts render as actionable Chirp tweet cards; other links remain explicit URL actions.  Decrypted attachments are stored in ~chirp-cache-directory~ like other Chirp media, so protect or clear that directory according to the local machine's confidentiality requirements.
+
+Outgoing photo and GIF objects retain inline previews, while video, audio, and file objects use distinct typed cards.  The selected kind is part of the immutable Appkit capture: native byte detection validates photo, video, audio, and GIF choices, while ~file~ deliberately sends any selected content as a document.  Chirp encrypts local media inside the native session, pins the enclosing message to the same verified conversation-key version, uploads only temporary ciphertext through X's official three-step Chat media API, and removes native staging files on success, failure, or cancellation.
+
+** Delivery guarantees
+
+Direct-message reads never send read acknowledgments.  Text, replies, reactions, and attachments are never retried or inserted optimistically.  Reply context and every composer object remain until X returns a validated acknowledgement.
 
 * Keys
 
@@ -95,10 +122,6 @@ Direct-message reads never send read acknowledgments.  Sends are never retried o
 | ~x T~ | translate the tweet |
 | ~o~ | open in a browser.  Evil: ~g o~ |
 
-In an XChat conversation, ~RET~ activates an attachment or embedded-post action at point; elsewhere on the timeline it moves to the composer.  Evil users can use ~i~ to move there and enter insert state.  ~RET~ in the composer sends, ~C-u RET~ inserts a newline, and ~C-c C-c~ sends.  ~M-p~ and ~M-n~ walk sent-input history.
-
-~M-x chirp-dm-cancel-unlock~ cancels an active recovery and reports
-an uncertain outcome.
 
 ** Compose
 

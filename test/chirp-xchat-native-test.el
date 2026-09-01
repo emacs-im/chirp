@@ -28,6 +28,10 @@
                   "chirp-xchat-native-module" (session input-json))
 (declare-function chirp-xchat-native-encrypt-text
                   "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-encrypt-reply
+                  "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-encrypt-reaction
+                  "chirp-xchat-native-module" (session input-json))
 (declare-function chirp-xchat-native-recovery-start
                   "chirp-xchat-native-module"
                   (session epoch pin input-json))
@@ -237,6 +241,48 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
          "conversation-1" "7" ciphertext)
         plaintext)))))
 
+(ert-deftest chirp-xchat-native-media-staging-wrapper-is-key-pinned ()
+  "Outgoing staging metadata should retain its exact verified key version."
+  (let ((file (make-temp-file "chirp-xchat-stage-" nil nil "cipher"))
+        captured released)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'chirp-xchat-native--session)
+              (lambda () 'session))
+             ((symbol-function 'chirp-xchat-native-prepare-media)
+              (lambda (session input-json)
+                (should (eq session 'session))
+                (setq captured
+                      (json-parse-string input-json :object-type 'alist))
+                (json-encode
+                 `(("stage_id" . 17)
+                   ("encrypted_file" . ,file)
+                   ("encrypted_bytes" . 6)
+                   ("plaintext_bytes" . 4)
+                   ("key_version" . "7")
+                   ("filename" . "photo.jpg")
+                   ("mime_type" . "image/jpeg")
+                   ("media_type" . 1)
+                   ("width" . 40)
+                   ("height" . 20)))))
+             ((symbol-function 'chirp-xchat-native-release-media)
+              (lambda (session stage-id)
+                (setq released (list session stage-id))
+                t)))
+          (let ((stage
+                 (chirp-xchat-native-prepare-media-file
+                  "conversation-1" file)))
+            (should (equal (plist-get stage :key-version) "7"))
+            (should (equal (plist-get stage :encrypted-file) file))
+            (should
+             (equal (alist-get 'conversation_id captured)
+                    "conversation-1"))
+            (should (chirp-xchat-native-release-media-stage
+                     (plist-get stage :stage-id)))
+            (should (equal released '(session 17)))))
+      (when (file-exists-p file)
+        (delete-file file)))))
+
 (ert-deftest chirp-xchat-native-loader-requires-explicit-readable-file ()
   (skip-when (featurep 'chirp-xchat-native-module))
   (dolist (file
@@ -250,8 +296,12 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
   (skip-unless (chirp-xchat-native-test--load))
   (should (module-function-p (symbol-function 'chirp-xchat-native-version)))
   (should (equal (chirp-xchat-native-version)
-                 "0.2.4/chat-xdk-0.4.3"))
+                 "0.2.5/chat-xdk-0.4.3"))
   (dolist (function '(chirp-xchat-native-encrypt-text
+                      chirp-xchat-native-encrypt-reply
+                      chirp-xchat-native-encrypt-reaction
+                      chirp-xchat-native-prepare-media
+                      chirp-xchat-native-release-media
                       chirp-xchat-native-decrypt-media
                       chirp-xchat-native-recovery-start
                       chirp-xchat-native-recovery-poll
@@ -307,7 +357,8 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
 
 (ert-deftest chirp-xchat-native-decrypts-and-prepares-official-vector ()
   (skip-unless (chirp-xchat-native-test--load))
-  (let ((session (chirp-xchat-native-session-create))
+  (let ((fixture (chirp-xchat-native-test--fixture))
+        (session (chirp-xchat-native-session-create))
         input-json output-json)
     (unwind-protect
         (let* ((json (chirp-xchat-native-test-decrypt-official-vector session))
@@ -341,6 +392,48 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
                      (alist-get 'encoded_message_event_signature prepared))))
           (should-not (string-match-p "outbound fixture message" output-json))
           (should-not (string-match-p "conversation_key" output-json))
+          (let (reply-input reply-output reaction-input reaction-output)
+            (unwind-protect
+                (progn
+                  (setq reply-input
+                        (json-encode
+                         `(("conversation_id" . ,conversation-id)
+                           ("text" . "outbound fixture reply")
+                           ("target_event" .
+                            ,(alist-get 'event_message_b64 fixture))
+                           ("key_events" .
+                            [,(alist-get 'event_key_change_b64 fixture)])))
+                        reply-output
+                        (chirp-xchat-native-encrypt-reply
+                         session reply-input))
+                  (should (stringp
+                           (alist-get
+                            'message_id
+                            (json-parse-string
+                             reply-output :object-type 'alist))))
+                  (should-not
+                   (string-match-p "outbound fixture reply" reply-output))
+                  (setq reaction-input
+                        (json-encode
+                         `(("conversation_id" . ,conversation-id)
+                           ("target_event" .
+                            ,(alist-get 'event_message_b64 fixture))
+                           ("emoji" . "🔥")
+                           ("remove" . :json-false)))
+                        reaction-output
+                        (chirp-xchat-native-encrypt-reaction
+                         session reaction-input))
+                  (should (stringp
+                           (alist-get
+                            'message_id
+                            (json-parse-string
+                             reaction-output :object-type 'alist))))
+                  (should-not (string-match-p "🔥" reaction-output)))
+              (dolist (value
+                       (list reply-input reply-output
+                             reaction-input reaction-output))
+                (when (stringp value)
+                  (clear-string value)))))
           (let ((spoof-json
                  (json-encode
                   `(("conversation_id" . ,conversation-id)
@@ -507,13 +600,88 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
                     ("encoded_message_event_signature" . "c2ln"))))))
       (should
        (equal
-        (chirp-xchat-native-prepare-text "1-2" "private text")
+        (chirp-xchat-native-prepare-text
+         "1-2" "private text"
+         '((:media-hash-key "hash" :key-version "7"
+            :width 20 :height 10 :plaintext-bytes 40
+            :filename "photo.jpg" :media-type 1)))
         '(:message-id "01234567-89ab-cdef-0123-456789abcdef"
           :encoded-message-create-event "ZXZlbnQ="
           :encoded-message-event-signature "c2ln"))))
     (should (equal (alist-get 'conversation_id captured) "1-2"))
     (should-not (alist-get 'sender_id captured))
+    (should (equal (alist-get 'conversation_key_version captured) "7"))
+    (let ((attachment (aref (alist-get 'attachments captured) 0)))
+      (should (equal (alist-get 'media_hash_key attachment) "hash"))
+      (should (= (alist-get 'media_type attachment) 1))
+      (should (= (alist-get 'filesize_bytes attachment) 40)))
     (should (equal (alist-get 'text captured) "private text"))))
+
+(ert-deftest chirp-xchat-native-rejects-mixed-staging-key-versions ()
+  "One message must not combine media encrypted under different keys."
+  (let (called)
+    (cl-letf (((symbol-function 'chirp-xchat-native-encrypt-text)
+               (lambda (&rest _args) (setq called t))))
+      (should-error
+       (chirp-xchat-native-prepare-text
+        "1-2" ""
+        '((:media-hash-key "first" :key-version "7"
+           :width 20 :height 10 :plaintext-bytes 40
+           :filename "first.jpg" :media-type 1)
+          (:media-hash-key "second" :key-version "8"
+           :width 20 :height 10 :plaintext-bytes 40
+           :filename "second.jpg" :media-type 1))))
+      (should-not called))))
+
+(ert-deftest chirp-xchat-native-wrapper-shapes-reply-and-reaction-inputs ()
+  "Reply and reaction wrappers should expose only bounded provider inputs."
+  (let (reply-input reaction-input)
+    (cl-letf
+        (((symbol-function 'chirp-xchat-native--session)
+          (lambda () 'session))
+         ((symbol-function 'chirp-xchat-native-encrypt-reply)
+          (lambda (session input-json)
+            (should (eq session 'session))
+            (setq reply-input
+                  (json-parse-string
+                   input-json :object-type 'alist :array-type 'list))
+            (json-encode
+             '(("message_id" . "01234567-89ab-cdef-0123-456789abcdef")
+               ("encoded_message_create_event" . "ZXZlbnQ=")
+               ("encoded_message_event_signature" . "c2ln")))))
+         ((symbol-function 'chirp-xchat-native-encrypt-reaction)
+          (lambda (session input-json)
+            (should (eq session 'session))
+            (setq reaction-input
+                  (json-parse-string input-json :object-type 'alist))
+            (json-encode
+             '(("message_id" . "fedcba98-7654-3210-fedc-ba9876543210")
+               ("encoded_message_create_event" . "cmVhY3Rpb24=")
+               ("encoded_message_event_signature" . "c2ln"))))))
+      (should
+       (equal
+        (plist-get
+         (chirp-xchat-native-prepare-reply
+          "1-2" "private reply" "dGFyZ2V0" '("a2V5"))
+         :message-id)
+        "01234567-89ab-cdef-0123-456789abcdef"))
+      (should
+       (equal
+        (plist-get
+         (chirp-xchat-native-prepare-reaction
+          "1-2" "dGFyZ2V0" "🔥" t)
+         :message-id)
+        "fedcba98-7654-3210-fedc-ba9876543210")))
+    (should (equal (alist-get 'conversation_id reply-input) "1-2"))
+    (should (equal (alist-get 'text reply-input) "private reply"))
+    (should (equal (alist-get 'target_event reply-input) "dGFyZ2V0"))
+    (should (equal (alist-get 'key_events reply-input) '("a2V5")))
+    (should-not (alist-get 'sender_id reply-input))
+    (should (equal (alist-get 'conversation_id reaction-input) "1-2"))
+    (should (equal (alist-get 'target_event reaction-input) "dGFyZ2V0"))
+    (should (equal (alist-get 'emoji reaction-input) "🔥"))
+    (should (eq (alist-get 'remove reaction-input) t))
+    (should-not (alist-get 'sender_id reaction-input))))
 
 (ert-deftest chirp-xchat-native-wrapper-erases-input-and-settles-app-state ()
   "The Lisp bridge should erase secrets and retire its Appkit recovery."

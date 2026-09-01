@@ -6,7 +6,10 @@ use std::time::Instant;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
+    fs::File,
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     panic::{catch_unwind, AssertUnwindSafe},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, TryRecvError},
@@ -24,11 +27,13 @@ use chat_xdk_core::{
     ChatCore,
 };
 use chat_xdk_core::{
-    prelude::XChatConversationKey, AttachmentInfo, EncryptMessageParams, Event, Message,
-    MessageContent, ReplyPreviewValidation, SendPayload,
+    prelude::XChatConversationKey, AttachmentDescriptor, AttachmentInfo, EncryptMessageParams,
+    EncryptReactionParams, EncryptReplyParams, Event, Message, MessageContent,
+    ReplyPreviewValidation, SendPayload,
 };
 use emacs::{defun, Env, IntoLisp, Result, ResultExt, Transfer, Value};
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -41,6 +46,9 @@ const MAX_REGISTERED_KEYS: usize = 32;
 const MAX_DECRYPT_INPUT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_ENCRYPT_INPUT_BYTES: usize = 32 * 1024;
 const MAX_MESSAGE_TEXT_BYTES: usize = 16 * 1024;
+const MAX_ENCRYPT_EVENT_INPUT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_REPLY_KEY_EVENTS: usize = 64;
+const MAX_REACTION_EMOJI_BYTES: usize = 256;
 const MAX_SIGNING_KEYS: usize = 512;
 const MAX_X_USER_ID_BYTES: usize = 32;
 const MAX_PUBLIC_KEY_VERSION_BYTES: usize = 128;
@@ -48,9 +56,15 @@ const PUBLIC_KEY_LENGTHS: &[usize] = &[33, 65, 91];
 const MAX_DECRYPT_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_DECRYPT_EVENT_BASE64_BYTES: usize = 4 * MAX_DECRYPT_EVENT_BYTES.div_ceil(3);
 const MAX_PUBLIC_KEY_BYTES: usize = 91;
-const MAX_MEDIA_BYTES: usize = 50 * 1024 * 1024;
-const MAX_MEDIA_BASE64_BYTES: usize = 4 * MAX_MEDIA_BYTES.div_ceil(3);
+const MAX_MEDIA_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_MEDIA_CIPHERTEXT_BYTES: usize =
+    MAX_MEDIA_PLAINTEXT_BYTES + (17 * MAX_MEDIA_PLAINTEXT_BYTES.div_ceil(1024)) + 24;
+const MAX_MEDIA_BASE64_BYTES: usize = 4 * MAX_MEDIA_CIPHERTEXT_BYTES.div_ceil(3);
 const MAX_MEDIA_CONVERSATIONS: usize = 100;
+const MAX_MEDIA_STAGES: usize = 10;
+const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+const MAX_MEDIA_PATH_BYTES: usize = 4096;
+const MEDIA_PROBE_BYTES: usize = 1024 * 1024;
 #[cfg(feature = "juicebox")]
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -209,10 +223,75 @@ struct DecryptInput {
 struct EncryptTextInput {
     conversation_id: String,
     text: String,
+    #[serde(default)]
+    conversation_key_version: Option<String>,
+    #[serde(default)]
+    attachments: Vec<OutgoingMediaAttachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EncryptReplyInput {
+    conversation_id: String,
+    text: String,
+    #[serde(default)]
+    conversation_key_version: Option<String>,
+    target_event: String,
+    #[serde(default)]
+    key_events: Vec<String>,
+    #[serde(default)]
+    attachments: Vec<OutgoingMediaAttachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EncryptReactionInput {
+    conversation_id: String,
+    target_event: String,
+    emoji: String,
+    remove: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutgoingMediaAttachment {
+    media_hash_key: String,
+    width: i64,
+    height: i64,
+    filesize_bytes: i64,
+    filename: String,
+    media_type: i32,
+    #[serde(default)]
+    duration_millis: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrepareMediaInput {
+    conversation_id: String,
+    file_path: String,
 }
 
 #[derive(Serialize)]
-struct PreparedTextMessage {
+struct PreparedMedia {
+    stage_id: i64,
+    encrypted_file: String,
+    encrypted_bytes: u64,
+    plaintext_bytes: u64,
+    key_version: String,
+    filename: String,
+    mime_type: String,
+    media_type: i32,
+    width: i64,
+    height: i64,
+}
+
+struct MediaStage {
+    file: NamedTempFile,
+}
+
+#[derive(Serialize)]
+struct PreparedMessage {
     message_id: String,
     encoded_message_create_event: String,
     encoded_message_event_signature: String,
@@ -252,6 +331,8 @@ struct NativeState {
     conversation_keys: HashMap<String, HashMap<String, XChatConversationKey>>,
     next_job_id: i64,
     recovery: Option<RecoveryJob>,
+    media_stages: HashMap<i64, MediaStage>,
+    next_media_stage_id: i64,
 }
 
 struct ClosedState {
@@ -259,6 +340,7 @@ struct ClosedState {
     user_id: Option<String>,
     conversation_keys: HashMap<String, HashMap<String, XChatConversationKey>>,
     recovery: Option<RecoveryJob>,
+    media_stages: HashMap<i64, MediaStage>,
 }
 
 struct NativeSession {
@@ -276,6 +358,8 @@ impl NativeSession {
                 conversation_keys: HashMap::new(),
                 next_job_id: 1,
                 recovery: None,
+                media_stages: HashMap::new(),
+                next_media_stage_id: 1,
             }),
         }
     }
@@ -301,6 +385,7 @@ impl NativeSession {
             user_id: state.user_id.take(),
             recovery: state.recovery.take(),
             conversation_keys: std::mem::take(&mut state.conversation_keys),
+            media_stages: std::mem::take(&mut state.media_stages),
         }
     }
 
@@ -313,6 +398,7 @@ impl NativeSession {
         drop(closed.user_id.take());
         drop(closed.core.take());
         drop(closed.conversation_keys);
+        drop(closed.media_stages);
         existed
     }
 
@@ -380,7 +466,7 @@ impl NativeSession {
         let encrypted = BASE64.decode(encrypted_base64).map_err(|_| {
             NativeError::InvalidInput("XChat native media ciphertext is invalid".into())
         })?;
-        if encrypted.is_empty() || encrypted.len() > MAX_MEDIA_BYTES {
+        if encrypted.is_empty() || encrypted.len() > MAX_MEDIA_CIPHERTEXT_BYTES {
             return Err(NativeError::InvalidInput(
                 "XChat native media ciphertext size is invalid".into(),
             ));
@@ -404,7 +490,7 @@ impl NativeSession {
         let plaintext = core
             .decrypt_stream(&encrypted, key)
             .map_err(|_| NativeError::Xdk("media decryption failed".into()))?;
-        if plaintext.len() > MAX_MEDIA_BYTES {
+        if plaintext.len() > MAX_MEDIA_PLAINTEXT_BYTES {
             return Err(NativeError::Xdk(
                 "decrypted XChat media exceeds 50 MiB".into(),
             ));
@@ -412,11 +498,187 @@ impl NativeSession {
         Ok(Zeroizing::new(plaintext))
     }
 
-    fn prepare_text_payload(
+    fn prepare_media(&self, input_json: String) -> std::result::Result<String, NativeError> {
+        let input = parse_prepare_media_input(&input_json)?;
+        let path = Path::new(&input.file_path);
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| NativeError::InvalidInput("XChat media filename is invalid".into()))?
+            .to_string();
+        let file = File::open(path)
+            .map_err(|_| NativeError::InvalidInput("XChat media file is not readable".into()))?;
+        let metadata = file.metadata().map_err(|_| {
+            NativeError::InvalidInput("XChat media file metadata is unavailable".into())
+        })?;
+        if !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > MAX_MEDIA_PLAINTEXT_BYTES as u64
+        {
+            return Err(NativeError::InvalidInput(
+                "XChat media file must contain between 1 byte and 50 MiB".into(),
+            ));
+        }
+
+        let mut state = self.lock_state();
+        let core = state.core.as_ref().ok_or(NativeError::Closed)?;
+        if !core.is_unlocked() {
+            return Err(NativeError::InvalidInput(
+                "XChat native session is locked".into(),
+            ));
+        }
+        if state.media_stages.len() >= MAX_MEDIA_STAGES {
+            return Err(NativeError::InvalidInput(
+                "XChat native media staging is full".into(),
+            ));
+        }
+        let (key_version, key) = state
+            .conversation_keys
+            .get(&input.conversation_id)
+            .and_then(|keys| {
+                keys.iter()
+                    .filter_map(|(version, key)| {
+                        version
+                            .parse::<u64>()
+                            .ok()
+                            .map(|number| (number, version, key))
+                    })
+                    .max_by_key(|(number, _, _)| *number)
+            })
+            .map(|(_, version, key)| (version.clone(), key.clone()))
+            .ok_or_else(|| {
+                NativeError::InvalidInput(
+                    "XChat native media conversation key is unavailable".into(),
+                )
+            })?;
+
+        let mut reader = BufReader::new(file);
+        let mut probe = vec![0; (metadata.len() as usize).min(MEDIA_PROBE_BYTES)];
+        let probe_bytes = reader
+            .read(&mut probe)
+            .map_err(|_| NativeError::InvalidInput("XChat media file could not be read".into()))?;
+        probe.truncate(probe_bytes);
+        reader.seek(SeekFrom::Start(0)).map_err(|_| {
+            NativeError::InvalidInput("XChat media file could not be rewound".into())
+        })?;
+        let mime_type = chat_xdk_core::utils::detect_mime_type(&probe)
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let dimensions = chat_xdk_core::utils::detect_image_dimensions(&probe);
+        let (width, height) = dimensions
+            .map(|value| (i64::from(value.width), i64::from(value.height)))
+            .unwrap_or((0, 0));
+        let media_type = match mime_type.as_str() {
+            "image/gif" => 2,
+            "image/svg+xml" => 6,
+            value if value.starts_with("image/") => 1,
+            value if value.starts_with("video/") => 3,
+            value if value.starts_with("audio/") => 4,
+            _ => 5,
+        };
+
+        let mut staged_file = NamedTempFile::new()
+            .map_err(|_| NativeError::Xdk("media staging file could not be created".into()))?;
+        chat_xdk_core::crypto::encryption::encrypt_stream(&key, &mut reader, &mut staged_file)
+            .map_err(|_| NativeError::Xdk("media encryption failed".into()))?;
+        staged_file
+            .flush()
+            .map_err(|_| NativeError::Xdk("encrypted media could not be flushed".into()))?;
+        let encrypted_bytes = staged_file
+            .as_file()
+            .metadata()
+            .map_err(|_| NativeError::Xdk("encrypted media metadata is unavailable".into()))?
+            .len();
+        let encrypted_file = staged_file
+            .path()
+            .to_str()
+            .ok_or_else(|| NativeError::Xdk("media staging path is invalid".into()))?
+            .to_string();
+
+        let mut stage_id = state.next_media_stage_id;
+        while state.media_stages.contains_key(&stage_id) {
+            stage_id = if stage_id >= MAX_JOB_ID {
+                1
+            } else {
+                stage_id + 1
+            };
+        }
+        state.next_media_stage_id = if stage_id >= MAX_JOB_ID {
+            1
+        } else {
+            stage_id + 1
+        };
+        state
+            .media_stages
+            .insert(stage_id, MediaStage { file: staged_file });
+        serde_json::to_string(&PreparedMedia {
+            stage_id,
+            encrypted_file,
+            encrypted_bytes,
+            plaintext_bytes: metadata.len(),
+            key_version,
+            filename,
+            mime_type,
+            media_type,
+            width,
+            height,
+        })
+        .map_err(|error| {
+            state.media_stages.remove(&stage_id);
+            NativeError::Xdk(error.to_string())
+        })
+    }
+
+    fn release_media(&self, stage_id: i64) -> std::result::Result<bool, NativeError> {
+        if !(1..=MAX_JOB_ID).contains(&stage_id) {
+            return Err(NativeError::InvalidInput(
+                "XChat native media stage ID is invalid".into(),
+            ));
+        }
+        let mut state = self.lock_state();
+        if state.core.is_none() {
+            return Err(NativeError::Closed);
+        }
+        Ok(state
+            .media_stages
+            .remove(&stage_id)
+            .map(|stage| {
+                let _ = stage.file.close();
+                true
+            })
+            .unwrap_or(false))
+    }
+
+    fn conversation_key_for_version(
         &self,
-        input_json: &str,
+        conversation_id: &str,
+        key_version: Option<&str>,
+    ) -> std::result::Result<Option<XChatConversationKey>, NativeError> {
+        let Some(key_version) = key_version else {
+            return Ok(None);
+        };
+        let state = self.lock_state();
+        if state.core.is_none() {
+            return Err(NativeError::Closed);
+        }
+        state
+            .conversation_keys
+            .get(conversation_id)
+            .and_then(|keys| keys.get(key_version))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                NativeError::InvalidInput(
+                    "XChat attachment conversation key version is unavailable".into(),
+                )
+            })
+    }
+
+    fn prepare_payload(
+        &self,
+        operation: impl FnOnce(&ChatCore, &str) -> std::result::Result<SendPayload, NativeError>,
     ) -> std::result::Result<SendPayload, NativeError> {
-        let input = parse_encrypt_text_input(input_json)?;
         let state = self.lock_state();
         let core = state.core.as_ref().ok_or(NativeError::Closed)?;
         let sender_id = state.user_id.as_ref().ok_or_else(|| {
@@ -427,20 +689,114 @@ impl NativeSession {
                 "XChat native session is locked".into(),
             ));
         }
-        let mut params = EncryptMessageParams::new(input.conversation_id, input.text);
-        params.sender_id = Some(sender_id.clone());
-        core.encrypt_message(params)
-            .map_err(|_| NativeError::Xdk("message encryption failed for this conversation".into()))
+        operation(core, sender_id)
     }
 
-    fn encrypt_text(&self, input_json: String) -> std::result::Result<String, NativeError> {
-        let payload = self.prepare_text_payload(&input_json)?;
-        serde_json::to_string(&PreparedTextMessage {
+    fn encrypt_payload(
+        &self,
+        operation: impl FnOnce(&ChatCore, &str) -> std::result::Result<SendPayload, NativeError>,
+    ) -> std::result::Result<String, NativeError> {
+        let payload = self.prepare_payload(operation)?;
+        serde_json::to_string(&PreparedMessage {
             message_id: payload.message_id,
             encoded_message_create_event: payload.encrypted_content,
             encoded_message_event_signature: payload.encoded_event_signature,
         })
         .map_err(|error| NativeError::Xdk(error.to_string()))
+    }
+
+    fn encrypt_text(&self, input_json: String) -> std::result::Result<String, NativeError> {
+        let input = parse_encrypt_text_input(&input_json)?;
+        let explicit_key = self.conversation_key_for_version(
+            &input.conversation_id,
+            input.conversation_key_version.as_deref(),
+        )?;
+        let attachments = outgoing_attachment_descriptors(input.attachments);
+        self.encrypt_payload(|core, sender_id| {
+            let mut params = EncryptMessageParams::new(input.conversation_id, input.text);
+            params.sender_id = Some(sender_id.to_string());
+            if let (Some(key), Some(version)) = (explicit_key, input.conversation_key_version) {
+                params.conversation_key = Some(key.to_bytes());
+                params.conversation_key_version = Some(version);
+            }
+            if !attachments.is_empty() {
+                params.attachments = Some(attachments);
+            }
+            core.encrypt_message(params).map_err(|_| {
+                NativeError::Xdk("message encryption failed for this conversation".into())
+            })
+        })
+    }
+
+    #[cfg(test)]
+    fn prepare_text_payload(
+        &self,
+        input_json: &str,
+    ) -> std::result::Result<SendPayload, NativeError> {
+        let input = parse_encrypt_text_input(input_json)?;
+        let explicit_key = self.conversation_key_for_version(
+            &input.conversation_id,
+            input.conversation_key_version.as_deref(),
+        )?;
+        let attachments = outgoing_attachment_descriptors(input.attachments);
+        self.prepare_payload(|core, sender_id| {
+            let mut params = EncryptMessageParams::new(input.conversation_id, input.text);
+            params.sender_id = Some(sender_id.to_string());
+            if let (Some(key), Some(version)) = (explicit_key, input.conversation_key_version) {
+                params.conversation_key = Some(key.to_bytes());
+                params.conversation_key_version = Some(version);
+            }
+            if !attachments.is_empty() {
+                params.attachments = Some(attachments);
+            }
+            core.encrypt_message(params).map_err(|_| {
+                NativeError::Xdk("message encryption failed for this conversation".into())
+            })
+        })
+    }
+
+    fn encrypt_reply(&self, input_json: String) -> std::result::Result<String, NativeError> {
+        let input = parse_encrypt_reply_input(&input_json)?;
+        let explicit_key = self.conversation_key_for_version(
+            &input.conversation_id,
+            input.conversation_key_version.as_deref(),
+        )?;
+        let attachments = outgoing_attachment_descriptors(input.attachments);
+        self.encrypt_payload(|core, sender_id| {
+            let mut params =
+                EncryptReplyParams::new(input.conversation_id, input.text, input.target_event);
+            params.sender_id = Some(sender_id.to_string());
+            if let (Some(key), Some(version)) = (explicit_key, input.conversation_key_version) {
+                params.conversation_key = Some(key.to_bytes());
+                params.conversation_key_version = Some(version);
+            }
+            if !input.key_events.is_empty() {
+                params.reply_to_ckces = Some(input.key_events);
+            }
+            if !attachments.is_empty() {
+                params.attachments = Some(attachments);
+            }
+            core.encrypt_reply(params).map_err(|_| {
+                NativeError::Xdk("reply encryption failed for this conversation".into())
+            })
+        })
+    }
+
+    fn encrypt_reaction(&self, input_json: String) -> std::result::Result<String, NativeError> {
+        let input = parse_encrypt_reaction_input(&input_json)?;
+        self.encrypt_payload(|core, sender_id| {
+            let mut params = EncryptReactionParams::new(input.target_event, input.emoji);
+            params.conversation_id = Some(input.conversation_id);
+            params.sender_id = Some(sender_id.to_string());
+            let result = if input.remove {
+                core.encrypt_remove_reaction(&params)
+            } else {
+                core.encrypt_add_reaction(&params)
+            };
+            result.map_err(|_| {
+                NativeError::Xdk("reaction encryption failed for this conversation".into())
+            })
+        })
     }
 
     fn spawn_recovery(
@@ -1044,6 +1400,69 @@ fn parse_decrypt_input(
     Ok((input.conversation_id, input.events, signing_keys))
 }
 
+fn valid_outgoing_attachments(attachments: &[OutgoingMediaAttachment]) -> bool {
+    !attachments.is_empty()
+        && attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
+        && attachments.iter().all(|attachment| {
+            !attachment.media_hash_key.is_empty()
+                && attachment.media_hash_key.len() <= 2048
+                && attachment
+                    .media_hash_key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                && (0..=i64::from(i32::MAX)).contains(&attachment.width)
+                && (0..=i64::from(i32::MAX)).contains(&attachment.height)
+                && (1..=MAX_MEDIA_PLAINTEXT_BYTES as i64).contains(&attachment.filesize_bytes)
+                && !attachment.filename.is_empty()
+                && attachment.filename.len() <= 1024
+                && !attachment.filename.chars().any(char::is_control)
+                && (1..=6).contains(&attachment.media_type)
+                && attachment
+                    .duration_millis
+                    .is_none_or(|duration| duration >= 0)
+        })
+}
+
+fn outgoing_attachment_descriptors(
+    attachments: Vec<OutgoingMediaAttachment>,
+) -> Vec<AttachmentDescriptor> {
+    attachments
+        .into_iter()
+        .map(|attachment| AttachmentDescriptor::Media {
+            media_hash_key: attachment.media_hash_key,
+            width: attachment.width,
+            height: attachment.height,
+            filesize_bytes: attachment.filesize_bytes,
+            filename: attachment.filename,
+            media_type: Some(attachment.media_type),
+            duration_millis: attachment.duration_millis,
+        })
+        .collect()
+}
+
+fn parse_prepare_media_input(
+    input_json: &str,
+) -> std::result::Result<PrepareMediaInput, NativeError> {
+    if input_json.len() > MAX_MEDIA_PATH_BYTES + 512 {
+        return Err(NativeError::InvalidInput(
+            "XChat native media preparation input is too large".into(),
+        ));
+    }
+    let input: PrepareMediaInput = serde_json::from_str(input_json).map_err(|_| {
+        NativeError::InvalidInput("XChat native media preparation input is invalid".into())
+    })?;
+    if !valid_conversation_id(&input.conversation_id)
+        || input.file_path.is_empty()
+        || input.file_path.len() > MAX_MEDIA_PATH_BYTES
+        || input.file_path.chars().any(|value| value == '\0')
+    {
+        return Err(NativeError::InvalidInput(
+            "XChat native media preparation input is invalid".into(),
+        ));
+    }
+    Ok(input)
+}
+
 fn parse_encrypt_text_input(
     input_json: &str,
 ) -> std::result::Result<EncryptTextInput, NativeError> {
@@ -1059,9 +1478,96 @@ fn parse_encrypt_text_input(
             "XChat native conversation ID is invalid".into(),
         ));
     }
-    if input.text.trim().is_empty() || input.text.len() > MAX_MESSAGE_TEXT_BYTES {
+    if input.text.len() > MAX_MESSAGE_TEXT_BYTES
+        || (input.text.trim().is_empty() && input.attachments.is_empty())
+        || (!input.attachments.is_empty() && !valid_outgoing_attachments(&input.attachments))
+        || (input.attachments.is_empty() != input.conversation_key_version.is_none())
+        || input
+            .conversation_key_version
+            .as_deref()
+            .is_some_and(|version| !valid_public_key_version(version))
+    {
         return Err(NativeError::InvalidInput(
-            "XChat message must contain between 1 and 16384 UTF-8 bytes".into(),
+            "XChat message text or attachments are invalid".into(),
+        ));
+    }
+    Ok(input)
+}
+
+fn parse_encrypt_reply_input(
+    input_json: &str,
+) -> std::result::Result<EncryptReplyInput, NativeError> {
+    if input_json.len() > MAX_ENCRYPT_EVENT_INPUT_BYTES {
+        return Err(NativeError::InvalidInput(
+            "XChat native reply input exceeds 20 MiB".into(),
+        ));
+    }
+    let input: EncryptReplyInput = serde_json::from_str(input_json)
+        .map_err(|_| NativeError::InvalidInput("XChat native reply input is invalid".into()))?;
+    if !valid_conversation_id(&input.conversation_id) {
+        return Err(NativeError::InvalidInput(
+            "XChat native conversation ID is invalid".into(),
+        ));
+    }
+    if input.text.len() > MAX_MESSAGE_TEXT_BYTES
+        || (input.text.trim().is_empty() && input.attachments.is_empty())
+        || (!input.attachments.is_empty() && !valid_outgoing_attachments(&input.attachments))
+        || (input.attachments.is_empty() != input.conversation_key_version.is_none())
+        || input
+            .conversation_key_version
+            .as_deref()
+            .is_some_and(|version| !valid_public_key_version(version))
+    {
+        return Err(NativeError::InvalidInput(
+            "XChat reply text or attachments are invalid".into(),
+        ));
+    }
+    if input.key_events.len() > MAX_REPLY_KEY_EVENTS {
+        return Err(NativeError::InvalidInput(
+            "XChat reply carries too many conversation-key events".into(),
+        ));
+    }
+    let mut decoded = Vec::new();
+    if !valid_encoded_event(&input.target_event, &mut decoded)
+        || !input
+            .key_events
+            .iter()
+            .all(|event| valid_encoded_event(event, &mut decoded))
+    {
+        return Err(NativeError::InvalidInput(
+            "XChat reply carries an invalid encoded event".into(),
+        ));
+    }
+    Ok(input)
+}
+
+fn parse_encrypt_reaction_input(
+    input_json: &str,
+) -> std::result::Result<EncryptReactionInput, NativeError> {
+    if input_json.len() > MAX_ENCRYPT_EVENT_INPUT_BYTES {
+        return Err(NativeError::InvalidInput(
+            "XChat native reaction input exceeds 20 MiB".into(),
+        ));
+    }
+    let input: EncryptReactionInput = serde_json::from_str(input_json)
+        .map_err(|_| NativeError::InvalidInput("XChat native reaction input is invalid".into()))?;
+    if !valid_conversation_id(&input.conversation_id) {
+        return Err(NativeError::InvalidInput(
+            "XChat native conversation ID is invalid".into(),
+        ));
+    }
+    if input.emoji.trim().is_empty()
+        || input.emoji.len() > MAX_REACTION_EMOJI_BYTES
+        || input.emoji.chars().any(char::is_control)
+    {
+        return Err(NativeError::InvalidInput(
+            "XChat reaction emoji is invalid".into(),
+        ));
+    }
+    let mut decoded = Vec::new();
+    if !valid_encoded_event(&input.target_event, &mut decoded) {
+        return Err(NativeError::InvalidInput(
+            "XChat reaction target event is invalid".into(),
         ));
     }
     Ok(input)
@@ -1375,6 +1881,38 @@ fn decrypt(env: &Env, session: &NativeSession, input_json: String) -> Result<Str
 fn encrypt_text(env: &Env, session: &NativeSession, input_json: String) -> Result<String> {
     session
         .encrypt_text(input_json)
+        .or_signal(env, "chirp-xchat-native-error")
+}
+
+/// Prepare one encrypted and signed reply inside SESSION.
+#[defun]
+fn encrypt_reply(env: &Env, session: &NativeSession, input_json: String) -> Result<String> {
+    session
+        .encrypt_reply(input_json)
+        .or_signal(env, "chirp-xchat-native-error")
+}
+
+/// Prepare one encrypted and signed reaction operation inside SESSION.
+#[defun]
+fn encrypt_reaction(env: &Env, session: &NativeSession, input_json: String) -> Result<String> {
+    session
+        .encrypt_reaction(input_json)
+        .or_signal(env, "chirp-xchat-native-error")
+}
+
+/// Encrypt one local media file into a bounded native staging file.
+#[defun]
+fn prepare_media(env: &Env, session: &NativeSession, input_json: String) -> Result<String> {
+    session
+        .prepare_media(input_json)
+        .or_signal(env, "chirp-xchat-native-error")
+}
+
+/// Release one native encrypted-media staging file.
+#[defun]
+fn release_media(env: &Env, session: &NativeSession, stage_id: i64) -> Result<bool> {
+    session
+        .release_media(stage_id)
         .or_signal(env, "chirp-xchat-native-error")
 }
 
@@ -1832,6 +2370,44 @@ mod tests {
             .is_some());
         assert!(!prepared.contains(plaintext));
         assert!(!prepared.contains("conversation_key"));
+
+        let vector = parse_official_vector().expect("official vector parses");
+        let reply_text = "outbound fixture reply";
+        let prepared_reply = session
+            .encrypt_reply(
+                serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "text": reply_text,
+                    "target_event": vector.event_message_b64,
+                    "key_events": [vector.event_key_change_b64]
+                })
+                .to_string(),
+            )
+            .expect("verified cached key prepares a reply");
+        let reply_payload: serde_json::Value =
+            serde_json::from_str(&prepared_reply).expect("prepared reply is JSON");
+        assert!(reply_payload["message_id"].as_str().is_some());
+        assert!(!prepared_reply.contains(reply_text));
+        assert!(!prepared_reply.contains("conversation_key"));
+
+        for remove in [false, true] {
+            let prepared_reaction = session
+                .encrypt_reaction(
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "target_event": vector.event_message_b64,
+                        "emoji": "🔥",
+                        "remove": remove
+                    })
+                    .to_string(),
+                )
+                .expect("verified cached key prepares a reaction");
+            let reaction_payload: serde_json::Value =
+                serde_json::from_str(&prepared_reaction).expect("prepared reaction is JSON");
+            assert!(reaction_payload["message_id"].as_str().is_some());
+            assert!(!prepared_reaction.contains("🔥"));
+            assert!(!prepared_reaction.contains("conversation_key"));
+        }
     }
 
     #[test]
@@ -1984,6 +2560,102 @@ mod tests {
     }
 
     #[test]
+    fn media_preparation_streams_and_releases_staging_file() {
+        let mut vector = parse_official_vector().expect("official vector parses");
+        let user_id = official_recipient_user_id(&vector).expect("recipient is valid");
+        let private_keys = take_private_keys(&mut vector).expect("private keys decode");
+        let conversation_id = vector.event_conversation_id.clone();
+        let session = NativeSession::new();
+        session
+            .with_core(|core| {
+                core.import_keys_with_version(&private_keys, &vector.event_recipient_key_version)
+                    .map_err(|error| NativeError::Xdk(error.to_string()))
+            })
+            .expect("official identity imports");
+        session.lock_state().user_id = Some(user_id);
+        session
+            .decrypt(
+                serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "events": [
+                        vector.event_key_change_b64,
+                        vector.event_message_b64,
+                    ],
+                    "signing_keys": [{
+                        "user_id": vector.event_sender_id,
+                        "public_key_version": vector.event_signing_key_version,
+                        "public_key": vector.signing_public_b64,
+                        "identity_public_key": vector.identity_public_b64,
+                        "identity_public_key_signature":
+                            vector.identity_public_key_signature_b64,
+                    }],
+                })
+                .to_string(),
+            )
+            .expect("official event batch decrypts");
+
+        let plaintext = b"GIF89a\x20\x00\x10\x00streamed attachment";
+        let mut source = NamedTempFile::new().expect("source tempfile opens");
+        source.write_all(plaintext).expect("source tempfile writes");
+        source.flush().expect("source tempfile flushes");
+        let output = session
+            .prepare_media(
+                serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "file_path": source.path(),
+                })
+                .to_string(),
+            )
+            .expect("media stages");
+        let prepared: serde_json::Value =
+            serde_json::from_str(&output).expect("staging output is JSON");
+        let stage_id = prepared["stage_id"].as_i64().expect("stage id");
+        let encrypted_path =
+            std::path::PathBuf::from(prepared["encrypted_file"].as_str().expect("stage path"));
+        let encrypted = std::fs::read(&encrypted_path).expect("ciphertext is readable");
+        assert_eq!(prepared["mime_type"], "image/gif");
+        assert_eq!(prepared["media_type"], 2);
+        assert_eq!(prepared["width"], 32);
+        assert_eq!(prepared["height"], 16);
+        assert_eq!(
+            prepared["plaintext_bytes"],
+            serde_json::Value::from(plaintext.len())
+        );
+        let key_version = prepared["key_version"]
+            .as_str()
+            .expect("staging key version")
+            .to_string();
+        let decrypted = session
+            .decrypt_media(&conversation_id, &key_version, &BASE64.encode(encrypted))
+            .expect("staged media decrypts");
+        assert_eq!(decrypted.as_slice(), plaintext);
+        let payload = session
+            .prepare_text_payload(
+                &serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "conversation_key_version": key_version,
+                    "text": "",
+                    "attachments": [{
+                        "media_hash_key": "media_hash",
+                        "width": 32,
+                        "height": 16,
+                        "filesize_bytes": plaintext.len(),
+                        "filename": "animation.gif",
+                        "media_type": 2
+                    }]
+                })
+                .to_string(),
+            )
+            .expect("attachment message uses the staging key version");
+        assert!(!payload.encrypted_content.is_empty());
+        assert!(session.release_media(stage_id).expect("stage releases"));
+        assert!(!encrypted_path.exists());
+        assert!(!session
+            .release_media(stage_id)
+            .expect("release is idempotent"));
+    }
+
+    #[test]
     fn destroy_is_idempotent_and_closes_the_session() {
         let session = NativeSession::new();
         assert!(session.destroy());
@@ -2086,6 +2758,27 @@ mod tests {
         .to_string();
         assert!(parse_encrypt_text_input(&valid).is_ok());
 
+        let attachment = serde_json::json!({
+            "conversation_id": "1-2",
+            "conversation_key_version": "7",
+            "text": "",
+            "attachments": [{
+                "media_hash_key": "hash",
+                "width": 20,
+                "height": 10,
+                "filesize_bytes": 40,
+                "filename": "photo.jpg",
+                "media_type": 1
+            }]
+        })
+        .to_string();
+        assert!(parse_encrypt_text_input(&attachment).is_ok());
+        let missing_version = attachment.replace("\"conversation_key_version\":\"7\",", "");
+        assert!(matches!(
+            parse_encrypt_text_input(&missing_version),
+            Err(NativeError::InvalidInput(_))
+        ));
+
         let sender_override = serde_json::json!({
             "conversation_id": "1-2",
             "sender_id": "9999",
@@ -2113,6 +2806,46 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn reply_and_reaction_inputs_are_strictly_bounded() {
+        let encoded = BASE64.encode([0_u8]);
+        let reply = serde_json::json!({
+            "conversation_id": "1-2",
+            "text": "reply",
+            "target_event": encoded,
+            "key_events": [encoded]
+        })
+        .to_string();
+        assert!(parse_encrypt_reply_input(&reply).is_ok());
+
+        let reaction = serde_json::json!({
+            "conversation_id": "1-2",
+            "target_event": encoded,
+            "emoji": "🔥",
+            "remove": false
+        })
+        .to_string();
+        assert!(parse_encrypt_reaction_input(&reaction).is_ok());
+
+        let spoofed = serde_json::json!({
+            "conversation_id": "1-2",
+            "target_event": encoded,
+            "emoji": "🔥",
+            "remove": false,
+            "sender_id": "9999"
+        })
+        .to_string();
+        assert!(matches!(
+            parse_encrypt_reaction_input(&spoofed),
+            Err(NativeError::InvalidInput(_))
+        ));
+
+        let empty_emoji = reaction.replace("🔥", "");
+        assert!(matches!(
+            parse_encrypt_reaction_input(&empty_emoji),
+            Err(NativeError::InvalidInput(_))
+        ));
+    }
     #[cfg(feature = "juicebox")]
     #[test]
     fn production_recovery_json_is_strictly_parsed_before_work() {

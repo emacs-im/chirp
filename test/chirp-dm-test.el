@@ -451,6 +451,157 @@
 
 
 
+(ert-deftest chirp-dm-reply-context-is-view-local-and-clears-after-ack ()
+  "Reply context should survive errors and clear only with its acknowledged draft."
+  (let ((chirp--app nil)
+        buffers send-success send-error sent refresh-started-p)
+    (unwind-protect
+        (save-window-excursion
+          (let ((send-request (generate-new-buffer " *chirp-dm-reply-send*"))
+                (refresh-request
+                 (generate-new-buffer " *chirp-dm-reply-refresh*")))
+            (setq buffers (list send-request refresh-request))
+            (cl-letf
+                (((symbol-function 'chirp-backend-dm-send-reply)
+                  (lambda (conversation-id text target-event key-events
+                                           callback &rest options)
+                    (setq sent
+                          (list conversation-id text target-event key-events)
+                          send-success callback
+                          send-error (plist-get options :errback))
+                    send-request))
+                 ((symbol-function 'chirp-backend-dm-conversation-data)
+                  (lambda (&rest _arguments)
+                    (setq refresh-started-p t)
+                    refresh-request)))
+              (let* ((target
+                      (chirp-dm-test--normalized-event
+                       "20" "20" "original" "42"))
+                     (_raw
+                      (setf (plist-get target :encoded-event) "dGFyZ2V0"))
+                     (conversation
+                      (chirp-dm-test--normalized-conversation target))
+                     (buffer (chirp-dm-conversation-open conversation))
+                     (view (with-current-buffer buffer (appkit-current-view))))
+                (push buffer buffers)
+                (with-current-buffer buffer
+                  (goto-char (point-min))
+                  (search-forward "original")
+                  (chirp-dm-reply-to-message)
+                  (appkit-sync-invalidations view)
+                  (should (eq (appkit-chatbuf-aux-type) 'reply))
+                  (should (string-match-p "Reply to Alice" (buffer-string)))
+                  (goto-char (point-max))
+                  (insert "reply body")
+                  (chirp-dm-submit)
+                  (should (eq (appkit-compose-operation-kind) 'dm-reply))
+                  (should (eq (appkit-chatbuf-aux-type) 'reply))
+                  (should (equal (appkit-chatbuf-input-string) "reply body")))
+                (should
+                 (equal sent
+                        '("conversation-1" "reply body" "dGFyZ2V0" nil)))
+                (funcall send-error "reply failed")
+                (with-current-buffer buffer
+                  (appkit-sync-invalidations view)
+                  (should-not (appkit-compose-operation-active-p))
+                  (should (eq (appkit-chatbuf-aux-type) 'reply))
+                  (should (equal (appkit-chatbuf-input-string) "reply body"))
+                  (chirp-dm-submit))
+                (funcall send-success '(:message-id "21") nil)
+                (with-current-buffer buffer
+                  (appkit-sync-invalidations view)
+                  (should-not (appkit-chatbuf-aux-active-p))
+                  (should (equal (appkit-chatbuf-input-string) "")))
+                (should refresh-started-p)))))
+      (chirp-stop)
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest chirp-dm-reaction-toggle-waits-for-verified-ack ()
+  "Reaction toggles should not mutate canonical chips before acknowledgement."
+  (let ((chirp--app nil)
+        buffers callback remove-p)
+    (unwind-protect
+        (save-window-excursion
+          (let ((request (generate-new-buffer " *chirp-dm-reaction*")))
+            (push request buffers)
+            (cl-letf
+                (((symbol-function 'chirp-backend-dm-send-reaction)
+                  (lambda (_conversation-id _target-event _emoji remove
+                                            success &rest _options)
+                    (setq callback success
+                          remove-p remove)
+                    request)))
+              (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+              (let* ((target
+                      (chirp-dm-test--normalized-event
+                       "20" "20" "react here" "99"))
+                     (_raw
+                      (setf (plist-get target :encoded-event) "dGFyZ2V0"))
+                     (conversation
+                      (chirp-dm-test--normalized-conversation target))
+                     (buffer (chirp-dm-conversation-open conversation))
+                     (view (with-current-buffer buffer (appkit-current-view)))
+                     (state (appkit-view-state view)))
+                (push buffer buffers)
+                (with-current-buffer buffer
+                  (goto-char (point-min))
+                  (search-forward "react here")
+                  (chirp-dm-toggle-reaction "🔥"))
+                (should-not remove-p)
+                (should-not
+                 (plist-get
+                  (chirp-dm-conversation--message-by-id state "20")
+                  :reactions))
+                (let ((added
+                       (chirp-dm-test--normalized-event
+                        "21" "21" "🔥" "42")))
+                  (setf (plist-get added :content-kind) 'reaction
+                        (plist-get added :target-message-id) "20")
+                  (funcall callback added nil))
+                (should
+                 (equal
+                  (plist-get
+                   (car
+                    (plist-get
+                     (chirp-dm-conversation--message-by-id state "20")
+                     :reactions))
+                   :senders)
+                  '("42")))
+                (with-current-buffer buffer
+                  (appkit-sync-invalidations view)
+                  (goto-char (point-min))
+                  (search-forward "react here")
+                  (chirp-dm-toggle-reaction "🔥"))
+                (should remove-p)
+                (should
+                 (equal
+                  (plist-get
+                   (car
+                    (plist-get
+                     (chirp-dm-conversation--message-by-id state "20")
+                     :reactions))
+                   :senders)
+                  '("42")))
+                (let ((removed
+                       (chirp-dm-test--normalized-event
+                        "22" "22" "🔥" "42")))
+                  (setf (plist-get removed :content-kind) 'reaction-removed
+                        (plist-get removed :target-message-id) "20")
+                  (funcall callback removed nil))
+                (should-not
+                 (plist-get
+                  (chirp-dm-conversation--message-by-id state "20")
+                  :reactions))
+                (should (= (hash-table-count
+                            (plist-get state :reaction-operations))
+                           0))))))
+      (chirp-stop)
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest chirp-dm-send-clears-only-after-ack-and-canonical-refresh ()
   "Acknowledged sends should merge focused deltas without optimistic rows."
   (let ((chirp--app nil)
@@ -562,6 +713,100 @@
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest chirp-dm-attachment-selector-previews-and-clears-only-after-ack ()
+  "Typed attachments should keep distinct previews and owned draft semantics."
+  (let ((chirp--app nil)
+        (file (make-temp-file "chirp-dm-audio-" nil ".mp3" "audio"))
+        buffer request send-success captured (calls 0))
+    (unwind-protect
+        (save-window-excursion
+          (setq request (generate-new-buffer " *chirp-dm-attachment-send*"))
+          (cl-letf
+              (((symbol-function 'chirp-backend-dm-send-attachments)
+                (lambda (_conversation-id text attachments callback
+                          &rest options)
+                  (cl-incf calls)
+                  (setq captured (list text attachments))
+                  (if (= calls 1)
+                      (funcall (plist-get options :errback)
+                               "XChat media upload failed")
+                    (setq send-success callback)
+                    request)))
+               ((symbol-function 'chirp-dm-conversation--request)
+                (lambda (&rest _args) nil)))
+            (let* ((conversation
+                    (chirp-dm-test--normalized-conversation
+                     (chirp-dm-test--normalized-event "20" "20" "old")))
+                   (_buffer
+                    (setq buffer (chirp-dm-conversation-open conversation)))
+                   (view (with-current-buffer buffer (appkit-current-view))))
+              (with-current-buffer buffer
+                (should
+                 (eq (key-binding (kbd "C-c C-a")) #'chirp-dm-attach))
+                (should
+                 (equal (mapcar #'car chirp-dm-attach-commands)
+                        '("photo" "video" "audio" "file" "gif")))
+                (goto-char (point-max))
+                (chirp-dm-conversation--queue-attachment file 'audio)
+                (let* ((draft (appkit-chatbuf-input-string))
+                       (object
+                        (get-text-property
+                         0 appkit-chatbuf-input-object-property draft)))
+                  (should (string-match-p "\\[audio\\]" draft))
+                  (should (eq (plist-get object :attachment-kind) 'audio))
+                  (should (equal (plist-get object :path) file)))
+                (chirp-dm-submit)
+                (appkit-sync-invalidations view)
+                (should-not buffer-read-only)
+                (should
+                 (eq
+                  (plist-get
+                   (get-text-property
+                    0 appkit-chatbuf-input-object-property
+                    (appkit-chatbuf-input-string))
+                   :attachment-kind)
+                  'audio))
+                (goto-char (point-max))
+                (chirp-dm-submit)
+                (should buffer-read-only))
+              (should (equal (car captured) ""))
+              (should
+               (equal
+                (plist-get (car (cadr captured)) :attachment-kind)
+                'audio))
+              (funcall send-success '(:message-id "message-21") nil)
+              (with-current-buffer buffer
+                (appkit-sync-invalidations view)
+                (should-not buffer-read-only)
+                (should (equal (appkit-chatbuf-input-string) ""))
+                (should-not (appkit-chatbuf-input-history-elements)))))
+          (cl-letf (((symbol-function 'appkit-media-file-present-p)
+                     (lambda (_path) t))
+                    ((symbol-function
+                      'appkit-media-one-line-preview-image-from-file)
+                     (lambda (_path) 'image))
+                    ((symbol-function 'appkit-media-image-display-string)
+                     (lambda (_image _fallback) "<preview>")))
+            (should
+             (string-match-p
+              "\\[photo\\].*<preview>"
+              (chirp-dm-conversation--attachment-display-text
+               (list :attachment-kind 'photo
+                     :path file :filename "photo.jpg"))))
+            (should-not
+             (string-match-p
+              "<preview>"
+              (chirp-dm-conversation--attachment-display-text
+               (list :attachment-kind 'file
+                     :path file :filename "photo.jpg"))))))
+      (chirp-stop)
+      (when (buffer-live-p request)
+        (kill-buffer request))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (file-exists-p file)
+        (delete-file file)))))
 
 (ert-deftest chirp-dm-send-synchronous-error-restores-the-composer ()
   "A native preparation error should release send ownership and retain input."
