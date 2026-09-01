@@ -1851,22 +1851,27 @@ Retweets use their wrapper ID so the wrapper and original remain distinct."
 Quoted descendants are included.  When RERENDER is non-nil, request targeted
 updates for the owning top-level rows visible in BUFFER."
   (let ((active-state (chirp--appkit-timeline-state buffer))
+        changed-p
         dirty-ids)
     (dolist (state (chirp--primary-feed-state-values active-state))
-      (dolist (tweet (plist-get state :items))
-        (when (chirp--update-tweet-tree tweet tweet-id fn)
-          (when (eq state active-state)
-            (cl-pushnew (plist-get tweet :id) dirty-ids :test #'equal)))))
+      (dolist (slot '(:items :pending-new-items))
+        (dolist (tweet (plist-get state slot))
+          (when (chirp--update-tweet-tree tweet tweet-id fn)
+            (setq changed-p t)
+            (when (and (eq state active-state) (eq slot :items))
+              (cl-pushnew
+               (plist-get tweet :id) dirty-ids :test #'equal))))))
     (unless active-state
       (chirp--map-buffer-tweets
        buffer
        (lambda (tweet)
          (when (chirp--update-tweet-tree tweet tweet-id fn)
+           (setq changed-p t)
            (cl-pushnew (plist-get tweet :id) dirty-ids :test #'equal)))))
     (when rerender
       (dolist (dirty-id dirty-ids)
         (chirp-request-tweet-rerender dirty-id buffer)))
-    (and dirty-ids t)))
+    changed-p))
 
 (defun chirp--remove-tweet-from-primary-feeds (buffer tweet-id)
   "Remove TWEET-ID from retained primary feeds represented by BUFFER.
@@ -1875,16 +1880,17 @@ Return non-nil when BUFFER currently projects a primary feed."
   (let ((active-state (chirp--appkit-timeline-state buffer))
         active-changed-p)
     (dolist (state (chirp--primary-feed-state-values active-state))
-      (let* ((items (plist-get state :items))
-             (remaining
-              (cl-remove-if
-               (lambda (tweet)
-                 (equal (plist-get tweet :id) tweet-id))
-               items)))
-        (unless (= (length items) (length remaining))
-          (setf (plist-get state :items) remaining)
-          (when (eq state active-state)
-            (setq active-changed-p t)))))
+      (dolist (slot '(:items :pending-new-items))
+        (let* ((items (plist-get state slot))
+               (remaining
+                (cl-remove-if
+                 (lambda (tweet)
+                   (equal (plist-get tweet :id) tweet-id))
+                 items)))
+          (unless (= (length items) (length remaining))
+            (setf (plist-get state slot) remaining)
+            (when (eq state active-state)
+              (setq active-changed-p t))))))
     (when (and active-changed-p (buffer-live-p buffer))
       (with-current-buffer buffer
         (when-let* ((view (appkit-current-view)))
