@@ -14,6 +14,8 @@
 (require 'json)
 (require 'subr-x)
 (require 'url-parse)
+(require 'appkit-markup-codec)
+(require 'appkit-markup-codecs)
 (require 'chirp-core)
 
 ;;; Constants
@@ -238,6 +240,11 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
       (error "XChat returned invalid Base64 message data"))
     (chirp-xchat--thrift-document bytes)))
 
+(defun chirp-xchat--plain-document (text)
+  "Decode plain TEXT into an immutable Appkit semantic document."
+  (appkit-markup-parse-result-document
+   (appkit-markup-parse 'plain text)))
+
 (defun chirp-xchat--entry-content (contents)
   "Decode MessageCreateEvent CONTENTS into a normalized entry plist."
   (let* ((holder (chirp-xchat--thrift-document contents))
@@ -253,10 +260,13 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
       (if (eq entry-kind 'message)
           (let* ((message (nth 2 entry))
                  (text-bytes (chirp-xchat--thrift-field message 1 11))
-                 (attachments (chirp-xchat--thrift-field message 3 15)))
+                 (attachments (chirp-xchat--thrift-field message 3 15))
+                 (text
+                  (and text-bytes
+                       (chirp-xchat--text text-bytes "message text"))))
             (list :kind 'message
-                  :text (and text-bytes
-                             (chirp-xchat--text text-bytes "message text"))
+                  :text text
+                  :document (and text (chirp-xchat--plain-document text))
                   :attachment-count (length attachments)))
         (list :kind entry-kind)))))
 
@@ -281,18 +291,23 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
              (content
               (cond
                (encrypted-p
-                '(:kind message :encrypted-p t
-                  :text "[Encrypted message unavailable]"))
+                (let ((text "[Encrypted message unavailable]"))
+                  (list :kind 'message :encrypted-p t
+                        :text text
+                        :document (chirp-xchat--plain-document text))))
                (contents (chirp-xchat--entry-content contents))
-               (t '(:kind message
-                    :text "[Message content unavailable]")))))
+               (t
+                (let ((text "[Message content unavailable]"))
+                  (list :kind 'message
+                        :text text
+                        :document (chirp-xchat--plain-document text)))))))
         (append content
                 (list :conversation-key-version key-version
                       :message-request-p
                       (and (chirp-xchat--thrift-field create 109 2) t)))))))
 
-(defun chirp-xchat-normalize-event (encoded)
-  "Normalize one Base64 ENCODED XChat event into a plist."
+(defun chirp-xchat-decode-event (encoded)
+  "Decode one Base64 ENCODED XChat event into a bounded domain plist."
   (let* ((event (chirp-xchat--decode-event encoded))
          (sequence-id (chirp-xchat--field-text event 1 "sequence ID"))
          (message-id (chirp-xchat--field-text event 2 "message ID"))
@@ -397,7 +412,7 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                  (chirp-xchat--send-base64-p
                   encoded chirp-xchat--max-send-event-bytes))
       (error "XChat send response has no valid acknowledgement"))
-    (let ((event (chirp-xchat-normalize-event encoded)))
+    (let ((event (chirp-xchat-decode-event encoded)))
       (unless (and (eq (plist-get event :kind) 'message)
                    (equal (plist-get event :message-id) message-id)
                    (equal (plist-get event :sender-id) sender-id)
@@ -448,15 +463,15 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
         (error "XChat encoded message page is too large"))))
   encoded-events)
 
-(defun chirp-xchat--normalize-events (encoded-events &optional max-events)
-  "Normalize and order ENCODED-EVENTS, accepting at most MAX-EVENTS."
+(defun chirp-xchat--decode-events (encoded-events &optional max-events)
+  "Decode and order ENCODED-EVENTS, accepting at most MAX-EVENTS."
   (chirp-xchat--validate-encoded-events
    encoded-events (or max-events chirp-xchat-max-history-events))
   (chirp-xchat--sort-events
-   (mapcar #'chirp-xchat-normalize-event encoded-events)))
+   (mapcar #'chirp-xchat-decode-event encoded-events)))
 
-(defun chirp-xchat--normalize-user (wrapper)
-  "Normalize one XChat user result WRAPPER."
+(defun chirp-xchat--decode-user (wrapper)
+  "Decode one XChat user result WRAPPER."
   (let* ((result (and (chirp-object-p wrapper)
                       (chirp-get wrapper "result")))
          (core (and (chirp-object-p result) (chirp-get result "core")))
@@ -554,9 +569,9 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
     (typename
      (error "XChat returned an unknown conversation type: %S" typename))))
 
-(cl-defun chirp-xchat--normalize-conversation
+(cl-defun chirp-xchat--decode-conversation
     (item &key require-deletion-flag-p)
-  "Normalize one XChat conversation ITEM, or return nil when deleted.
+  "Decode one XChat conversation ITEM, or return nil when deleted.
 
 REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
   (let ((detail (chirp-get item "conversation_detail")))
@@ -580,9 +595,9 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
                (_ (unless (listp raw-participants)
                     (error "XChat conversation has invalid participants")))
                (participants
-                (mapcar #'chirp-xchat--normalize-user raw-participants))
+                (mapcar #'chirp-xchat--decode-user raw-participants))
                (events
-                (chirp-xchat--normalize-events
+                (chirp-xchat--decode-events
                  (chirp-xchat--item-encoded-events item)))
                (foreign-event
                 (and id
@@ -682,7 +697,7 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
         (cons (delq nil
                     (mapcar
                      (lambda (item)
-                       (chirp-xchat--normalize-conversation
+                       (chirp-xchat--decode-conversation
                         item :require-deletion-flag-p t))
                      items))
               `(("pagination" .
@@ -1001,7 +1016,7 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
       (error "XChat conversation data is missing items"))
     (let* ((items (chirp-xchat--validate-inbox-items (cdr items-cell)))
            (conversations
-            (delq nil (mapcar #'chirp-xchat--normalize-conversation items)))
+            (delq nil (mapcar #'chirp-xchat--decode-conversation items)))
            (conversation
             (cl-find conversation-id conversations
                      :key (lambda (item) (plist-get item :id))
@@ -1035,10 +1050,10 @@ PREVIOUS-KEY-VERSION is retained when the page contains no older key version."
                (append encoded-events encoded-key-events)
                chirp-xchat-max-history-events))
              (events
-              (chirp-xchat--normalize-events
+              (chirp-xchat--decode-events
                encoded-events chirp-xchat-max-history-events))
              (key-events
-              (chirp-xchat--normalize-events
+              (chirp-xchat--decode-events
                encoded-key-events chirp-xchat-max-history-events))
              (all-events (append events key-events))
              (foreign

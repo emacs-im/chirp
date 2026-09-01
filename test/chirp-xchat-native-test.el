@@ -95,6 +95,85 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
       (ert-fail "Synthetic native recovery did not settle"))
     result))
 
+(ert-deftest chirp-xchat-native-decodes-verified-message-domain ()
+  "Native JSON should decode into bounded message and attachment values."
+  (let* ((messages
+          (chirp-xchat-native--decode-decrypt-output
+           '((messages
+              . (((sequence_id . "20")
+                  (id . "message-20")
+                  (sender_id . "42")
+                  (conversation_id . "conversation-1")
+                  (created_at_msec . 1700000000000)
+                  (content_kind . "text")
+                  (text . "hello")
+                  (attachments
+                   . (((kind . "image")
+                       (url . "https://pbs.twimg.com/media/example.jpg")
+                       (preview_url)
+                       (name . "example.jpg"))))
+                  (reply . t)
+                  (reply_text . "earlier")
+                  (reply_attachment_count . 0)
+                  (key_version . "7")
+                  (verified . t))))
+             (errors))))
+         (message (car messages))
+         (attachment (car (plist-get message :attachments))))
+    (should (equal (plist-get message :sequence-id) "20"))
+    (should (eq (plist-get message :content-kind) 'text))
+    (should (plist-get message :reply-p))
+    (should (equal (plist-get attachment :kind) 'image))
+    (should (equal (plist-get attachment :name) "example.jpg"))))
+
+(ert-deftest chirp-xchat-native-rejects-invalid-domain-output ()
+  "Native JSON decoding should reject unverified or structurally invalid data."
+  (should-error
+   (chirp-xchat-native--decode-decrypt-output
+    '((messages
+       . (((sequence_id . "20")
+           (conversation_id . "conversation-1")
+           (content_kind . "text")
+           (attachments)
+           (reply . :json-false)
+           (reply_attachment_count . 0)
+           (verified . :json-false))))
+      (errors))))
+  (should-error
+   (chirp-xchat-native--decode-decrypt-output
+    '((messages
+       . (((sequence_id . "20")
+           (conversation_id . "conversation-1")
+           (content_kind . "html")
+           (attachments)
+           (reply . :json-false)
+           (reply_attachment_count . 0)
+           (verified . t))))
+      (errors)))))
+
+(ert-deftest chirp-xchat-native-decrypt-wrapper-decodes-domain-output ()
+  "The public native bridge should not expose raw JSON message objects."
+  (cl-letf (((symbol-function 'chirp-xchat-native--session)
+             (lambda () :session))
+            ((symbol-function 'chirp-xchat-native-decrypt)
+             (lambda (session _input-json)
+               (should (eq session :session))
+               (json-encode
+                '(("messages"
+                   . [(("sequence_id" . "20")
+                       ("conversation_id" . "conversation-1")
+                       ("content_kind" . "text")
+                       ("text" . "hello")
+                       ("attachments" . [])
+                       ("reply" . :json-false)
+                       ("reply_attachment_count" . 0)
+                       ("verified" . t))])
+                  ("errors" . ()))))))
+    (let ((messages (chirp-xchat-native-decrypt-events '("event") [])))
+      (should (= (length messages) 1))
+      (should (eq (plist-get (car messages) :content-kind) 'text))
+      (should (equal (plist-get (car messages) :text) "hello")))))
+
 (ert-deftest chirp-xchat-native-loader-requires-explicit-readable-file ()
   (skip-when (featurep 'chirp-xchat-native-module))
   (dolist (file

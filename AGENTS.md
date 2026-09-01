@@ -8,9 +8,10 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 - `chirp.el` is the public entry point. External users load `(require 'chirp)`.
 - `chirp-backend.el` owns operation selection, compose/upload orchestration, response adaptation, and normalized callback contracts. `chirp-xchat.el` owns modern XChat variables, cursor validation, bounded Thrift decoding, and DM wire normalization. Chirp has no CLI transport; never add subprocess-backed X API behavior.
 - `chirp-core.el` owns shared state, history, cross-view navigation, and the lazy Appkit application session.
+- `chirp-xchat-native.el` owns lazy native-module loading and strict JSON encoding and decoding for native cryptographic operations. Its public decryption result consists only of bounded verified domain values, not raw native JSON.
 - `native/chirp-xchat-module` is the optional boundary for official-XDK cryptography. It owns native private and conversation keys, verification, decryption, and outgoing encryption/signing; it must not call X GraphQL, return key material to Lisp, persist secrets, or load merely because Chirp loaded. Recovery binds the registered X user identity to the native session, and per-message Lisp input must never choose or override the signing sender. Lisp may receive only verified domain data and opaque outgoing envelopes. Users configure its absolute path explicitly through `chirp-xchat-native-module-file`; never infer it from source trees, build directories, or `load-path`. Only the pinned official SDK may contact strictly validated HTTPS Juicebox realms, and only after an explicit PIN submission. Native workers own only Rust values and never retain an `emacs_env`, Lisp value, reference, or callback. Explicit destruction is the authoritative lifecycle end; GC finalization may request cancellation and detach but must never block Emacs.
 - `chirp-render.el` renders normalized data. `chirp-media.el` owns cache paths, thumbnail extraction, prefetching, and large-media display while Appkit owns bounded task scheduling and lifecycle cancellation.
-- View modules orchestrate fetching and rendering; they must not duplicate backend, protocol, normalization, or media behavior. `chirp-dm.el` owns the Appkit inbox and conversation composer projection; it does not parse XChat wire data or maintain parallel timeline/input state. `chirp-actions.el` owns tweet compose and write actions, which share one backend request path.
+- View modules orchestrate fetching and rendering; they must not duplicate backend, protocol, normalization, or media behavior. `chirp-dm.el` is the public unlock and inbox entry point. `chirp-dm-inbox.el` owns Appkit directory projection and inbox pagination, `chirp-dm-conversation.el` owns history, decryption orchestration, and the composer lifecycle, and `chirp-dm-render.el` owns normalized event projection and presentation. The DM subsystem does not parse XChat wire data or maintain parallel timeline/input state. `chirp-actions.el` owns tweet compose and write actions, which share one backend request path.
 
 ## Change Discipline
 
@@ -24,7 +25,7 @@ This file applies to the entire repository. Keep it self-contained: agents shoul
 
 ## Emacs Lisp Conventions
 
-- The Emacs baseline is 29.1. Verify newer APIs before use and do not raise the baseline without updating package metadata, documentation, and the changelog.
+- The Emacs baseline is 31.1. Verify newer APIs before use and do not raise the baseline without updating package metadata, documentation, and the changelog.
 - Every `.el` file uses lexical binding, has the correct package prefix, provides its feature, and ends with the standard footer.
 - Public API uses `chirp-`; private implementation uses `chirp--` or the owning module's double-dash prefix. Never call another package's private symbols.
 - Use lowercase hyphenated Lisp names. Single-word predicates end in `p`; multi-word predicates end in `-p`. Prefix intentionally unused lexical variables and arguments with `_`.
