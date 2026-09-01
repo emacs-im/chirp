@@ -6,6 +6,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'seq)
 (require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-render)
@@ -1732,19 +1733,17 @@
                                      (line-end-position) 'line-height)
                                     t)))))))))
 
-(ert-deftest chirp-render-media-grid-uses-appkit-slice-rows ()
+(ert-deftest chirp-render-media-cell-uses-appkit-slice-rows ()
   "Tweet media cells should use Appkit slice rows for current-line geometry."
   (let ((source '(image :type png :file "/tmp/fake.png"
                         :height (3 . ch)
                         :appkit-media-nslices 3))
         (media '(:type "photo" :url "https://example.com/a.jpg")))
-    (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
-               (lambda (&rest _args) source))
-              ((symbol-function 'image-size)
+    (cl-letf (((symbol-function 'image-size)
                (lambda (&rest _args) '(8 . 3)))
               ((symbol-function 'appkit-media--char-pixel-height)
                (lambda () 10)))
-      (let* ((cell (chirp-render--media-grid-cell media 0))
+      (let* ((cell (chirp-render--media-cell media 0 source))
              (rows (plist-get cell :rows)))
         (should (= (length rows) 3))
         (should (equal (get-text-property 0 'display
@@ -1760,6 +1759,192 @@
                        '(image :type png :file "/tmp/fake.png"
                                :height (3 . ch)
                                :appkit-media-nslices 3)))))))
+
+(ert-deftest chirp-render-two-media-grid-uses-official-landscape-group ()
+  "Two large media cells should fill equal halves of one 16:9 group."
+  (let ((image '(image :type png :appkit-media-nslices 16))
+        crop-specs)
+    (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+               (lambda (_media &optional crop-spec)
+                 (push crop-spec crop-specs)
+                 image))
+              ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'image-size)
+               (lambda (&rest _args) '(8 . 16)))
+              ((symbol-function 'frame-char-height)
+               (lambda (&optional _frame) 18))
+              ((symbol-function 'appkit-media--char-pixel-height)
+               (lambda () 18)))
+      (with-temp-buffer
+        (chirp-render-insert-media-strip
+         '((:type "photo" :url "https://example.com/a.jpg")
+           (:type "photo" :url "https://example.com/b.jpg")))
+        (goto-char (point-min))
+        (forward-char 1)
+        (should
+         (equal (get-text-property (point) 'display)
+                '(space :width (2)))))
+      (should
+       (equal (nreverse crop-specs)
+              '((:width 255 :height 288)
+                (:width 255 :height 288))))
+      (setq crop-specs nil)
+      (with-temp-buffer
+        (chirp-render-insert-media-strip
+         '((:type "photo" :url "https://example.com/a.jpg"))))
+      (should (equal crop-specs '(nil))))))
+
+
+(ert-deftest chirp-render-discussion-focus-uses-natural-ratio-track ()
+  "The focused thread post should select large uncropped track images."
+  (let ((tweet
+         '(:kind tweet
+           :id "focus"
+           :text "Focused post"
+           :author-name "Alice"
+           :author-handle "alice"
+           :media
+           ((:type "photo" :url "media-0")
+            (:type "photo" :url "media-1")
+            (:type "photo" :url "media-2"))))
+        track-media)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-track-image)
+                 (lambda (media)
+                   (push media track-media)
+                   `(image
+                     :type png
+                     :file ,(plist-get media :url)
+                     :appkit-media-nslices 6)))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args)
+                   (ert-fail "focused media unexpectedly used a cover crop")))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'image-size)
+                 (lambda (&rest _args) '(10 . 6)))
+                ((symbol-function 'appkit-media--char-pixel-height)
+                 (lambda () 18)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet t))))
+      (should
+       (cl-loop for position from (point-min) below (point-max)
+                thereis
+                (equal (get-text-property position 'display)
+                       '(space :width (8))))))
+    (should
+     (equal (mapcar (lambda (media) (plist-get media :url))
+                    (nreverse track-media))
+            '("media-0" "media-1" "media-2")))))
+
+(ert-deftest chirp-render-discussion-focus-retweet-keeps-cover-grid ()
+  "A focused retweet should retain the compact TweetPhotos cover grid."
+  (let ((tweet
+         '(:kind tweet
+           :id "focus-retweet"
+           :text "Retweeted post"
+           :author-name "Alice"
+           :author-handle "alice"
+           :retweeted-by "bob"
+           :media
+           ((:type "photo" :url "media-0")
+            (:type "photo" :url "media-1")
+            (:type "photo" :url "media-2"))))
+        crop-specs)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-track-image)
+                 (lambda (&rest _args)
+                   (ert-fail "retweet unexpectedly used the media track")))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (_media &optional crop-spec)
+                   (push crop-spec crop-specs)
+                   `(image
+                     :type png
+                     :appkit-media-nslices
+                     ,(/ (plist-get crop-spec :height) 18))))
+                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'image-size)
+                 (lambda (&rest _args) '(10 . 16)))
+                ((symbol-function 'frame-char-height)
+                 (lambda (&optional _frame) 18))
+                ((symbol-function 'appkit-media--char-pixel-height)
+                 (lambda () 18)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-discussion-entry
+           (chirp-test--discussion-row tweet t)))))
+    (should
+     (equal
+      (nreverse crop-specs)
+      '((:width 255 :height 288)
+        (:width 255 :height 144 :insets (0 0 2 0))
+        (:width 255 :height 144))))))
+
+(ert-deftest chirp-render-media-grid-places-three-through-six-items ()
+  "Every TweetPhotos topology should place expected items on each band."
+  (cl-labels
+      ((rendered-lines
+        (count)
+        (with-temp-buffer
+          (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+                     (lambda (_media &optional crop-spec)
+                       `(image
+                         :type png
+                         :appkit-media-nslices
+                         ,(/ (plist-get crop-spec :height) 18))))
+                    ((symbol-function
+                      'chirp-media-thumbnail-placeholder-image)
+                     (lambda (&rest _args) nil))
+                    ((symbol-function 'image-size)
+                     (lambda (&rest _args) '(10 . 10)))
+                    ((symbol-function 'frame-char-height)
+                     (lambda (&optional _frame) 18))
+                    ((symbol-function 'appkit-media--char-pixel-height)
+                     (lambda () 18)))
+            (chirp-render--insert-media-grid
+             (cl-loop for index below count
+                      collect
+                      (list :type "photo"
+                            :url (format "media-%d" index)))
+             nil nil))
+          (goto-char (point-min))
+          (let (lines)
+            (while (< (point) (point-max))
+              (let ((end (line-end-position))
+                    indices)
+                (while (< (point) end)
+                  (when-let* ((index
+                               (get-text-property
+                                (point) 'chirp-media-index)))
+                    (unless (memq index indices)
+                      (setq indices (append indices (list index)))))
+                  (forward-char 1))
+                (setq lines (append lines (list indices))))
+              (forward-line 1))
+            lines)))
+       (bands-match-p
+        (lines split first second)
+        (and (= (length lines) (* 2 split))
+             (cl-every (lambda (line) (equal line first))
+                       (seq-take lines split))
+             (cl-every (lambda (line) (equal line second))
+                       (seq-drop lines split)))))
+    (should
+     (bands-match-p (rendered-lines 3) 8 '(0 1) '(0 2)))
+    (should
+     (bands-match-p (rendered-lines 4) 8 '(0 1) '(2 3)))
+    (should
+     (bands-match-p (rendered-lines 5) 12 '(0 1) '(2 3 4)))
+    (should
+     (bands-match-p (rendered-lines 6) 12 '(0 1 2) '(3 4 5)))))
 
 (ert-deftest chirp-render-video-placeholder-cover-is-sliced ()
   "Video placeholders should use the same sliced cover path as photos."
@@ -1789,7 +1974,7 @@
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
-                 (lambda (media)
+                 (lambda (media &optional _crop-size)
                    `(image :type png
                            :file ,(plist-get media :url)
                            :appkit-media-nslices
@@ -1805,6 +1990,9 @@
       (should (equal (get-text-property (point) 'display)
                      '(space :width 8)))
       (should (= (get-text-property (point) 'chirp-media-index) 0))
+      (forward-char 1)
+      (should (equal (get-text-property (point) 'display)
+                     '(space :width (2))))
       (forward-char 1)
       (should (eq (car-safe (car-safe (get-text-property (point) 'display)))
                   'slice))

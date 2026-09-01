@@ -34,6 +34,7 @@
 (require 'chirp-core)
 (require 'chirp-time)
 (require 'chirp-media)
+(require 'chirp-media-layout)
 (require 'nerd-icons nil t)
 
 ;;; Options
@@ -960,11 +961,12 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                                   chirp-media-index ,index
                                   chirp-media-list ,media-list)))
 
-(defun chirp-render--media-grid-cell (media index)
-  "Return sliced grid data for MEDIA at INDEX."
-  (if-let* ((image (or (chirp-media-thumbnail-image media)
-                       (chirp-media-thumbnail-placeholder-image media)))
-            (rows (appkit-media-image-slice-rows image)))
+(defun chirp-render--media-cell (media index image)
+  "Return sliced cell data for MEDIA at INDEX using IMAGE."
+  (if-let* ((display-image
+             (or image
+                 (chirp-media-thumbnail-placeholder-image media)))
+            (rows (appkit-media-image-slice-rows display-image)))
       (list :media media
             :index index
             :rows rows
@@ -978,28 +980,117 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                                     'face 'chirp-media-placeholder-face))
             :padding (make-string (max 1 (string-width placeholder)) ?\s)))))
 
-(defun chirp-render--insert-media-grid
-    (media-list &optional prefix prefix-face)
-  "Insert sliced rows for MEDIA-LIST using PREFIX and PREFIX-FACE."
-  (let* ((cells
-          (cl-loop for media in media-list
-                   for index from 0
-                   collect (chirp-render--media-grid-cell media index)))
-         (row-count
-          (apply #'max (mapcar (lambda (cell)
-                                 (length (plist-get cell :rows)))
-                               cells))))
+(defun chirp-render--insert-media-cell-slice
+    (cell row media-list)
+  "Insert ROW of CELL and associate it with MEDIA-LIST."
+  (let ((start (point)))
+    (insert (or (nth row (plist-get cell :rows))
+                (plist-get cell :padding)))
+    (chirp-render--mark-media-region
+     start (point)
+     (plist-get cell :media)
+     media-list
+     (plist-get cell :index))))
+
+(defun chirp-render--insert-media-row
+    (cells media-list gap prefix prefix-face)
+  "Insert CELLS as one sliced row associated with MEDIA-LIST.
+
+GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
+  (let ((row-count
+         (apply #'max
+                (mapcar (lambda (cell)
+                          (length (plist-get cell :rows)))
+                        cells))))
     (dotimes (row row-count)
       (chirp-render--insert-prefix prefix prefix-face)
-      (dolist (cell cells)
-        (let ((start (point)))
-          (insert (or (nth row (plist-get cell :rows))
-                      (plist-get cell :padding)))
-          (chirp-render--mark-media-region
-           start (point)
-           (plist-get cell :media) media-list (plist-get cell :index))))
+      (cl-loop for cell in cells
+               for column from 0
+               do (when (> column 0)
+                    (insert
+                     (propertize " " 'display
+                                 `(space :width (,gap)))))
+               do (chirp-render--insert-media-cell-slice
+                   cell row media-list))
       (when (< (1+ row) row-count)
         (insert (propertize "\n" 'line-height t))))))
+
+(defun chirp-render--insert-media-track
+    (media-list prefix prefix-face)
+  "Insert focused MEDIA-LIST at natural ratios in one horizontal track.
+
+PREFIX and PREFIX-FACE control indentation."
+  (chirp-render--insert-media-row
+   (cl-loop for media in media-list
+            for index from 0
+            collect
+            (chirp-render--media-cell
+             media index (chirp-media-track-image media)))
+   media-list chirp-media-layout-track-gap prefix prefix-face))
+
+(defun chirp-render--insert-media-grid
+    (media-list prefix prefix-face)
+  "Insert MEDIA-LIST using X Web's compact cover grid.
+
+PREFIX and PREFIX-FACE control indentation."
+  (let ((count (min (length media-list) 6)))
+    (if (= count 1)
+        (chirp-render--insert-media-row
+         (list
+          (chirp-render--media-cell
+           (car media-list) 0
+           (chirp-media-thumbnail-image (car media-list))))
+         media-list 0 prefix prefix-face)
+      (let* ((plan
+              (chirp-media-layout-cover-plan
+               count chirp-media-thumbnail-size (frame-char-height)))
+             (bands (plist-get plan :bands))
+             (band-slices (plist-get plan :band-slices))
+             (crop-specs (plist-get plan :crop-specs))
+             (cells (make-vector count nil))
+             (offsets (make-hash-table :test #'eql))
+             prepared-bands)
+        (cl-loop for media in media-list
+                 for index below count
+                 do (aset
+                     cells index
+                     (chirp-render--media-cell
+                      media index
+                      (chirp-media-thumbnail-image
+                       media (aref crop-specs index)))))
+        (setq prepared-bands
+              (mapcar
+               (lambda (band)
+                 (prog1
+                     (mapcar
+                      (lambda (index)
+                        (cons index (gethash index offsets 0)))
+                      band)
+                   (dolist (index band)
+                     (puthash index
+                              (+ (gethash index offsets 0) band-slices)
+                              offsets))))
+               bands))
+        (cl-loop for band in prepared-bands
+                 for band-index from 0
+                 do
+                 (dotimes (row band-slices)
+                   (chirp-render--insert-prefix prefix prefix-face)
+                   (cl-loop for (index . offset) in band
+                            for column from 0
+                            do (when (> column 0)
+                                 (insert
+                                  (propertize
+                                   " " 'display
+                                   `(space :width
+                                           (,chirp-media-layout-cover-gap)))))
+                            do (chirp-render--insert-media-cell-slice
+                                (aref cells index)
+                                (+ offset row)
+                                media-list))
+                   (unless (and (= band-index (1- (length prepared-bands)))
+                                (= row (1- band-slices)))
+                     (insert (propertize "\n" 'line-height t)))))))))
 
 (defun chirp-render--insert-media-text-cell (media media-list index &optional prefix prefix-face)
   "Insert one compact text entry for hidden MEDIA.
@@ -1012,10 +1103,13 @@ PREFIX-FACE when provided."
                         'face 'chirp-media-placeholder-face))
     (chirp-render--mark-media-region start (point) media media-list index)))
 
-(defun chirp-render-insert-media-strip (media-list &optional prefix prefix-face)
-  "Insert a grid of thumbnails for MEDIA-LIST.
+(defun chirp-render-insert-media-strip
+    (media-list &optional prefix prefix-face presentation)
+  "Insert MEDIA-LIST using a cover grid or focused-post track.
 
-Precede each row with PREFIX using PREFIX-FACE when provided."
+Precede each row with PREFIX using PREFIX-FACE when provided.
+PRESENTATION is `track' for natural-ratio horizontal media; all other values
+use the compact cover grid."
   (when media-list
     (if (not chirp-show-tweet-media)
         (cl-loop for media in media-list
@@ -1023,7 +1117,9 @@ Precede each row with PREFIX using PREFIX-FACE when provided."
                  do (unless (zerop index)
                       (insert "\n"))
                  do (chirp-render--insert-media-text-cell media media-list index prefix prefix-face))
-      (chirp-render--insert-media-grid media-list prefix prefix-face))
+      (if (eq presentation 'track)
+          (chirp-render--insert-media-track media-list prefix prefix-face)
+        (chirp-render--insert-media-grid media-list prefix prefix-face)))
     (insert "\n\n")))
 
 ;;; Tweets
@@ -1123,15 +1219,16 @@ block ends in a newline."
 
 (cl-defun chirp-render--insert-tweet-body
     (tweet &key prefix prefix-face reply-context-prefix show-reply-context
-           article-mode (write-actions-p t)
+           article-mode media-presentation (write-actions-p t)
            (trailing-newlines 1))
   "Insert TWEET content and actions.
 
 PREFIX and PREFIX-FACE control indentation.  REPLY-CONTEXT-PREFIX overrides
 PREFIX for the reply context.  SHOW-REPLY-CONTEXT controls the inline reply
 target.  ARTICLE-MODE selects full article rendering when it is `full'.
-WRITE-ACTIONS-P controls mutation actions.  TRAILING-NEWLINES controls the
-additional newlines after the metrics row."
+MEDIA-PRESENTATION selects `track' or the default cover grid.  WRITE-ACTIONS-P
+controls mutation actions.  TRAILING-NEWLINES controls the additional
+newlines after the metrics row."
   (let* ((article-mode
           (if (or (eq article-mode 'full)
                   (chirp--tweet-expanded-p tweet))
@@ -1170,7 +1267,7 @@ additional newlines after the metrics row."
     (chirp-render--insert-expanded-urls
      (chirp-render--trailing-urls tweet) prefix prefix-face)
     (chirp-render-insert-media-strip
-     (plist-get tweet :media) prefix prefix-face)
+     (plist-get tweet :media) prefix prefix-face media-presentation)
     (chirp-render--insert-quoted-tweet
      tweet prefix prefix-face write-actions-p)
     (chirp-render--insert-reply-control tweet prefix prefix-face)
@@ -1303,6 +1400,10 @@ tweet content and actions."
                  :reply-context-prefix nil
                  :show-reply-context show-reply-context
                  :article-mode (and focus-p 'full)
+                 :media-presentation
+                 (and focus-p
+                      (not (plist-get tweet :retweeted-by))
+                      'track)
                  :trailing-newlines 0)
                 (appkit-ui-apply-line-prefix
                  body-start (point) body-prefix)))

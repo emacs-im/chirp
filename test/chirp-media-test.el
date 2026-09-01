@@ -362,7 +362,7 @@ rerender and creates a CPU loop."
                      :url "https://example.com/photo.jpg"))
                   'preview-image))
       (should (equal rendered
-                     '("/tmp/chirp-thumb.jpg" 128 128)))
+                     '("/tmp/chirp-thumb.jpg" 256 256)))
       (should-not decorated)
       (should (eq (chirp-media-thumbnail-image
                    '(:type "video"
@@ -375,6 +375,73 @@ rerender and creates a CPU loop."
                      '(:type "video"
                        :preview-url "https://example.com/preview.jpg"))
                     'preview-image))))))
+
+(ert-deftest chirp-media-track-image-uses-large-natural-ratio-bounds ()
+  "Focused media should preserve aspect ratio within the larger track height."
+  (let ((chirp-media-render-from-cache-only t)
+        preview-arguments)
+    (cl-letf (((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args) "/tmp/chirp-track.jpg"))
+              ((symbol-function
+                'appkit-media-cropped-preview-image-from-file)
+               (lambda (&rest _args)
+                 (ert-fail "track media unexpectedly requested a crop")))
+              ((symbol-function 'appkit-media-preview-image-from-file)
+               (lambda (&rest arguments)
+                 (setq preview-arguments arguments)
+                 'track-image)))
+      (should
+       (eq
+        (chirp-media-track-image
+         '(:type "photo" :url "https://example.com/photo.jpg"))
+        'track-image))
+      (should
+       (equal preview-arguments
+              '("/tmp/chirp-track.jpg" 1536 384))))))
+
+(ert-deftest chirp-media-side-by-side-thumbnail-prefers-fixed-crop ()
+  "Grid thumbnails should crop to one fixed tile and retain a decoder fallback."
+  (let ((chirp-media-render-from-cache-only t)
+        cropped-arguments)
+    (cl-letf (((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args) "/tmp/chirp-thumb.jpg"))
+              ((symbol-function
+                'appkit-media-cropped-preview-image-from-file)
+               (lambda (&rest arguments)
+                 (setq cropped-arguments arguments)
+                 'cropped-image))
+              ((symbol-function 'appkit-media-preview-image-from-file)
+               (lambda (&rest _args)
+                 (ert-fail "fixed crop unexpectedly used its fallback"))))
+      (should
+       (eq (chirp-media-thumbnail-image
+            '(:type "photo" :url "https://example.com/photo.jpg")
+            '(127 . 144))
+           'cropped-image))
+      (should
+       (equal cropped-arguments
+              '("/tmp/chirp-thumb.jpg" 127 144)))
+      (setq cropped-arguments nil)
+      (should
+       (eq (chirp-media-thumbnail-image
+            '(:type "photo" :url "https://example.com/photo.jpg")
+            '(:width 127 :height 72 :insets (0 0 2 0)))
+           'cropped-image))
+      (should
+       (equal cropped-arguments
+              '("/tmp/chirp-thumb.jpg" 127 72 (0 0 2 0)))))
+    (cl-letf (((symbol-function 'chirp-media-cached-file)
+               (lambda (&rest _args) "/tmp/chirp-thumb.jpg"))
+              ((symbol-function
+                'appkit-media-cropped-preview-image-from-file)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'appkit-media-preview-image-from-file)
+               (lambda (&rest _args) 'ordinary-image)))
+      (should
+       (eq (chirp-media-thumbnail-image
+            '(:type "photo" :url "https://example.com/photo.jpg")
+            '(127 . 144))
+           'ordinary-image)))))
 
 (ert-deftest chirp-media-thumbnail-placeholder-image-exists-for-video-like-media ()
   "Video-like media should reserve thumbnail space before the real preview arrives."
