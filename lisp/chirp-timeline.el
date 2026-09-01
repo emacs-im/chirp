@@ -169,12 +169,6 @@
 
 ;;;; Requests
 
-(defun chirp-timeline--generation-current-p (view state generation)
-  "Return non-nil when GENERATION may still update STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq generation (plist-get state :generation))))
-
 (defun chirp-timeline--fetch-count (state phase)
   "Return request size for STATE and request PHASE."
   (let ((limit (plist-get (plist-get state :query) :limit)))
@@ -191,7 +185,7 @@
     (view state generation tweets envelope)
   "Settle GENERATION in VIEW and merge TWEETS from ENVELOPE into STATE."
   (setf (chirp-timeline--generation-settled-p generation) t)
-  (when (chirp-timeline--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (let* ((phase (chirp-timeline--generation-phase generation))
            (query (plist-get state :query))
            (page (plist-get state :page))
@@ -239,21 +233,13 @@
 (defun chirp-timeline--settle-error (view state generation message)
   "Settle GENERATION in VIEW and STATE with error MESSAGE."
   (setf (chirp-timeline--generation-settled-p generation) t)
-  (when (chirp-timeline--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (let ((status (plist-get state :status)))
       (setf (plist-get status :phase) 'error
             (plist-get status :message) message
             (plist-get state :generation) nil)
       (appkit-request-sync view :part 'frame :position t)
       (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))))
-
-(defun chirp-timeline--cancel-request (view)
-  "Cancel VIEW's superseded primary timeline transport, if any."
-  (let* ((table (appkit-view-request-table view))
-         (request (gethash chirp-timeline--request-key table)))
-    (remhash chirp-timeline--request-key table)
-    (when request
-      (chirp-x-cancel-request request))))
 
 (defun chirp-timeline--interrupt-state-request (state)
   "Retire STATE's interrupted request generation, if any."
@@ -267,7 +253,7 @@
 
 (defun chirp-timeline--retire-request (view state generation)
   "Retire VIEW's transport when GENERATION still owns STATE."
-  (when (chirp-timeline--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (remhash chirp-timeline--request-key
              (appkit-view-request-table view))))
 
@@ -289,7 +275,7 @@
     (setf (plist-get state :generation) generation
           (plist-get status :phase) phase
           (plist-get status :message) nil)
-    (chirp-timeline--cancel-request view)
+    (chirp-cancel-view-request view chirp-timeline--request-key #'chirp-x-cancel-request)
     (appkit-request-sync view :part 'frame :position t)
     (setq request
           (chirp-backend-feed
@@ -310,12 +296,12 @@
     (cond
      ((and (not callback-ran-p)
            request
-           (chirp-timeline--generation-current-p view state generation))
+           (chirp-view-state-token-current-p view state generation))
       (puthash chirp-timeline--request-key request
                (appkit-view-request-table view)))
      ((and (not callback-ran-p)
            (null request)
-           (chirp-timeline--generation-current-p view state generation))
+           (chirp-view-state-token-current-p view state generation))
       (chirp-timeline--settle-error
        view state generation "X timeline request did not start")))
     request))
@@ -382,7 +368,7 @@
                    :anchor-property 'chirp-entry-id
                    :preserve-window-start t))))
         (chirp-timeline--interrupt-state-request state)
-        (chirp-timeline--cancel-request view)
+        (chirp-cancel-view-request view chirp-timeline--request-key #'chirp-x-cancel-request)
         (chirp-timeline--interrupt-state-request target)
         (setf (appkit-view-state view) target
               (appkit-view-pending-events view) nil)

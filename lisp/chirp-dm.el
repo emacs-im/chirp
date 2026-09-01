@@ -123,25 +123,11 @@
               ((eq (plist-get state :type) type)))
     view))
 
-(defun chirp-dm--generation-current-p (view state generation)
-  "Return non-nil when GENERATION may still update STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq generation (plist-get state :generation))))
-
 (defun chirp-dm--retire-inbox-request (view state generation)
   "Retire GENERATION's inbox transport when it still owns VIEW and STATE."
-  (when (chirp-dm--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (remhash chirp-dm--inbox-request-key
              (appkit-view-request-table view))))
-
-(defun chirp-dm--cancel-request (view request-key)
-  "Cancel VIEW's active transport under REQUEST-KEY, if any."
-  (let* ((table (appkit-view-request-table view))
-         (request (gethash request-key table)))
-    (remhash request-key table)
-    (when request
-      (chirp-x-cancel-request request))))
 
 (defun chirp-dm--make-inbox-state (instance)
   "Return canonical inbox state for INSTANCE."
@@ -305,7 +291,7 @@
   "Settle inbox GENERATION and PHASE with CONVERSATIONS and ENVELOPE.
 
 VIEW and STATE identify the inbox whose request is completing."
-  (when (chirp-dm--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (let* ((page (plist-get state :page))
            (status (chirp-dm--status state))
            (next-cursor (chirp-backend-envelope-next-cursor envelope)))
@@ -324,7 +310,7 @@ VIEW and STATE identify the inbox whose request is completing."
 
 (defun chirp-dm--settle-inbox-error (view state generation message)
   "Settle inbox GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-dm--generation-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation)
     (let ((status (chirp-dm--status state)))
       (setf (plist-get status :phase) 'error
             (plist-get status :message) message
@@ -343,7 +329,7 @@ VIEW and STATE identify the inbox whose request is completing."
     (setf (plist-get state :generation) generation
           (plist-get status :phase) phase
           (plist-get status :message) nil)
-    (chirp-dm--cancel-request view chirp-dm--inbox-request-key)
+    (chirp-cancel-view-request view chirp-dm--inbox-request-key #'chirp-x-cancel-request)
     (appkit-request-sync view :part 'entries :position t)
     (setq request
           (chirp-backend-dm-inbox
@@ -364,12 +350,12 @@ VIEW and STATE identify the inbox whose request is completing."
     (cond
      ((and (not callback-ran-p)
            request
-           (chirp-dm--generation-current-p view state generation))
+           (chirp-view-state-token-current-p view state generation))
       (puthash chirp-dm--inbox-request-key request
                (appkit-view-request-table view)))
      ((and (not callback-ran-p)
            (null request)
-           (chirp-dm--generation-current-p view state generation))
+           (chirp-view-state-token-current-p view state generation))
       (chirp-dm--settle-inbox-error
        view state generation "XChat inbox request did not start")))
     request))
@@ -399,12 +385,6 @@ VIEW and STATE identify the inbox whose request is completing."
     (user-error "Current view is not a direct-message inbox")))
 
 ;;; Decryption and Recovery
-
-(defun chirp-dm--decrypt-current-p (view state generation)
-  "Return non-nil when GENERATION still owns decryption in VIEW and STATE."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq generation (plist-get state :decrypt-generation))))
 
 (defun chirp-dm--decrypt-input (state)
   "Return encoded events and signing-key user IDs from conversation STATE."
@@ -568,7 +548,7 @@ VIEW and STATE identify the inbox whose request is completing."
 
 (defun chirp-dm--settle-decrypt-error (view state generation message)
   "Settle decryption GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-dm--decrypt-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
     (setf (plist-get state :decrypt-generation) nil)
     (remhash chirp-dm--decrypt-request-key
              (appkit-view-request-table view))
@@ -577,7 +557,7 @@ VIEW and STATE identify the inbox whose request is completing."
 (defun chirp-dm--settle-decrypt-success
     (view state generation encoded signing-keys)
   "Decrypt ENCODED events with SIGNING-KEYS for GENERATION in VIEW and STATE."
-  (when (chirp-dm--decrypt-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
     (condition-case err
         (let ((messages
                (cl-loop for batch in (seq-partition encoded 200)
@@ -634,13 +614,13 @@ view has no conversation-key event."
         (display-warning 'chirp "XChat conversation has too many signing-key users" :warning))
        (t
         (setf (plist-get state :decrypt-generation) generation)
-        (chirp-dm--cancel-request view chirp-dm--decrypt-request-key)
+        (chirp-cancel-view-request view chirp-dm--decrypt-request-key #'chirp-x-cancel-request)
         (setq request
               (chirp-backend-dm-signing-keys
                user-ids
                (lambda (signing-keys _envelope)
                  (setq callback-ran-p t)
-                 (when (chirp-dm--decrypt-current-p view state generation)
+                 (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
                    (chirp-dm--settle-decrypt-success
                     view state generation encoded signing-keys)))
                :errback
@@ -650,7 +630,7 @@ view has no conversation-key event."
                   view state generation message))
                :owner view))
         (when (and (buffer-live-p request)
-                   (chirp-dm--decrypt-current-p view state generation))
+                   (chirp-view-state-token-current-p view state generation :decrypt-generation))
           (puthash chirp-dm--decrypt-request-key request
                    (appkit-view-request-table view)))
         (when (and (null request) (not callback-ran-p))
@@ -1397,7 +1377,7 @@ Disjoint focused fragments are bridged through older history before merging."
           (plist-get status :message) nil)
     (with-current-buffer (appkit-view-buffer view)
       (appkit-chat-history-request-begin phase generation))
-    (chirp-dm--cancel-request view chirp-dm--conversation-request-key)
+    (chirp-cancel-view-request view chirp-dm--conversation-request-key #'chirp-x-cancel-request)
     (appkit-request-sync view :part 'frame :position t)
     (setq request
           (pcase phase
@@ -1454,15 +1434,9 @@ Disjoint focused fragments are bridged through older history before merging."
 
 ;;;; Sending
 
-(defun chirp-dm--send-current-p (view state generation)
-  "Return non-nil when GENERATION owns the active send in VIEW and STATE."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq generation (plist-get state :send-generation))))
-
 (defun chirp-dm--settle-send-error (view state generation message)
   "Settle send GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-dm--send-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation :send-generation)
     (remhash chirp-dm--send-request-key (appkit-view-request-table view))
     (setf (plist-get state :send-generation) nil
           (plist-get state :send-error) message)
@@ -1471,7 +1445,7 @@ Disjoint focused fragments are bridged through older history before merging."
 
 (defun chirp-dm--settle-send-success (view state generation text)
   "Settle acknowledged send GENERATION for TEXT in VIEW and STATE."
-  (when (chirp-dm--send-current-p view state generation)
+  (when (chirp-view-state-token-current-p view state generation :send-generation)
     (remhash chirp-dm--send-request-key (appkit-view-request-table view))
     (setf (plist-get state :send-generation) nil
           (plist-get state :send-error) nil
@@ -1527,13 +1501,13 @@ Disjoint focused fragments are bridged through older history before merging."
             view state generation (error-message-string err))
            (signal (car err) (cdr err))))
         (when (and (not callback-ran-p)
-                   (chirp-dm--send-current-p view state generation))
+                   (chirp-view-state-token-current-p view state generation :send-generation))
           (if (buffer-live-p request)
               (puthash chirp-dm--send-request-key request
                        (appkit-view-request-table view))
             (chirp-dm--settle-send-error
              view state generation "XChat message request did not start")))
-        (when (chirp-dm--send-current-p view state generation)
+        (when (chirp-view-state-token-current-p view state generation :send-generation)
           (message "Sending direct message..."))
         request)
     (user-error "Current view is not a direct-message conversation")))
