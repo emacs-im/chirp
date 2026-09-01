@@ -1587,6 +1587,30 @@
         (search-forward "Alice @alice")
         (should (< label-position (match-beginning 0)))))))
 
+(ert-deftest chirp-render-insert-tweet-labels-pinned-occurrence ()
+  "Pinned context should precede the tweet author."
+  (let ((tweet
+         (chirp--tweet-from-x
+          '(("id" . "pinned-1")
+            ("text" . "Pinned body")
+            ("author" . (("screenName" . "alice")
+                         ("name" . "Alice")))))))
+    (plist-put tweet :timeline-context 'pinned)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil)))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet)))
+      (goto-char (point-min))
+      (search-forward "Pinned")
+      (let ((label-position (match-beginning 0)))
+        (should (chirp-test--face-member-p
+                 'chirp-social-context-face
+                 (get-text-property label-position 'face)))
+        (search-forward "Alice @alice")
+        (should (< label-position (match-beginning 0)))))))
+
 (ert-deftest chirp-render-insert-discussion-entry-puts-retweeter-before-author ()
   "Retweet attribution should remain actionable above the original author."
   (let ((tweet (chirp-test--sample-retweeted-tweet)))

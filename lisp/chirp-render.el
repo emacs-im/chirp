@@ -1096,11 +1096,16 @@ block ends in a newline."
       (chirp-render--insert-list-reply-context
        tweet reply-parent prefix prefix-face))
     (chirp-render--insert-edit-history-context tweet prefix prefix-face)
-    (when (eq (plist-get tweet :timeline-context) 'related)
-      (chirp-render--insert-prefix prefix prefix-face)
-      (insert (propertize "Related tweet"
-                          'face 'chirp-thread-related-context))
-      (insert "\n"))
+    (pcase (plist-get tweet :timeline-context)
+      ('related
+       (chirp-render--insert-prefix prefix prefix-face)
+       (insert (propertize "Related tweet"
+                           'face 'chirp-thread-related-context))
+       (insert "\n"))
+      ('pinned
+       (chirp-render--insert-prefix prefix prefix-face)
+       (insert (propertize "Pinned" 'face 'chirp-social-context-face))
+       (insert "\n")))
     (when-let* ((retweeted-by (plist-get tweet :retweeted-by)))
       (chirp-render--insert-prefix prefix prefix-face)
       (let ((action-start (point))
@@ -1319,20 +1324,31 @@ tweet content and actions."
 (defun chirp-render--tweet-row-key (tweet)
   "Return the stable projection key for TWEET."
   (when-let* ((key (chirp-tweet-key tweet)))
-    (list 'tweet key)))
+    (if-let* ((entry-id (plist-get tweet :timeline-entry-id)))
+        (list 'tweet key entry-id)
+      (list 'tweet key))))
+
+(defun chirp-render--tweet-row-dependencies (tweet)
+  "Return presentation dependencies for a projected TWEET."
+  (cons (chirp-render--entry-key tweet)
+        (chirp-media-resource-keys-for-tweet tweet)))
 
 (defun chirp-render-project-tweet-rows (tweets)
   "Project normalized TWEETS into keyed Appkit rows."
   (appkit-projection-project
    tweets #'chirp-render--tweet-row-key
    :context-function (lambda (previous _tweet) previous)
-   :dependencies-function #'chirp-media-resource-keys-for-tweet))
+   :dependencies-function #'chirp-render--tweet-row-dependencies))
 
 (defun chirp-render-print-tweet-row (row)
   "Insert one projected tweet ROW at point."
-  (chirp-render-insert-tweet-row
-   (appkit-projection-row-payload row)
-   (appkit-projection-row-context row)))
+  (let ((start (point)))
+    (chirp-render-insert-tweet-row
+     (appkit-projection-row-payload row)
+     (appkit-projection-row-context row))
+    (when (< start (point))
+      (put-text-property
+       start (point) 'chirp-entry-id (appkit-projection-row-key row)))))
 
 (defun chirp-render--tweet-separator-line ()
   "Return the tweet separator line, or nil when disabled."

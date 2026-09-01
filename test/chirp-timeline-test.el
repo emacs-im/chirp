@@ -446,6 +446,11 @@
                (equal
                 (appkit-invalidations-entry-keys
                  (appkit-view-invalidations view))
+                '((tweet "1"))))
+              (should
+               (equal
+                (appkit-invalidations-resource-keys
+                 (appkit-view-invalidations view))
                 '((tweet "1")))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
@@ -537,6 +542,11 @@
               (should
                (equal
                 (appkit-invalidations-entry-keys
+                 (appkit-view-invalidations view))
+                '((tweet "outer"))))
+              (should
+               (equal
+                (appkit-invalidations-resource-keys
                  (appkit-view-invalidations view))
                 '((tweet "outer")))))))
       (chirp-stop)
@@ -712,6 +722,68 @@
     (should (equal (mapcar #'appkit-projection-row-key
                            (chirp-render-project-tweet-rows tweets))
                    '((tweet "100") (tweet "200"))))))
+
+(ert-deftest chirp-timeline-projection-keys-distinct-tweet-occurrences ()
+  "One tweet in two X entries should remain two independently keyed rows."
+  (let* ((tweet-id "2094737512484970656")
+         (tweets
+          (list
+           (list :kind 'tweet :id tweet-id
+                 :timeline-entry-id "tweet-2094737512484970656")
+           (list
+            :kind 'tweet :id tweet-id
+            :timeline-entry-id
+            "profile-conversation-2094846962946801665-tweet-2094737512484970656")))
+         (rows (chirp-render-project-tweet-rows tweets)))
+    (should
+     (equal (mapcar #'appkit-projection-row-key rows)
+            `((tweet ,tweet-id "tweet-2094737512484970656")
+              (tweet
+               ,tweet-id
+               "profile-conversation-2094846962946801665-tweet-2094737512484970656"))))
+    (dolist (row rows)
+      (should (member (list 'tweet tweet-id)
+                      (appkit-projection-row-dependencies row))))))
+
+(ert-deftest chirp-tweet-rerender-updates-all-timeline-occurrences ()
+  "A tweet update should redraw every distinct occurrence of that tweet."
+  (let ((chirp-rerender-idle-delay 0)
+        (tweet-id "2094737512484970656")
+        buffer callback view)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-backend-feed)
+                   (lambda (success &rest _args)
+                     (setq callback success)))
+                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                  ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+          (setq buffer (chirp-timeline-open-home))
+          (with-current-buffer buffer
+            (setq view (appkit-current-view)))
+          (funcall
+           callback
+           (list
+            (list :kind 'tweet :id tweet-id :text "Before"
+                  :timeline-entry-id "tweet-2094737512484970656")
+            (list :kind 'tweet :id tweet-id :text "Before"
+                  :timeline-entry-id
+                  "profile-conversation-1-tweet-2094737512484970656"))
+           nil)
+          (appkit-sync-invalidations view)
+          (with-current-buffer buffer
+            (should (= (how-many "Before" (point-min) (point-max)) 2)))
+          (chirp-update-tweet-by-id
+           buffer tweet-id
+           (lambda (tweet)
+             (plist-put tweet :text "After"))
+           t)
+          (sit-for 0.01)
+          (appkit-sync-invalidations view)
+          (with-current-buffer buffer
+            (should (= (how-many "After" (point-min) (point-max)) 2))
+            (should-not (string-search "Before" (buffer-string)))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest chirp-top-level-tweets-from-x-can-keep-promoted-posts ()
   "Promoted tweets should remain visible when filtering is disabled."
