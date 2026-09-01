@@ -390,7 +390,11 @@
                   (goto-char (point-max))
                   (insert "hello")
                   (chirp-dm-submit)
-                  (should-error (chirp-dm-submit) :type 'user-error))
+                  (should-error (chirp-dm-submit) :type 'user-error)
+                  (should (appkit-compose-operation-active-p))
+                  (should (eq (appkit-compose-operation-kind) 'dm-send))
+                  (should (equal (appkit-compose-label)
+                                 "Sending direct message")))
                 (should (eq send-owner view))
                 (should (equal sent-text "hello"))
                 (should (= (length (chirp-dm-conversation--events state)) 1))
@@ -456,7 +460,8 @@
                                "keep this draft"))
                 (should (string-match-p "Unable to send message"
                                         (buffer-string))))
-              (should-not (plist-get state :send-generation))
+              (with-current-buffer buffer
+                (should-not (appkit-compose-operation-active-p)))
               (should (= (length (chirp-dm-conversation--events state)) 1)))))
       (chirp-stop)
       (when (buffer-live-p buffer)
@@ -476,8 +481,7 @@
                      (chirp-dm-test--normalized-event "20" "20" "old")))
                    (_buffer (setq buffer
                                   (chirp-dm-conversation-open conversation)))
-                   (view (with-current-buffer buffer (appkit-current-view)))
-                   (state (appkit-view-state view)))
+                   (view (with-current-buffer buffer (appkit-current-view))))
               (with-current-buffer buffer
                 (goto-char (point-max))
                 (insert "retain me")
@@ -485,7 +489,8 @@
                 (appkit-sync-invalidations view)
                 (should-not buffer-read-only)
                 (should (equal (appkit-chatbuf-input-string) "retain me")))
-              (should-not (plist-get state :send-generation)))))
+              (with-current-buffer buffer
+                (should-not (appkit-compose-operation-active-p))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

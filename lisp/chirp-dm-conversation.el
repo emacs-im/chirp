@@ -52,9 +52,6 @@
 (defconst chirp-dm-conversation--decrypt-request-key 'dm-decrypt
   "Request-table key for one conversation view's signing-key retrieval.")
 
-(defconst chirp-dm-conversation--send-request-key 'dm-send
-  "Request-table key for one conversation view's active message write.")
-
 (defconst chirp-dm-conversation--refresh-bridge-page-limit 10
   "Maximum history pages fetched to join one focused refresh fragment.")
 
@@ -372,35 +369,30 @@ view has no conversation-key event."
           :older-stalled-p nil
           :status (list :phase 'idle :message nil)
           :decrypt-generation nil
-          :send-generation nil
-          :send-error nil
-          :composer-reset-p nil)))
+          :send-error nil)))
 
 ;;;; Rendering
 
 
 ;;;; Composer
 
-(defun chirp-dm-conversation--composer-prompt (state)
-  "Return the Appkit composer prompt for conversation STATE."
-  (if (plist-get state :send-generation) "…> " ">>> "))
+(defun chirp-dm-conversation--composer-prompt ()
+  "Return the Appkit composer prompt for the current operation."
+  (if (appkit-compose-operation-active-p) "…> " ">>> "))
 
-(defun chirp-dm-conversation--bind-composer (state)
-  "Create the trailing Appkit composer from conversation STATE."
+(defun chirp-dm-conversation--bind-composer (_state)
+  "Create the trailing Appkit composer."
   (appkit-chatbuf-bind-input-region
    :visible-p t
-   :prompt (chirp-dm-conversation--composer-prompt state)
+   :prompt (chirp-dm-conversation--composer-prompt)
    :input-text (appkit-chatbuf-input-state)))
 
-(defun chirp-dm-conversation--sync-composer-state (state)
-  "Project pending and reset fields from STATE without rebuilding input."
+(defun chirp-dm-conversation--sync-composer-state (_state)
+  "Project Appkit's compose operation without rebuilding input."
   (setq buffer-read-only nil)
-  (appkit-chatbuf-prompt-update (chirp-dm-conversation--composer-prompt state))
-  (when (plist-get state :composer-reset-p)
-    (setf (plist-get state :composer-reset-p) nil)
-    (appkit-chatbuf-input-set-text (appkit-chatbuf-input-state)))
+  (appkit-chatbuf-prompt-update (chirp-dm-conversation--composer-prompt))
   (appkit-chatbuf-input-apply-text-properties)
-  (when (plist-get state :send-generation)
+  (when (appkit-compose-operation-active-p)
     (setq buffer-read-only t)))
 
 (defun chirp-dm-conversation--sync (view invalidations)
@@ -791,25 +783,32 @@ Disjoint focused fragments are bridged through older history before merging."
 
 ;;;; Sending
 
-(defun chirp-dm-conversation--settle-send-error (view state generation message)
-  "Settle send GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-view-state-token-current-p view state generation :send-generation)
-    (remhash chirp-dm-conversation--send-request-key (appkit-view-request-table view))
-    (setf (plist-get state :send-generation) nil
-          (plist-get state :send-error) message)
+(defun chirp-dm-conversation--send-owner-current-p (view owner)
+  "Return non-nil when OWNER is VIEW's current Appkit compose operation."
+  (and (appkit-view-live-p view)
+       (with-current-buffer (appkit-view-buffer view)
+         (and (bound-and-true-p appkit-compose-session-mode)
+              (appkit-compose-operation-current-p owner)))))
+
+(defun chirp-dm-conversation--settle-send-error (view state owner message)
+  "Settle Appkit send OWNER in VIEW and STATE with error MESSAGE."
+  (when (chirp-dm-conversation--send-owner-current-p view owner)
+    (appkit-with-live-view view
+      (appkit-compose-operation-finish owner)
+      (setq buffer-read-only nil)
+      (setf (plist-get state :send-error) message))
     (appkit-request-sync view :part 'frame :position t)
     (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
 
-(defun chirp-dm-conversation--settle-send-success (view state generation text)
-  "Settle acknowledged send GENERATION for TEXT in VIEW and STATE."
-  (when (chirp-view-state-token-current-p view state generation :send-generation)
-    (remhash chirp-dm-conversation--send-request-key (appkit-view-request-table view))
-    (setf (plist-get state :send-generation) nil
-          (plist-get state :send-error) nil
-          (plist-get state :composer-reset-p) t)
+(defun chirp-dm-conversation--settle-send-success (view state owner text)
+  "Settle acknowledged Appkit send OWNER for TEXT in VIEW and STATE."
+  (when (chirp-dm-conversation--send-owner-current-p view owner)
     (appkit-with-live-view view
+      (appkit-compose-operation-finish owner)
+      (setq buffer-read-only nil)
+      (setf (plist-get state :send-error) nil)
       (appkit-chatbuf-input-history-push text)
-      (appkit-chatbuf-input-state-clear :reset-history-p t))
+      (appkit-chatbuf-input-set-text ""))
     (appkit-request-sync view :part 'frame :position t)
     (chirp-dm-conversation--request view 'refresh)
     (message "Direct message sent")))
@@ -825,24 +824,29 @@ Disjoint focused fragments are bridged through older history before merging."
   (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
       (let* ((state (chirp-dm-conversation--state view))
-             (generation (list 'dm-send-generation))
-             callback-ran-p request text)
+             callback-ran-p request capture owner text)
         (unless (appkit-chatbuf-point-in-input-p)
           (user-error "Point is not in the direct-message composer"))
-        (when (plist-get state :send-generation)
+        (when (appkit-compose-operation-active-p)
           (user-error "A direct message is already being sent"))
         (when (appkit-chatbuf-composer-idle-p)
           (user-error "Direct message is empty"))
-        (setq text
+        (setq capture
               (condition-case nil
-                  (appkit-markup-compose-output-source
-                   (appkit-markup-compose-output
-                    (appkit-markup-compose-capture) 'plain))
+                  (appkit-markup-compose-capture)
                 (appkit-markup-object-rejected
                  (user-error
-                  "XChat sending currently supports plain text only"))))
-        (setf (plist-get state :send-generation) generation
-              (plist-get state :send-error) nil)
+                  "XChat sending currently supports plain text only")))
+              text
+              (appkit-markup-compose-output-source
+               (appkit-markup-compose-output capture 'plain))
+              owner
+              (appkit-compose-operation-begin
+               'dm-send
+               :generation
+               (appkit-markup-compose-capture-generation capture)
+               :label "Sending direct message"))
+        (setf (plist-get state :send-error) nil)
         (setq buffer-read-only t)
         (appkit-request-sync view :part 'frame :position t)
         (condition-case err
@@ -852,25 +856,23 @@ Disjoint focused fragments are bridged through older history before merging."
                    (lambda (_event _envelope)
                      (setq callback-ran-p t)
                      (chirp-dm-conversation--settle-send-success
-                      view state generation text))
+                      view state owner text))
                    :errback
                    (lambda (message)
                      (setq callback-ran-p t)
                      (chirp-dm-conversation--settle-send-error
-                      view state generation message))
+                      view state owner message))
                    :owner view))
           ((error quit)
            (chirp-dm-conversation--settle-send-error
-            view state generation (error-message-string err))
+            view state owner (error-message-string err))
            (signal (car err) (cdr err))))
         (when (and (not callback-ran-p)
-                   (chirp-view-state-token-current-p view state generation :send-generation))
-          (if (buffer-live-p request)
-              (puthash chirp-dm-conversation--send-request-key request
-                       (appkit-view-request-table view))
-            (chirp-dm-conversation--settle-send-error
-             view state generation "XChat message request did not start")))
-        (when (chirp-view-state-token-current-p view state generation :send-generation)
+                   (chirp-dm-conversation--send-owner-current-p view owner)
+                   (not (buffer-live-p request)))
+          (chirp-dm-conversation--settle-send-error
+           view state owner "XChat message request did not start"))
+        (when (chirp-dm-conversation--send-owner-current-p view owner)
           (message "Sending direct message..."))
         request)
     (user-error "Current view is not a direct-message conversation")))

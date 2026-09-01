@@ -50,6 +50,10 @@
 (defconst chirp-xchat--max-send-event-bytes (* 2 1024 1024)
   "Maximum Base64 size accepted for one prepared outbound XChat event.")
 
+(defconst chirp-xchat--live-keepalive-bytes
+  (unibyte-string #x0c #x00 #x02 #x0c #x00 #x02 #x00 #x00)
+  "Official XChat binary-Thrift websocket keepalive frame.")
+
 (defconst chirp-xchat--detail-kinds
   '((1 . message-create)
     (3 . conversation-key-change)
@@ -341,6 +345,62 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                       (eq (plist-get metadata :kind)
                           'conversation-key-change))
               (list :encoded-event encoded)))))
+
+(defun chirp-xchat-live-token (payload)
+  "Return the bounded websocket token from XChat GraphQL PAYLOAD."
+  (let ((token
+         (chirp-get-in
+          payload '("data" "user_get_x_chat_auth_token" "token"))))
+    (unless (and (stringp token)
+                 (<= 1 (length token) 8192)
+                 (string-match-p
+                  "\\`[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\'"
+                  token))
+      (error "XChat live token response is invalid"))
+    token))
+
+(defun chirp-xchat-decode-live-frame (bytes)
+  "Decode bounded binary websocket BYTES into an XChat live domain event.
+
+The result has kind `event', `pull', `keepalive', `instruction', or `batch'.
+An `event' result also carries the normalized MessageEvent under `:event'."
+  (unless (and (stringp bytes)
+               (not (multibyte-string-p bytes))
+               (<= 1 (length bytes) chirp-xchat--max-document-bytes))
+    (error "XChat live frame is not bounded binary data"))
+  (let* ((document (chirp-xchat--thrift-document bytes))
+         (entry (and (= (length document) 1) (car document)))
+         (field-id (car-safe entry))
+         (type (nth 1 entry))
+         (value (nth 2 entry)))
+    (unless (and entry (= type 12))
+      (error "XChat live frame must contain one structured message"))
+    (pcase field-id
+      (1
+       (unless (and (>= (length bytes) 5)
+                    (= (aref bytes 0) 12)
+                    (= (aref bytes 1) 0)
+                    (= (aref bytes 2) 1)
+                    (= (aref bytes (1- (length bytes))) 0))
+         (error "XChat live event framing is invalid"))
+       (let ((encoded
+              (base64-encode-string
+               (substring bytes 3 (1- (length bytes))) t)))
+         (list :kind 'event :event (chirp-xchat-decode-event encoded))))
+      (2
+       (let ((instruction
+              (and (= (length value) 1) (caar value))))
+         (list :kind
+               (pcase instruction
+                 (1 'pull)
+                 (2 'keepalive)
+                 (_ 'instruction)))))
+      (3 (list :kind 'batch))
+      (_ (error "XChat live frame has unknown message kind %s" field-id)))))
+
+(defun chirp-xchat-live-keepalive-frame ()
+  "Return the official bounded XChat websocket keepalive bytes."
+  chirp-xchat--live-keepalive-bytes)
 
 ;;;; Sending
 

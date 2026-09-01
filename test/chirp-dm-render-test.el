@@ -44,6 +44,24 @@
         `(space :align-to
           (- right (,(string-width "6小时") . width))))))))
 
+(ert-deftest chirp-dm-system-events-use-appkit-divider-rows ()
+  "Non-message events should use Appkit's shared full-width divider."
+  (let* ((event
+          (chirp-dm-test--normalized-event "20" "20" ""))
+         (row
+          (appkit-chat-timeline-row-create
+           :key "20" :payload event :context nil)))
+    (setf (plist-get event :kind) 'conversation-key-change
+          (plist-get event :created-at-msec) nil)
+    (with-temp-buffer
+      (setq-local fill-column 40)
+      (chirp-dm-render-print-event-row row)
+      (should (string-prefix-p "─" (buffer-string)))
+      (should
+       (string-match-p "Conversation encryption keys changed"
+                       (buffer-string)))
+      (should (get-text-property (point-min) 'read-only)))))
+
 (ert-deftest chirp-dm-render-projects-verified-attachments-and-replies ()
   "Verified message facts should reach timeline dependencies and rendering."
   (let ((image
@@ -79,10 +97,10 @@
         (chirp-dm-render--insert-reply-preview reply-model)
         (should (equal (buffer-string) "↪ earlier message"))))))
 
-(ert-deftest chirp-dm-attachments-render-as-semantic-provider-objects ()
-  "Media, files, and posts should expose semantic and keyboard actions."
+(ert-deftest chirp-dm-attachments-use-appkit-media-cards-and-actions ()
+  "DM attachments should use shared Appkit cards, contexts, and actions."
   (let ((event (chirp-dm-test--normalized-event "20" "20" "photo"))
-        activated)
+        opened browsed)
     (setf
      (plist-get event :attachments)
      '((:kind gif :name "giphy.gif" :media-hash "gif-hash"
@@ -92,33 +110,65 @@
        (:kind post :url "https://x.com/i/status/123"
         :resource-key (xchat-media "post")))
      (plist-get event :attachment-count) 3)
-    (let* ((document (chirp-dm-render--message-document event))
+    (let* ((document (chirp-dm-render--attachment-document event))
            (blocks (appkit-markup-document-blocks document)))
-      (should (= (length blocks) 4))
-      (should (appkit-markup-object-block-p (cadr blocks))))
+      (should (= (length blocks) 3))
+      (should (appkit-markup-object-block-p (car blocks))))
     (with-temp-buffer
       (use-local-map chirp-dm-conversation--mode-map)
-      (cl-letf (((symbol-function 'chirp-media-insert-image-resource)
-                 (lambda (&rest _arguments) 'pending))
-                ((symbol-function 'chirp-media-xchat-resource-file)
-                 (lambda (&rest _arguments) nil))
-                ((symbol-function 'chirp-media-xchat-resource-status)
-                 (lambda (&rest _arguments) 'failed))
-                ((symbol-function 'browse-url)
-                 (lambda (url &rest _arguments)
-                   (setq activated url))))
-        (chirp-dm-render--insert-message-content :view event nil)
-        (should
-         (equal
-          (buffer-string)
-          (concat "photo\nGIF: giphy.gif loading…\n"
-                  "File: d.cpp\nOpen attached post")))
+      (cl-letf
+          (((symbol-function 'chirp-media-insert-image-resource)
+            (lambda (&rest _arguments) 'pending))
+           ((symbol-function 'chirp-media-xchat-resource)
+            (lambda (_view resource-key attachment)
+              (appkit-media-resource-create
+               :file (and (equal resource-key '(xchat-media "file"))
+                          "/tmp/d.cpp")
+               :name (plist-get attachment :name))))
+           ((symbol-function 'chirp-media-xchat-resource-status)
+            (lambda (_view resource-key)
+              (if (equal resource-key '(xchat-media "gif"))
+                  'pending
+                'ready)))
+           ((symbol-function 'appkit-media-open-resource)
+            (lambda (resource &rest options)
+              (setq opened (list resource options))))
+           ((symbol-function 'browse-url)
+            (lambda (url &rest _arguments)
+              (setq browsed url))))
+        (let ((prefix-state
+               (appkit-ui-make-prefix-state "FIRST " "REST "))
+              (start (point)))
+          (when (chirp-dm-render--insert-message-content event nil)
+            (insert "\n")
+            (appkit-ui-apply-line-prefix start (point) prefix-state))
+          (chirp-dm-render--insert-message-attachments
+           :view event prefix-state))
+        (should (string-match-p
+                 (regexp-quote
+                  "photo\n[image] giphy.gif\ndownloading…\n[file] d.cpp")
+                 (buffer-string)))
         (goto-char (point-min))
-        (search-forward "Open attached post")
+        (search-forward "[file] d.cpp")
+        (should
+         (= (string-width (get-text-property (point) 'line-prefix))
+            (string-width "REST ")))
+        (goto-char (match-beginning 0))
+        (should
+         (plist-get
+          (get-text-property
+           (point) appkit-media-card-context-property)
+          :open-action))
+        (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
+        (call-interactively (key-binding (kbd "RET")))
+        (should
+         (equal (alist-get 'file (car opened)) "/tmp/d.cpp"))
+        (goto-char (point-min))
+        (search-forward "Attached post")
         (goto-char (match-beginning 0))
         (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
         (call-interactively (key-binding (kbd "RET")))
-        (should (equal activated "https://x.com/i/status/123"))))))
+        (should (equal browsed "https://x.com/i/status/123"))))))
 
 (ert-deftest chirp-dm-post-resource-redraws-as-an-embedded-tweet ()
   "A fetched post attachment should replace its loading row with a tweet card."
@@ -131,7 +181,8 @@
                   (chirp-dm-test--normalized-conversation event)))
             (setf
              (plist-get event :attachments)
-             '((:kind post :url "https://x.com/i/status/123"
+             '((:kind post
+                :url "https://x.com/jschopplich/status/123"
                 :resource-key (xchat-media "conversation-1" "20" 0)))
              (plist-get event :attachment-count) 1)
             (setq conversation
@@ -147,7 +198,7 @@
               (setq buffer (chirp-dm-conversation-open conversation))
               (should (equal requested "123"))
               (with-current-buffer buffer
-                (should (string-match-p "Attached post loading…"
+                (should (string-match-p "Attached post · loading…"
                                         (buffer-string))))
               (funcall callback
                        '(:kind tweet :id "123" :text "Post body"
