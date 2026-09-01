@@ -2266,33 +2266,33 @@ over the card's `t.co` permalink."
 (defun chirp--media-item-from-x (object)
   "Return one Chirp media item decoded from X OBJECT."
   (let* ((type (chirp-first-nonblank (chirp-get object "type")))
-        (url (chirp-first-nonblank
-              (chirp-get object "media_url_https" "media_url" "url")))
-        (preview-url (chirp-first-nonblank
-                      (chirp-get object
-                                 "preview_url" "previewUrl"
-                                 "preview_image_url" "previewImageUrl"
-                                 "thumbnail_url" "thumbnailUrl"
-                                 "poster_url" "posterUrl"
-                                 "media_url_https" "media_url")
-                      (chirp-get-in object '("preview" "url"))
-                      (chirp-get-in object '("thumbnail" "url"))
-                      (chirp-get-in object '("poster" "url"))))
-        (raw-variants
-         (or (chirp-get object "variants")
-             (chirp-get-in object '("video_info" "variants"))))
-        (variants
-         (and (listp raw-variants)
-              (delq nil
-                    (mapcar #'chirp--media-variant-from-x raw-variants))))
-        (width (or (chirp-get object "width")
-                   (chirp-get-in object '("original_info" "width"))
-                   (chirp-get-in object '("sizes" "large" "w"))))
-        (height (or (chirp-get object "height")
-                    (chirp-get-in object '("original_info" "height"))
-                    (chirp-get-in object '("sizes" "large" "h"))))
-        (alt (chirp-first-nonblank
-              (chirp-get object "altText" "alt_text" "ext_alt_text" "description"))))
+         (url (chirp-first-nonblank
+               (chirp-get object "media_url_https" "media_url" "url")))
+         (preview-url (chirp-first-nonblank
+                       (chirp-get object
+                                  "preview_url" "previewUrl"
+                                  "preview_image_url" "previewImageUrl"
+                                  "thumbnail_url" "thumbnailUrl"
+                                  "poster_url" "posterUrl"
+                                  "media_url_https" "media_url")
+                       (chirp-get-in object '("preview" "url"))
+                       (chirp-get-in object '("thumbnail" "url"))
+                       (chirp-get-in object '("poster" "url"))))
+         (raw-variants
+          (or (chirp-get object "variants")
+              (chirp-get-in object '("video_info" "variants"))))
+         (variants
+          (and (listp raw-variants)
+               (delq nil
+                     (mapcar #'chirp--media-variant-from-x raw-variants))))
+         (width (or (chirp-get object "width")
+                    (chirp-get-in object '("original_info" "width"))
+                    (chirp-get-in object '("sizes" "large" "w"))))
+         (height (or (chirp-get object "height")
+                     (chirp-get-in object '("original_info" "height"))
+                     (chirp-get-in object '("sizes" "large" "h"))))
+         (alt (chirp-first-nonblank
+               (chirp-get object "altText" "alt_text" "ext_alt_text" "description"))))
     (when (and type url)
       (list :type type
             :url url
