@@ -1247,6 +1247,23 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
     (or (appkit-media-circular-image-from-file file size)
         (chirp-media--scaled-image file size size))))
 
+(defun chirp-media-avatar-resource-image (view resource-key &optional pixel-size)
+  "Return VIEW's cached avatar RESOURCE-KEY as an image descriptor.
+
+PIXEL-SIZE defaults to the current one-line avatar size."
+  (when-let* ((entry
+               (and (appkit-view-live-p view)
+                    (gethash resource-key
+                             (appkit-app-resource-store
+                              (appkit-view-app view)))))
+              ((eq (plist-get entry :status) 'ready))
+              (file (plist-get entry :file))
+              ((chirp-media--valid-cache-file-p file))
+              (size (max 1 (or pixel-size
+                               (chirp-media--avatar-pixel-size)))))
+    (or (appkit-media-circular-image-from-file file size)
+        (chirp-media--scaled-image file size size))))
+
 (defun chirp-media-cached-image (url &optional max-width max-height)
   "Return an Appkit preview image for cached URL, or nil when not ready.
 

@@ -15,13 +15,16 @@
 (require 'url-parse)
 (require 'appkit-core)
 (require 'appkit-chat-ins)
+(require 'appkit-chat-avatar)
 (require 'appkit-directory)
 (require 'appkit-evil)
+(require 'appkit-name-color)
 (require 'appkit-invalidation)
 (require 'appkit-chatbuf)
 (require 'appkit-chat-history)
 (require 'appkit-chat-timeline)
 (require 'appkit-view)
+(require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-time)
 (require 'chirp-backend)
@@ -76,6 +79,9 @@
 (defconst chirp-dm--refresh-bridge-page-limit 10
   "Maximum history pages fetched to join one focused refresh fragment.")
 
+(defconst chirp-dm--inbox-icon-slot-width 4
+  "Columns reserved for one direct-message inbox avatar.")
+
 ;;; Inbox
 
 (defun chirp-dm--one-line (text)
@@ -95,6 +101,59 @@
   "Return canonical status plist from direct-message STATE."
   (or (plist-get state :status)
       (error "Direct-message view state has no status")))
+
+(defun chirp-dm--participant-avatar-key (participant)
+  "Return PARTICIPANT's stable avatar resource key, or nil."
+  (when (and (plist-get participant :id)
+             (plist-get participant :avatar-url))
+    (list 'xchat-avatar (plist-get participant :id))))
+
+(defun chirp-dm--request-participant-avatar (view participant)
+  "Request PARTICIPANT's avatar resource on behalf of VIEW."
+  (when-let* ((resource-key
+               (chirp-dm--participant-avatar-key participant)))
+    (chirp-media-request-image-resource
+     view resource-key (plist-get participant :avatar-url)
+     :name "avatar.jpg")))
+
+(defun chirp-dm--participant-label (participant)
+  "Return PARTICIPANT's display label, or nil."
+  (or (plist-get participant :name)
+      (and-let* ((handle (plist-get participant :handle)))
+        (concat "@" handle))))
+
+(defun chirp-dm--view-user-id (view)
+  "Return VIEW's current XChat user ID, or nil."
+  (when (appkit-view-live-p view)
+    (chirp--session-xchat-user-id
+     (appkit-app-state (appkit-view-app view)))))
+
+(defun chirp-dm--inbox-participant (view conversation)
+  "Return the direct peer representing CONVERSATION in VIEW."
+  (when (eq (plist-get conversation :type) 'direct)
+    (let ((participants (plist-get conversation :participants))
+          (self-id (chirp-dm--view-user-id view)))
+      (or (cl-find-if
+           (lambda (participant)
+             (not (equal (plist-get participant :id) self-id)))
+           participants)
+          (car participants)))))
+
+(defun chirp-dm--inbox-conversation-title (view conversation)
+  "Return CONVERSATION's activity title as presented in VIEW."
+  (let ((fallback (chirp-dm--one-line (plist-get conversation :title))))
+    (or (and (not (string-empty-p fallback)) fallback)
+        (and-let* ((participant
+                    (chirp-dm--inbox-participant view conversation)))
+          (chirp-dm--participant-label participant))
+        (if (eq (plist-get conversation :type) 'group)
+            "Group conversation"
+          "Direct message"))))
+
+(defun chirp-dm--inbox-avatar-key (view conversation)
+  "Return the avatar resource key representing CONVERSATION in VIEW."
+  (chirp-dm--participant-avatar-key
+   (chirp-dm--inbox-participant view conversation)))
 
 (defun chirp-dm--inbox-state (view)
   "Return VIEW's validated XChat inbox state."
@@ -159,78 +218,172 @@
       (appkit-directory-entry-create
        :key '(dm-inbox status)
        :role 'note
-       :section-key '(dm-inbox section)
        :label text
-       :face face))))
+       :face face
+       :stamp (list phase message (null items))))))
 
-(defun chirp-dm--project-inbox (state)
-  "Project canonical inbox STATE into Appkit directory entries."
-  (append
-   (list
-    (appkit-directory-entry-create
-     :key '(dm-inbox section)
-     :role 'section
-     :label "Direct Messages"
-     :face 'bold))
-   (mapcar
-    (lambda (conversation)
-      (appkit-directory-entry-create
-       :key (list 'dm-conversation (plist-get conversation :id))
-       :role 'item
-       :section-key '(dm-inbox section)
-       :label (plist-get conversation :title)
-       :primary-action 'item
-       :item-p t
-       :payload conversation
-       :help-echo "Open this conversation"))
-    (plist-get state :items))
-   (when-let* ((status-entry (chirp-dm--inbox-status-entry state)))
-     (list status-entry))))
+(defun chirp-dm--inbox-conversation-entry (view conversation)
+  "Adapt normalized CONVERSATION to an Appkit directory entry for VIEW."
+  (when-let* ((participant
+               (chirp-dm--inbox-participant view conversation)))
+    (chirp-dm--request-participant-avatar view participant))
+  (appkit-directory-entry-create
+   :key (list 'dm-conversation (plist-get conversation :id))
+   :role 'item
+   :section-key '(dm-inbox recent)
+   :label (chirp-dm--inbox-conversation-title view conversation)
+   :primary-action 'item
+   :item-p t
+   :payload conversation
+   :stamp (list conversation (chirp-dm--view-user-id view))
+   :help-echo "Open this conversation"
+   :mouse-face 'highlight))
+
+(defun chirp-dm--project-inbox (view state)
+  "Project canonical inbox STATE into recent-session entries for VIEW."
+  (let* ((items (plist-get state :items))
+         (count (length items))
+         (requests
+          (cl-count-if
+           (lambda (item) (plist-get item :message-request-p))
+           items))
+         (muted
+          (cl-count-if
+           (lambda (item) (plist-get item :muted-p))
+           items)))
+    (append
+     (when items
+       (list
+        (appkit-directory-entry-create
+         :key '(dm-inbox summary)
+         :role 'note
+         :label
+         (format "%d conversation%s · %d request%s · %d muted"
+                 count (if (= count 1) "" "s")
+                 requests (if (= requests 1) "" "s")
+                 muted)
+         :face 'font-lock-doc-face
+         :stamp (list count requests muted))
+        (appkit-directory-entry-create
+         :key '(dm-inbox recent)
+         :role 'section
+         :label "Recent Conversations"
+         :face 'bold)))
+     (mapcar
+      (lambda (conversation)
+        (chirp-dm--inbox-conversation-entry view conversation))
+      items)
+     (when-let* ((status-entry (chirp-dm--inbox-status-entry state)))
+       (list status-entry)))))
+
+(defun chirp-dm--inbox-preview-model (view conversation)
+  "Return an activity-style one-line preview for CONVERSATION in VIEW."
+  (let* ((latest (plist-get conversation :latest-event))
+         (sender-id (and latest (plist-get latest :sender-id)))
+         (sender
+          (and sender-id
+               (chirp-dm--participant conversation sender-id)))
+         (self-id (chirp-dm--view-user-id view))
+         (label
+          (when (and latest
+                     (eq (plist-get latest :kind) 'message))
+            (cond
+             ((and self-id (equal sender-id self-id)) "You")
+             ((eq (plist-get conversation :type) 'group)
+              (or (chirp-dm--participant-label sender)
+                  "Unknown sender")))))
+         (preview (chirp-dm--one-line (plist-get conversation :preview))))
+    (appkit-ui-one-line-preview-create
+     :label label
+     :separator (and label ":")
+     :label-face (and label (or (appkit-name-color-face sender-id) 'bold))
+     :text preview)))
+
+(defun chirp-dm--inbox-context-trail (conversation)
+  "Return status trail displayed beside CONVERSATION's inbox title."
+  (string-join
+   (delq nil
+         (list
+          (when (plist-get conversation :message-request-p)
+            (propertize "request" 'face 'warning))
+          (when (plist-get conversation :muted-p)
+            (propertize "muted" 'face 'shadow))))
+   " "))
+
+(defun chirp-dm--insert-inbox-avatar (view conversation)
+  "Insert CONVERSATION's avatar or type fallback for inbox VIEW."
+  (let* ((resource-key
+          (and view (chirp-dm--inbox-avatar-key view conversation)))
+         (image
+          (and resource-key
+               (chirp-media-avatar-resource-image view resource-key)))
+         (fallback (if (eq (plist-get conversation :type) 'group) "#" "@"))
+         (start (point)))
+    (if image
+        (insert-image image fallback)
+      (insert fallback))
+    (add-text-properties
+     start (point)
+     (list 'face (if resource-key 'default 'shadow)
+           'help-echo
+           (if resource-key "Participant avatar"
+             (if (eq (plist-get conversation :type) 'group)
+                 "Group conversation"
+               "Direct conversation"))))))
 
 (defun chirp-dm--insert-inbox-item (_surface entry)
   "Insert one XChat inbox directory ENTRY."
   (let* ((conversation (appkit-directory-entry-payload entry))
-         (title (chirp-dm--one-line (plist-get conversation :title)))
-         (preview (chirp-dm--one-line (plist-get conversation :preview)))
-         (time (chirp-dm--format-time
-                (plist-get conversation :updated-at-msec)))
-         (content
-          (concat
-           (propertize (if (string-empty-p title) "Direct message" title)
-                       'face 'bold)
-           (when (plist-get conversation :message-request-p)
-             (propertize "  [request]" 'face 'warning))
-           (unless (string-empty-p preview)
-             (concat "  " (propertize preview 'face 'shadow)))))
-         (available
-          (max 0
-               (- (chirp--view-width)
-                  (current-column)
-                  (if (string-empty-p time)
-                      0
-                    (+ 2 (string-width time)))))))
-    (insert (truncate-string-to-width content available nil nil "…"))
-    (unless (string-empty-p time)
-      (appkit-chat-ins-insert-right-aligned-text
-       time (chirp--view-width)
-       :face 'shadow
-       :right-edge-margin 0
-       :overflow-newline-p nil))
-    (insert "\n")))
+         (view (appkit-current-view)))
+    (appkit-view-insert-one-line-row
+     (appkit-view-one-line-row-create
+      :icon-inserter
+      (lambda () (chirp-dm--insert-inbox-avatar view conversation))
+      :context (appkit-directory-entry-label entry)
+      :context-trail (chirp-dm--inbox-context-trail conversation)
+      :preview (chirp-dm--inbox-preview-model view conversation)
+      :time (chirp-dm--format-time
+             (plist-get conversation :updated-at-msec))
+      :time-face 'shadow
+      :time-tail-face nil
+      :line-properties
+      (list 'chirp-dm-conversation-id (plist-get conversation :id)
+            'chirp-dm-message-request-p
+            (and (plist-get conversation :message-request-p) t)
+            'chirp-dm-muted-p (and (plist-get conversation :muted-p) t)))
+     :indent 2
+     :width (chirp--view-width)
+     :icon-slot-width chirp-dm--inbox-icon-slot-width
+     :context-width-spec '(0.34 18 36))))
 
 (defun chirp-dm--activate-inbox-item (_surface entry)
   "Open the conversation carried by inbox directory ENTRY."
-  (chirp-dm--open-conversation
-   (appkit-directory-entry-payload entry) :refresh-p t))
+  (let ((conversation
+         (copy-sequence (appkit-directory-entry-payload entry))))
+    (setf (plist-get conversation :title)
+          (or (appkit-directory-entry-label entry)
+              (plist-get conversation :title)))
+    (chirp-dm--open-conversation conversation :refresh-p t)))
 
 (defun chirp-dm--sync-inbox (view invalidations)
   "Synchronize inbox VIEW for pending INVALIDATIONS."
-  (let* ((entries
-          (chirp-dm--project-inbox (chirp-dm--inbox-state view)))
+  (let* ((state (chirp-dm--inbox-state view))
+         (entries (chirp-dm--project-inbox view state))
+         (resources (appkit-invalidations-resource-keys invalidations))
+         (resource-keys
+          (cl-loop
+           for conversation in (plist-get state :items)
+           for avatar-key = (chirp-dm--inbox-avatar-key view conversation)
+           when (and avatar-key
+                     (cl-member avatar-key resources :test #'equal))
+           collect (list 'dm-conversation (plist-get conversation :id))))
          (force-keys
-          (and (memq 'geometry
-                     (appkit-invalidations-parts invalidations))
-               (mapcar #'appkit-directory-entry-key entries))))
+          (delete-dups
+           (append
+            resource-keys
+            (when (memq 'geometry
+                        (appkit-invalidations-parts invalidations))
+              (mapcar #'appkit-directory-entry-key entries))))))
     (appkit-directory-reconcile
      (appkit-directory-surface) entries :force-keys force-keys)))
 
@@ -242,7 +395,8 @@
   (appkit-directory-configure
    (appkit-directory-surface)
    :item-inserter #'chirp-dm--insert-inbox-item
-   :activate-function #'chirp-dm--activate-inbox-item)
+   :activate-function #'chirp-dm--activate-inbox-item
+   :action-rows-p t)
   (appkit-invalidate view :structure t :part 'entries :position t)
   (appkit-sync-invalidations view))
 
@@ -534,17 +688,33 @@ VIEW and STATE identify the inbox whose request is completing."
       (plist-get state :events)))
     updated))
 
-(defun chirp-dm--prefetch-event-media (view events)
-  "Request image dependencies of verified XChat EVENTS for VIEW."
-  (dolist (event events)
-    (dolist (attachment (plist-get event :attachments))
-      (when (memq (plist-get attachment :kind) '(image gif svg))
-        (chirp-media-request-image-resource
-         view
-         (plist-get attachment :resource-key)
-         (or (plist-get attachment :preview-url)
-             (plist-get attachment :url))
-         :name (plist-get attachment :name))))))
+(defun chirp-dm--request-event-media (view event)
+  "Request verified image resources carried by EVENT on behalf of VIEW."
+  (dolist (attachment (plist-get event :attachments))
+    (when (memq (plist-get attachment :kind) '(image gif svg))
+      (chirp-media-request-image-resource
+       view
+       (plist-get attachment :resource-key)
+       (or (plist-get attachment :preview-url)
+           (plist-get attachment :url))
+       :name (plist-get attachment :name)))))
+
+(defun chirp-dm--event-resource-keys (view state event)
+  "Ensure and return resources affecting EVENT from STATE in VIEW."
+  (when (eq (plist-get event :kind) 'message)
+    (let* ((participant
+            (chirp-dm--participant state (plist-get event :sender-id)))
+           (avatar-key (chirp-dm--participant-avatar-key participant)))
+      (chirp-dm--request-participant-avatar view participant)
+      (chirp-dm--request-event-media view event)
+      (delete-dups
+       (delq nil
+             (cons avatar-key
+                   (cl-loop
+                    for attachment in (plist-get event :attachments)
+                    when (memq (plist-get attachment :kind)
+                               '(image gif svg))
+                    collect (plist-get attachment :resource-key))))))))
 
 (defun chirp-dm--settle-decrypt-error (view state generation message)
   "Settle decryption GENERATION in VIEW and STATE with error MESSAGE."
@@ -571,7 +741,6 @@ VIEW and STATE identify the inbox whose request is completing."
                    (appkit-view-request-table view))
           (let ((updated (chirp-dm--apply-plaintext state messages)))
             (when (> updated 0)
-              (chirp-dm--prefetch-event-media view (plist-get state :events))
               (appkit-request-sync view :part 'timeline :position t))
             (message "Decrypted %d verified XChat message%s"
                      updated (if (= updated 1) "" "s"))))
@@ -863,13 +1032,9 @@ view has no conversation-key event."
 
 (defun chirp-dm--event-sender-label (state event)
   "Return display sender label for EVENT in conversation STATE."
-  (if-let* ((participant
-             (chirp-dm--participant state (plist-get event :sender-id))))
-      (or (plist-get participant :name)
-          (and-let* ((handle (plist-get participant :handle)))
-            (concat "@" handle))
-          "Unknown sender")
-    "Unknown sender"))
+  (or (chirp-dm--participant-label
+       (chirp-dm--participant state (plist-get event :sender-id)))
+      "Unknown sender"))
 
 (defun chirp-dm--event-system-label (event)
   "Return a passive label for non-message XChat EVENT."
@@ -965,28 +1130,75 @@ view has no conversation-key event."
                   "[Verified non-text message]"
                 "[Message content unavailable]")))))
 
+(defun chirp-dm--message-avatar-prefixes (view context)
+  "Return shared two-line avatar prefixes for CONTEXT rendered in VIEW."
+  (let* ((pixel-size (appkit-chat-avatar-two-line-pixel-size))
+         (resource-key (plist-get context :avatar-key))
+         (image
+          (and resource-key
+               (chirp-media-avatar-resource-image
+                view resource-key pixel-size)))
+         (prefixes
+          (appkit-chat-avatar-prefixes
+           image "@" :pixel-size pixel-size :resize t))
+         (properties
+          (list 'help-echo "Participant avatar"
+                'chirp-dm-avatar-sender-id
+                (plist-get context :sender-id))))
+    (dolist (key '(:header :first-body))
+      (let ((prefix (copy-sequence (plist-get prefixes key))))
+        (when (> (length prefix) 0)
+          (add-text-properties 0 (length prefix) properties prefix))
+        (setq prefixes (plist-put prefixes key prefix))))
+    prefixes))
+
+(defun chirp-dm--insert-message-row (event context timestamp)
+  "Insert one message EVENT with projected CONTEXT and TIMESTAMP."
+  (let* ((view (appkit-current-view))
+         (prefixes (chirp-dm--message-avatar-prefixes view context))
+         (header-prefix (plist-get prefixes :header))
+         (body-rest-prefix (plist-get prefixes :rest-body))
+         (body-prefix
+          (appkit-ui-make-prefix-state
+           (plist-get prefixes :first-body) body-rest-prefix))
+         (sender-face
+          (appkit-name-color-face (plist-get context :sender-id)))
+         (header-start (point))
+         body-start)
+    (insert
+     (propertize (or (plist-get context :sender-label) "Unknown sender")
+                 'face (if sender-face (list sender-face 'bold) 'bold)))
+    (unless (string-empty-p timestamp)
+      (appkit-chat-ins-insert-right-aligned-text
+       timestamp (chirp--view-width)
+       :face 'shadow
+       :left-prefix-width (string-width header-prefix)
+       :right-edge-margin 0))
+    (insert "\n")
+    (appkit-ui-apply-line-prefix
+     header-start (point)
+     (appkit-ui-make-prefix-state header-prefix body-rest-prefix))
+    (setq body-start (point))
+    (chirp-dm--insert-message-content view event context)
+    (insert "\n")
+    (appkit-ui-apply-line-prefix body-start (point) body-prefix)
+    (insert "\n")))
+
 (defun chirp-dm--print-event-row (row)
   "Insert one projected XChat event ROW."
   (let* ((event (appkit-chat-timeline-row-payload row))
          (context (appkit-chat-timeline-row-context row))
          (start (point))
-         (kind (plist-get event :kind))
          (timestamp (chirp-dm--format-time
-                     (plist-get event :created-at-msec))))
-    (if (eq kind 'message)
-        (progn
-          (insert (propertize (or (plist-get context :sender-label)
-                                  "Unknown sender")
-                              'face 'bold))
-          (unless (string-empty-p timestamp)
-            (appkit-chat-ins-insert-right-aligned-text
-             timestamp (chirp--view-width)
-             :face 'shadow
-             :right-edge-margin 0))
-          (insert "\n")
-          (chirp-dm--insert-message-content
-           (appkit-current-view) event context)
-          (insert "\n\n"))
+                     (plist-get event :created-at-msec)))
+         (properties
+          (list 'read-only t
+                'front-sticky '(read-only)
+                'rear-nonsticky '(read-only)
+                'chirp-dm-message-id (plist-get event :id)
+                'chirp-dm-event event)))
+    (if (eq (plist-get event :kind) 'message)
+        (chirp-dm--insert-message-row event context timestamp)
       (insert (propertize
                (format "— %s —" (chirp-dm--event-system-label event))
                'face 'shadow))
@@ -996,33 +1208,31 @@ view has no conversation-key event."
          :face 'shadow
          :right-edge-margin 0))
       (insert "\n\n"))
-    (add-text-properties
-     start (point)
-     (list 'read-only t
-           'front-sticky '(read-only)
-           'rear-nonsticky '(read-only)
-           'chirp-dm-message-id (plist-get event :id)
-           'chirp-dm-event event))))
+    (add-text-properties start (point) properties)))
 
-(defun chirp-dm--project-conversation-events (state events)
-  "Project ordered XChat EVENTS using participant metadata from STATE."
+(defun chirp-dm--project-conversation-events (view state events)
+  "Project XChat EVENTS from STATE and ensure their resources for VIEW."
   (appkit-chat-timeline-project
    events
    (lambda (event) (plist-get event :id))
    :context-function
    (lambda (_previous event)
      (when (eq (plist-get event :kind) 'message)
-       (list :sender-label (chirp-dm--event-sender-label state event)
-             :reply
-             (when (plist-get event :reply-p)
-               (list :text (plist-get event :reply-text)
-                     :attachment-count
-                     (plist-get event :reply-attachment-count))))))
+       (let ((participant
+              (chirp-dm--participant
+               state (plist-get event :sender-id))))
+         (list :sender-label (chirp-dm--event-sender-label state event)
+               :sender-id (plist-get event :sender-id)
+               :avatar-key
+               (chirp-dm--participant-avatar-key participant)
+               :reply
+               (when (plist-get event :reply-p)
+                 (list :text (plist-get event :reply-text)
+                       :attachment-count
+                       (plist-get event :reply-attachment-count)))))))
    :dependencies-function
    (lambda (event)
-     (mapcar (lambda (attachment)
-               (plist-get attachment :resource-key))
-             (plist-get event :attachments)))))
+     (chirp-dm--event-resource-keys view state event))))
 
 ;;;; Composer
 
@@ -1059,7 +1269,7 @@ view has no conversation-key event."
          (rows
           (and (plist-get slice :valid-p)
                (chirp-dm--project-conversation-events
-                state (plist-get slice :entries))))
+                view state (plist-get slice :entries))))
          (force-keys
           (and (memq 'geometry
                      (appkit-invalidations-parts invalidations))
@@ -1115,7 +1325,6 @@ view has no conversation-key event."
     (appkit-chat-history-reset-state)
     (chirp-dm--establish-conversation-window state)
     (chirp-dm--ensure-conversation-timeline)
-    (chirp-dm--prefetch-event-media view (plist-get state :events))
     (appkit-invalidate view :structure t :parts '(frame timeline) :position t)
     (appkit-sync-invalidations view)))
 
@@ -1204,7 +1413,8 @@ reached the oldest remote edge."
            (status (chirp-dm--status state)))
       (chirp-dm--finish-conversation-request view generation)
       (setf (plist-get state :events) merged
-            (plist-get state :title) (plist-get conversation :title)
+            (plist-get state :title)
+            (chirp-dm--inbox-conversation-title view conversation)
             (plist-get state :participants)
             (copy-tree (plist-get conversation :participants))
             (plist-get state :recovery-key-events)

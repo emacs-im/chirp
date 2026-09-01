@@ -621,6 +621,7 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
                 :title title
                 :participants participants
                 :events events
+                :latest-event latest
                 :preview (and latest (chirp-xchat--event-label latest))
                 :updated-at-msec
                 (and latest (plist-get latest :created-at-msec))
