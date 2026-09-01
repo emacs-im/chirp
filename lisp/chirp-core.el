@@ -1455,19 +1455,6 @@ SPAN offsets are Emacs character positions in DISPLAY."
      "https://fixupx.com"
      url)))
 
-(defun chirp-tweet-preview-text (tweet &optional max-length)
-  "Return a short one-paragraph preview for TWEET.
-
-Limit the result to MAX-LENGTH characters when that argument is non-nil."
-  (let* ((limit (or max-length 160))
-         (text (or (plist-get tweet :text)
-                   (chirp-tweet-article-preview tweet limit)
-                   ""))
-         (cleaned (replace-regexp-in-string "[ \t\n\r]+" " " (chirp-clean-text text) t)))
-    (if (<= (length cleaned) limit)
-        cleaned
-      (concat (string-trim-right (substring cleaned 0 (max 0 (- limit 3))))
-              "..."))))
 
 (defun chirp--tweet-permalink-p (url tweet)
   "Return non-nil when URL is a permalink for TWEET."
@@ -1518,15 +1505,6 @@ CONTEXT is a plist containing the current tweet, quoted tweet, and media."
             start (match-end 0)))
     count))
 
-(defun chirp-strip-short-urls (text)
-  "Remove `t.co` placeholders from TEXT while keeping paragraph structure."
-  (let ((cleaned (or text "")))
-    (setq cleaned (replace-regexp-in-string chirp--short-url-regexp "" cleaned t t))
-    (setq cleaned (replace-regexp-in-string "[ \t]+\\(\n\\)" "\\1" cleaned t))
-    (setq cleaned (replace-regexp-in-string "\\(\n\\)[ \t]+" "\\1" cleaned t))
-    (setq cleaned (replace-regexp-in-string "[ \t]\\{2,\\}" " " cleaned t))
-    (setq cleaned (replace-regexp-in-string "\n\\{3,\\}" "\n\n" cleaned t))
-    (string-trim cleaned)))
 
 (defun chirp--entity-overlaps-p (left right)
   "Return non-nil when LEFT and RIGHT code-point ranges overlap."
@@ -2795,37 +2773,7 @@ over the card's `t.co` permalink."
                   value)))
    (t nil)))
 
-(defun chirp-collect-tweets (value)
-  "Collect normalized tweets recursively from VALUE."
-  (let ((seen (make-hash-table :test #'equal))
-        tweets)
-    (cl-labels ((walk (node)
-                  (cond
-                   ((chirp-tweet-like-p node)
-                    (let* ((tweet (chirp-normalize-tweet node))
-                           (id (plist-get tweet :id))
-                           (key (or id (plist-get tweet :url))))
-                       (when (and tweet
-                                  (chirp-tweet-visible-p tweet)
-                                  (or (not key)
-                                      (not (gethash key seen))))
-                         (when key
-                           (puthash key t seen))
-                         (push tweet tweets))))
-                   ((chirp-object-p node)
-                    (dolist (cell node)
-                      (walk (cdr cell))))
-                   ((vectorp node)
-                    (mapc #'walk (append node nil)))
-                   ((listp node)
-                    (mapc #'walk node)))))
-      (walk value))
-    (nreverse tweets)))
 
-(defun chirp-move-point-to-first-entry ()
-  "Move point to the first entry in the current buffer."
-  (when-let* ((pos (chirp--entry-position-forward (point-min))))
-    (goto-char pos)))
 
 (provide 'chirp-core)
 

@@ -1343,12 +1343,6 @@ projections can replace it as one unit."
        :reply-parent reply-parent)
     (chirp-render-insert-tweet tweet)))
 
-(defun chirp-render-insert-tweet-list (tweets)
-  "Insert TWEETS, highlighting direct replies to the previous visible tweet."
-  (let (previous)
-    (dolist (tweet tweets)
-      (chirp-render-insert-tweet-row tweet previous)
-      (setq previous tweet))))
 
 
 ;;;; User Rows
@@ -1408,12 +1402,6 @@ projections can replace it as one unit."
     (insert "\n")
     (chirp-render--mark-entry start (point) user)))
 
-(defun chirp-render-insert-user-list (users)
-  "Insert a sequence of USERS."
-  (if users
-      (dolist (user users)
-        (chirp-render-insert-user-summary user))
-    (chirp-render-insert-empty "No users returned.")))
 
 (provide 'chirp-render)
 
