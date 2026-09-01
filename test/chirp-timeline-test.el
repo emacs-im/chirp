@@ -648,6 +648,23 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-normalize-tweet-keeps-session-overrides-explicit ()
+  "Payload normalization should stay pure until state overrides are applied."
+  (unwind-protect
+      (progn
+        (chirp-set-tweet-state-override "1" :liked-p t)
+        (let ((tweet
+               (chirp-normalize-tweet
+                '(("id" . "1")
+                  ("text" . "hello")
+                  ("liked" . chirp-json-false)
+                  ("author" . (("screenName" . "alice")))))))
+          (should-not (plist-get tweet :liked-p))
+          (should (plist-get
+                   (chirp-apply-tweet-state-overrides tweet)
+                   :liked-p))))
+    (chirp-clear-tweet-state-overrides "1")))
+
 (ert-deftest chirp-collect-top-level-tweets-hides-promoted-posts ()
   "Promoted tweets should be dropped when filtering is enabled."
   (let ((chirp-hide-promoted-posts t))
