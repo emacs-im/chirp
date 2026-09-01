@@ -198,11 +198,10 @@ Edited posts show ~Edited · N versions~; activate it or use ~x H~.
 
 * Media
 
-Images render as gapless row-sliced previews.  Timelines, retweets, quoted posts, and other compact contexts use X Web's center-cropped ~TweetPhotos~ cover grids: 16:9 groups with the stacked three-item, 2×2 four-item, 2+3 five-item, and 3+3 six-item topologies, separated by 2-pixel gutters.  A thread's focused post instead uses a large horizontal media track: every image keeps its complete natural ratio, the items share a fixed preferred height, and 8-pixel gutters separate them.  Chirp composites each track slice into one display object, so an over-wide track extends past the window edge instead of shrinking or wrapping its images onto separate visual lines.  On a track, ~RIGHT~ or ~TAB~ moves the SVG viewport to the next item, ~LEFT~ or ~S-TAB~ moves to the previous item, and ~RET~ opens the selected item.  The surrounding post and window remain horizontally anchored.  Mouse clicks use per-image hot spots.  Compact images remain individually actionable.  Videos open in ~mpv~ when available.
+Images render as gapless row-sliced previews.  Normal non-condensed posts—including timelines, reposts, thread focuses, and thread replies—share one large SVG media renderer.  A single item keeps its natural ratio within the full reference width and the same bounded media height.  Multiple items use X Web's current carousel geometry: source aspect ratios determine the common height, each item occupies at most 80 percent of the reference width, 4-pixel gutters separate items, and constrained boxes use center cover.  Quoted posts and other condensed cards retain X Web's center-cropped ~TweetPhotos~ grid.  Every carousel is one SVG display object, so over-wide media remains one visual line.  Video and animated-GIF items retain the shared translucent circle-and-triangle play marker inside that SVG.  ~RIGHT~ or ~TAB~ moves the SVG viewport to the next item, ~LEFT~ or ~S-TAB~ moves to the previous item, and ~RET~ opens the selected item; the surrounding post stays horizontally anchored.  Mouse clicks use per-image hot spots.  In a ~Chirp-Image~ buffer, ~C-x C-j~ opens Dired at the exact cached file currently displayed.  Videos open in ~mpv~ when available.
 
 #+begin_src emacs-lisp
 (setq chirp-media-thumbnail-size 256
-      chirp-media-track-height 384
       chirp-video-player-window-size '(1280 . 720)
       chirp-media-download-directory "~/Downloads/chirp/"
       chirp-media-prefetch-images nil

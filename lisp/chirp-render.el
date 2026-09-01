@@ -34,6 +34,7 @@
 (require 'chirp-core)
 (require 'chirp-time)
 (require 'chirp-media)
+(require 'chirp-media-view)
 (require 'chirp-media-layout)
 (require 'nerd-icons nil t)
 
@@ -1036,8 +1037,13 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
          (index (mod (+ (aref state 0) delta) count))
          (offset (nth index (aref state 1))))
     (if-let* ((image
-               (chirp-media-track-strip-image
-                media-list (aref state 5) offset))
+               (chirp-media-carousel-image
+                media-list
+                (aref state 6)
+                (aref state 5)
+                offset
+                (aref state 7)
+                (aref state 8)))
               (rows (appkit-media-image-slice-rows image))
               (same-size (= (length rows) (length (aref state 4)))))
         (progn
@@ -1061,11 +1067,11 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
    (aref state 2) (aref state 0) (aref state 3)))
 
 (defun chirp-render--media-track-hotspot-map
-    (position media-list image gap)
+    (position media-list image height gap widths fit)
   "Return keyboard and image-map-style actions for a media track.
 
-POSITION supplies its existing keymap.  MEDIA-LIST, IMAGE, and GAP describe
-the natural-ratio track."
+POSITION supplies its existing keymap.  MEDIA-LIST and IMAGE identify the
+track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
   (let* ((map
           (copy-keymap
            (or (get-text-property position 'keymap)
@@ -1077,7 +1083,10 @@ the natural-ratio track."
            media-list
            (or chirp--view-title "Chirp Media")
            nil
-           gap)))
+           gap
+           height
+           widths
+           fit)))
     (dolist (key '([right] [tab]))
       (define-key
        map key
@@ -1112,13 +1121,14 @@ the natural-ratio track."
     (cons map state)))
 
 (defun chirp-render--insert-media-track
-    (media-list prefix prefix-face)
-  "Insert focused MEDIA-LIST as one unbreakable natural-ratio track.
+    (media-list prefix prefix-face height gap widths fit)
+  "Insert MEDIA-LIST as one unbreakable horizontal track.
 
-PREFIX and PREFIX-FACE control indentation."
+PREFIX and PREFIX-FACE control indentation.  HEIGHT, GAP, WIDTHS, and FIT
+describe the shared carousel geometry."
   (if-let* ((image
-             (chirp-media-track-strip-image
-              media-list chirp-media-layout-track-gap))
+             (chirp-media-carousel-image
+              media-list height gap nil widths fit))
             (rows (appkit-media-image-slice-rows image)))
       (let (hotspot-map track-state track-positions)
         (setq-local auto-hscroll-mode nil)
@@ -1140,7 +1150,7 @@ PREFIX and PREFIX-FACE control indentation."
                          ((`(,map . ,state)
                            (chirp-render--media-track-hotspot-map
                             start media-list image
-                            chirp-media-layout-track-gap)))
+                            height gap widths fit)))
                        (setq hotspot-map map
                              track-state state)))
                    (put-text-property start (point) 'keymap hotspot-map)
@@ -1148,6 +1158,31 @@ PREFIX and PREFIX-FACE control indentation."
                                       'chirp-media-track t)))
         (aset track-state 4 (nreverse track-positions)))
     (chirp-render--insert-media-grid media-list prefix prefix-face)))
+
+(defun chirp-render--media-aspect-ratio (media)
+  "Return MEDIA's positive natural aspect ratio, or nil."
+  (let ((width (plist-get media :width))
+        (height (plist-get media :height)))
+    (when (and (numberp width) (> width 0)
+               (numberp height) (> height 0))
+      (/ (float width) height))))
+
+(defun chirp-render--insert-media-carousel
+    (media-list prefix prefix-face)
+  "Insert MEDIA-LIST with PREFIX and PREFIX-FACE using X's presentation."
+  (let* ((plan
+          (chirp-media-layout-carousel-plan
+           (mapcar #'chirp-render--media-aspect-ratio media-list)
+           (* 2 chirp-media-thumbnail-size)))
+         (height (plist-get plan :height))
+         (widths (plist-get plan :widths)))
+    (if (and height widths)
+        (chirp-render--insert-media-track
+         media-list prefix prefix-face
+         height chirp-media-layout-carousel-gap widths
+         (plist-get plan :fit))
+      (chirp-render--insert-media-grid
+       media-list prefix prefix-face))))
 
 (defun chirp-render--insert-media-grid
     (media-list prefix prefix-face)
@@ -1226,11 +1261,11 @@ PREFIX-FACE when provided."
 
 (defun chirp-render-insert-media-strip
     (media-list &optional prefix prefix-face presentation)
-  "Insert MEDIA-LIST using a cover grid or focused-post track.
+  "Insert MEDIA-LIST using a carousel or compact cover grid.
 
-Precede each row with PREFIX using PREFIX-FACE when provided.
-PRESENTATION is `track' for natural-ratio horizontal media; all other values
-use the compact cover grid."
+Precede each row with PREFIX using PREFIX-FACE when provided.  PRESENTATION is
+`carousel' for X Web's current non-condensed multi-item layout; compact
+contexts use the cover grid."
   (when media-list
     (if (not chirp-show-tweet-media)
         (cl-loop for media in media-list
@@ -1238,8 +1273,8 @@ use the compact cover grid."
                  do (unless (zerop index)
                       (insert "\n"))
                  do (chirp-render--insert-media-text-cell media media-list index prefix prefix-face))
-      (if (eq presentation 'track)
-          (chirp-render--insert-media-track media-list prefix prefix-face)
+      (if (eq presentation 'carousel)
+          (chirp-render--insert-media-carousel media-list prefix prefix-face)
         (chirp-render--insert-media-grid media-list prefix prefix-face)))
     (insert "\n\n")))
 
@@ -1431,13 +1466,14 @@ newlines after the metrics row."
 
 (cl-defun chirp-render--insert-tweet
     (tweet &key prefix prefix-face show-reply-context article-mode reply-parent
-           (write-actions-p t) (time-format 'compact))
+           media-presentation (write-actions-p t) (time-format 'compact))
   "Insert TWEET at point, optionally prefixed for thread rendering.
 
 PREFIX and PREFIX-FACE control indentation.  SHOW-REPLY-CONTEXT controls the
 reply target.  ARTICLE-MODE controls full article rendering, and REPLY-PARENT
-supplies the preceding parent tweet.  WRITE-ACTIONS-P controls mutation
-actions, while TIME-FORMAT selects `compact' or `full' timestamps."
+supplies the preceding parent tweet.  MEDIA-PRESENTATION selects the media
+layout.  WRITE-ACTIONS-P controls mutation actions, while TIME-FORMAT selects
+`compact' or `full' timestamps."
   (let ((start (point)))
     (chirp-render--insert-tweet-context
      tweet :prefix prefix :prefix-face prefix-face :reply-parent reply-parent)
@@ -1448,12 +1484,13 @@ actions, while TIME-FORMAT selects `compact' or `full' timestamps."
      tweet :prefix prefix :prefix-face prefix-face
      :show-reply-context show-reply-context
      :article-mode article-mode
+     :media-presentation media-presentation
      :write-actions-p write-actions-p)
     (chirp-render--mark-entry start (point) tweet)))
 
 (defun chirp-render-insert-tweet (tweet)
   "Insert TWEET at point."
-  (chirp-render--insert-tweet tweet))
+  (chirp-render--insert-tweet tweet :media-presentation 'carousel))
 
 (defun chirp-render-insert-edit-history-row (row)
   "Insert one normalized edit-history ROW."
@@ -1470,6 +1507,7 @@ actions, while TIME-FORMAT selects `compact' or `full' timestamps."
     (chirp-render--insert-tweet
      tweet
      :article-mode 'full
+     :media-presentation 'carousel
      :write-actions-p latest-p
      :time-format 'full)
     (add-text-properties
@@ -1521,10 +1559,7 @@ tweet content and actions."
                  :reply-context-prefix nil
                  :show-reply-context show-reply-context
                  :article-mode (and focus-p 'full)
-                 :media-presentation
-                 (and focus-p
-                      (not (plist-get tweet :retweeted-by))
-                      'track)
+                 :media-presentation 'carousel
                  :trailing-newlines 0)
                 (appkit-ui-apply-line-prefix
                  body-start (point) body-prefix)))
@@ -1596,7 +1631,8 @@ projections can replace it as one unit."
       (chirp-render--insert-tweet
        tweet
        :prefix chirp-render-list-reply-prefix
-       :reply-parent reply-parent)
+       :reply-parent reply-parent
+       :media-presentation 'carousel)
     (chirp-render-insert-tweet tweet)))
 
 

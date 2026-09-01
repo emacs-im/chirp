@@ -28,6 +28,7 @@
 (require 'chirp-backend)
 (require 'chirp-notifications)
 (require 'chirp-media)
+(require 'chirp-media-view)
 (require 'chirp-render)
 (require 'chirp-edit-history)
 (require 'chirp-actions)

@@ -9,6 +9,7 @@
 (require 'face-remap)
 (require 'chirp-core)
 (require 'chirp-media)
+(require 'chirp-media-view)
 (require 'chirp-timeline)
 
 (ert-deftest chirp-media-prefetch-video-thumbnail-tries-remote-extraction-without-preview ()
@@ -376,8 +377,8 @@ rerender and creates a CPU loop."
                        :preview-url "https://example.com/preview.jpg"))
                     'preview-image))))))
 
-(ert-deftest chirp-media-track-strip-uses-natural-ratio-montage ()
-  "Focused media should form one fixed-height uncropped strip."
+(ert-deftest chirp-media-carousel-image-builds-configured-montage ()
+  "Carousel media should form one configured horizontal SVG."
   (let (captured-items captured-height captured-gap captured-offset)
     (cl-letf (((symbol-function 'chirp-media--preview-file)
                (lambda (media) (plist-get media :file)))
@@ -390,12 +391,12 @@ rerender and creates a CPU loop."
                  'track-image)))
       (should
        (eq
-        (chirp-media-track-strip-image
+        (chirp-media-carousel-image
          '((:type "photo" :file "/tmp/a.jpg"
             :width 430 :height 600)
            (:type "photo" :file "/tmp/b.jpg"
             :width 600 :height 375))
-         8 28)
+         384 8 28)
         'track-image))
       (should (= captured-height 384))
       (should (= captured-gap 8))
@@ -603,7 +604,7 @@ rerender and creates a CPU loop."
             (recenter 0))
           (let ((source-point (with-current-buffer source (point)))
                 (source-window-state (chirp-capture-window-state source)))
-            (cl-letf (((symbol-function 'chirp-media--render-image-buffer)
+            (cl-letf (((symbol-function 'chirp-media-view--render-image-buffer)
                        (lambda (buffer media-list index title)
                          (with-current-buffer buffer
                            (chirp-media-view-mode)
