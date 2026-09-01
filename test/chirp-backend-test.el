@@ -230,6 +230,67 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
             (should (= request-count 2))))
       (chirp-backend-clear-cache))))
 
+(ert-deftest chirp-backend-user-cache-isolates-success-callback-errors ()
+  "One coalesced profile callback failure should not starve later callers."
+  (let ((chirp-backend-read-cache-ttl 15)
+        success-callback
+        second-result
+        warnings)
+    (unwind-protect
+        (progn
+          (chirp-backend-clear-cache)
+          (cl-letf (((symbol-function 'chirp-x-graphql-request)
+                     (lambda (_operation _variables callback &rest _options)
+                       (setq success-callback callback)))
+                    ((symbol-function 'display-warning)
+                     (lambda (_type message &rest _args)
+                       (push message warnings))))
+            (chirp-backend-user
+             "success-callback-user"
+             (lambda (_user _envelope)
+               (error "first callback failed")))
+            (chirp-backend-user
+             "success-callback-user"
+             (lambda (user _envelope)
+               (setq second-result user)))
+            (funcall success-callback
+                     (chirp-backend-test--user-payload
+                      "success-callback-user" "42"))
+            (should (equal (plist-get second-result :handle)
+                           "success-callback-user"))
+            (should (= (length warnings) 1))
+            (should (string-match-p "first callback failed" (car warnings)))))
+      (chirp-backend-clear-cache))))
+
+(ert-deftest chirp-backend-user-cache-isolates-error-callback-errors ()
+  "One coalesced profile errback failure should not starve later callers."
+  (let ((chirp-backend-read-cache-ttl 15)
+        error-callback
+        second-message
+        warnings)
+    (unwind-protect
+        (progn
+          (chirp-backend-clear-cache)
+          (cl-letf (((symbol-function 'chirp-x-graphql-request)
+                     (lambda (_operation _variables _callback &rest options)
+                       (setq error-callback (plist-get options :errback))))
+                    ((symbol-function 'display-warning)
+                     (lambda (_type message &rest _args)
+                       (push message warnings))))
+            (chirp-backend-user
+             "error-callback-user" #'ignore
+             (lambda (_message)
+               (error "first errback failed")))
+            (chirp-backend-user
+             "error-callback-user" #'ignore
+             (lambda (message)
+               (setq second-message message)))
+            (funcall error-callback "remote failure")
+            (should (equal second-message "remote failure"))
+            (should (= (length warnings) 1))
+            (should (string-match-p "first errback failed" (car warnings)))))
+      (chirp-backend-clear-cache))))
+
 (ert-deftest chirp-backend-feed-uses-x-graphql-and-preserves-pagination ()
   "Home feeds should use direct X GraphQL with normalized pagination metadata."
   (let (operation variables raw-tweets next-cursor tweets)
@@ -934,15 +995,15 @@ When PROMOTED-P is non-nil, include the item-level promoted marker used by X."
 
 (ert-deftest chirp-backend-tweet-weighted-length-handles-wide-text-emoji-and-urls ()
   "Create routing should follow X weighting for common text forms."
-  (should (= (chirp-backend--tweet-weighted-length (make-string 280 ?x))
+  (should (= (chirp-backend-tweet-weighted-length (make-string 280 ?x))
              280))
-  (should (= (chirp-backend--tweet-weighted-length (make-string 141 ?你))
+  (should (= (chirp-backend-tweet-weighted-length (make-string 141 ?你))
              282))
-  (should (= (chirp-backend--tweet-weighted-length "👩‍👩‍👧‍👦") 2))
-  (should (= (chirp-backend--tweet-weighted-length
+  (should (= (chirp-backend-tweet-weighted-length "👩‍👩‍👧‍👦") 2))
+  (should (= (chirp-backend-tweet-weighted-length
               (apply #'concat (make-list 57 "←‍←")))
              285))
-  (should (= (chirp-backend--tweet-weighted-length
+  (should (= (chirp-backend-tweet-weighted-length
               (concat "see https://example.com/" (make-string 400 ?x)))
              27)))
 
