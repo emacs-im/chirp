@@ -48,10 +48,11 @@ CHIRP_XCHAT_RELEASE_MODULE_FILE="$module_file" "$emacs_bin" \
   (module-load (getenv "CHIRP_XCHAT_RELEASE_MODULE_FILE"))
   (unless (featurep (quote chirp-xchat-native-module))
     (error "Native module did not provide its feature"))
-  (unless (equal (chirp-xchat-native-version) "0.2.2/chat-xdk-0.4.3")
+  (unless (equal (chirp-xchat-native-version) "0.2.3/chat-xdk-0.4.3")
     (error "Release module version is incompatible"))
   (dolist (function
            (quote (chirp-xchat-native-decrypt
+                   chirp-xchat-native-decrypt-media
                    chirp-xchat-native-encrypt-text
                    chirp-xchat-native-recovery-start
                    chirp-xchat-native-recovery-poll

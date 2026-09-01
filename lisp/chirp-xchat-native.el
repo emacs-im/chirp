@@ -26,6 +26,9 @@
                   "chirp-xchat-native-module" (session))
 (declare-function chirp-xchat-native-decrypt
                   "chirp-xchat-native-module" (session input-json))
+(declare-function chirp-xchat-native-decrypt-media
+                  "chirp-xchat-native-module"
+                  (session conversation-id key-version encrypted-base64))
 (declare-function chirp-xchat-native-encrypt-text
                   "chirp-xchat-native-module" (session input-json))
 (declare-function chirp-xchat-native-recovery-start
@@ -48,7 +51,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 
 ;;; Constants
 
-(defconst chirp-xchat-native--expected-version "0.2.2/chat-xdk-0.4.3"
+(defconst chirp-xchat-native--expected-version "0.2.3/chat-xdk-0.4.3"
   "Native adapter and official XChat SDK version required by Chirp.")
 
 ;;; Variables
@@ -71,6 +74,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
                       chirp-xchat-native-session-unlocked-p
                       chirp-xchat-native-decrypt
                       chirp-xchat-native-encrypt-text
+                      chirp-xchat-native-decrypt-media
                       chirp-xchat-native-recovery-start
                       chirp-xchat-native-recovery-poll
                       chirp-xchat-native-recovery-cancel))
@@ -188,6 +192,9 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 (defconst chirp-xchat-native--max-attachments 100
   "Maximum verified attachments accepted for one native message.")
 
+(defconst chirp-xchat-native--max-media-bytes (* 50 1024 1024)
+  "Maximum encrypted or plaintext bytes accepted for one XChat attachment.")
+
 (defun chirp-xchat-native--optional-string (object key limit label)
   "Decode optional string KEY from OBJECT up to LIMIT bytes for LABEL."
   (let ((value (alist-get key object)))
@@ -200,6 +207,14 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
   "Decode required string KEY from OBJECT up to LIMIT bytes for LABEL."
   (or (chirp-xchat-native--optional-string object key limit label)
       (error "XChat native module omitted %s" label)))
+
+(defun chirp-xchat-native--optional-integer (object key limit label)
+  "Decode optional nonnegative integer KEY from OBJECT up to LIMIT for LABEL."
+  (let ((value (alist-get key object)))
+    (cond
+     ((null value) nil)
+     ((and (integerp value) (<= 0 value limit)) value)
+     (t (error "XChat native module returned invalid %s" label)))))
 
 (defun chirp-xchat-native--decode-attachment (raw)
   "Decode one verified native attachment RAW into a domain plist."
@@ -216,6 +231,9 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
     (unless kind
       (error "XChat native module returned an unknown attachment kind"))
     (list :kind kind
+          :media-hash
+          (chirp-xchat-native--optional-string
+           raw 'media_hash_key 2048 "attachment media hash")
           :url
           (chirp-xchat-native--optional-string
            raw 'url 8192 "attachment URL")
@@ -224,7 +242,20 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
            raw 'preview_url 8192 "attachment preview URL")
           :name
           (chirp-xchat-native--optional-string
-           raw 'name 1024 "attachment name"))))
+           raw 'name 1024 "attachment name")
+          :attachment-id
+          (chirp-xchat-native--optional-string
+           raw 'attachment_id 1024 "attachment ID")
+          :filesize-bytes
+          (chirp-xchat-native--optional-integer
+           raw 'filesize_bytes chirp-xchat-native--max-media-bytes
+           "attachment size")
+          :width
+          (chirp-xchat-native--optional-integer
+           raw 'width 100000 "attachment width")
+          :height
+          (chirp-xchat-native--optional-integer
+           raw 'height 100000 "attachment height"))))
 
 (defun chirp-xchat-native--decode-message (raw)
   "Decode one verified native message RAW into a bounded domain plist."
@@ -312,14 +343,16 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
               (chirp-xchat-native-session-live-p session)
               (chirp-xchat-native-session-unlocked-p session)))))
 
-(defun chirp-xchat-native-decrypt-events (events signing-keys)
-  "Decode verified domain messages from XChat EVENTS using SIGNING-KEYS."
+(defun chirp-xchat-native-decrypt-events
+    (conversation-id events signing-keys)
+  "Decode CONVERSATION-ID's verified messages from EVENTS using SIGNING-KEYS."
   (let (input-json output-json)
     (unwind-protect
         (progn
           (setq input-json
                 (json-encode
-                 `(("events" . ,(vconcat events))
+                 `(("conversation_id" . ,conversation-id)
+                   ("events" . ,(vconcat events))
                    ("signing_keys" . ,signing-keys)))
                 output-json
                 (chirp-xchat-native-decrypt
@@ -332,6 +365,34 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
         (clear-string input-json))
       (when (stringp output-json)
         (clear-string output-json)))))
+
+(defun chirp-xchat-native-decrypt-media-bytes
+    (conversation-id key-version encrypted)
+  "Decrypt ENCRYPTED XChat media for CONVERSATION-ID and KEY-VERSION."
+  (unless (and (stringp encrypted)
+               (not (multibyte-string-p encrypted))
+               (<= (string-bytes encrypted)
+                   chirp-xchat-native--max-media-bytes))
+    (error "XChat media ciphertext is invalid"))
+  (let (input-base64 output-base64 plaintext)
+    (unwind-protect
+        (progn
+          (setq input-base64 (base64-encode-string encrypted t)
+                output-base64
+                (chirp-xchat-native-decrypt-media
+                 (chirp-xchat-native--session)
+                 conversation-id key-version input-base64)
+                plaintext (base64-decode-string output-base64))
+          (unless (and (not (multibyte-string-p plaintext))
+                       (<= (string-bytes plaintext)
+                           chirp-xchat-native--max-media-bytes))
+            (clear-string plaintext)
+            (error "XChat native module returned invalid media plaintext"))
+          plaintext)
+      (when (stringp input-base64)
+        (clear-string input-base64))
+      (when (stringp output-base64)
+        (clear-string output-base64)))))
 
 (defun chirp-xchat-native-prepare-text (conversation-id text)
   "Prepare encrypted XChat TEXT for CONVERSATION-ID.

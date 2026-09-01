@@ -82,6 +82,25 @@
                 :json-false))
     (should (= (length result) 2))))
 
+(ert-deftest chirp-backend-xchat-media-uses-cookie-authenticated-cdn-request ()
+  "XChat media should use its bounded cookie-authenticated CDN operation."
+  (let (conversation media-hash owner ciphertext)
+    (cl-letf (((symbol-function 'chirp-x-chat-media-request)
+               (lambda (request-conversation request-hash callback
+                                             &rest options)
+                 (setq conversation request-conversation
+                       media-hash request-hash
+                       owner (plist-get options :owner))
+                 (funcall callback (unibyte-string 0 255)))))
+      (chirp-backend-dm-media
+       "1:2" "media_hash"
+       (lambda (value) (setq ciphertext value))
+       :owner :view))
+    (should (equal conversation "1:2"))
+    (should (equal media-hash "media_hash"))
+    (should (eq owner :view))
+    (should (equal ciphertext (unibyte-string 0 255)))))
+
 (ert-deftest chirp-backend-xchat-recovery-input-shapes-current-operation ()
   "Recovery lookup should use the current Web operation and exact variables."
   (let (operation variables result)

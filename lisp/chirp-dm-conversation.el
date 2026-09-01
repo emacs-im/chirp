@@ -31,7 +31,7 @@
 (require 'chirp-xchat)
 
 (declare-function chirp-xchat-native-decrypt-events
-                  "chirp-xchat-native" (events signing-keys))
+                  "chirp-xchat-native" (conversation-id events signing-keys))
 
 ;;; Implementation
 (defcustom chirp-dm-history-page-size 200
@@ -256,6 +256,8 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
                     (chirp-dm-conversation--decode-plain-text reply-text)
                     (plist-get copy :reply-attachment-count)
                     (plist-get message :reply-attachment-count)
+                    (plist-get copy :key-version)
+                    (plist-get message :key-version)
                     (plist-get copy :encrypted-p) nil
                     (plist-get copy :decrypted-p) t)
               (cl-incf updated)
@@ -281,6 +283,7 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
                (cl-loop for batch in (seq-partition encoded 200)
                         append
                         (chirp-xchat-native-decrypt-events
+                         (chirp-dm-conversation--id state)
                          batch signing-keys))))
           (setf (plist-get state :decrypt-generation) nil)
           (remhash chirp-dm-conversation--decrypt-request-key

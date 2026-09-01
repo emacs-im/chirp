@@ -28,6 +28,8 @@
 (require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
 (require 'chirp-core)
+(require 'chirp-backend)
+(require 'chirp-xchat-native)
 
 ;;; Options
 
@@ -210,6 +212,7 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 
 (defconst chirp-media--link-card-source-limit (* 256 1024)
   "Maximum bytes accepted from one background link-card response.")
+
 
 (defun chirp-media--curl-protocols (url)
   "Return curl's allowed protocols for uncredentialed URL."
@@ -566,6 +569,143 @@ optionally supplies the source filename used for media type hints."
                   (appkit-register-handle
                    app 'function transfer #'appkit-media-cancel-transfer)))
           entry))))))
+
+(defun chirp-media--xchat-attachment-extension (attachment)
+  "Return a safe cache extension hint for verified ATTACHMENT."
+  (let ((extension
+         (and-let* ((name (plist-get attachment :name)))
+           (downcase (or (file-name-extension name) "")))))
+    (if (and extension
+             (string-match-p "\\`[[:alnum:]]\\{1,16\\}\\'" extension))
+        extension
+      (pcase (plist-get attachment :kind)
+        ('image "jpg")
+        ('gif "gif")
+        ('svg "svg")
+        (_ "bin")))))
+
+(defun chirp-media--write-xchat-attachment (bytes path)
+  "Atomically write unibyte XChat attachment BYTES to cache PATH."
+  (let ((temporary (make-temp-file (concat path ".") nil ".tmp")))
+    (unwind-protect
+        (let ((coding-system-for-write 'binary))
+          (write-region bytes nil temporary nil 'silent)
+          (rename-file temporary path t)
+          path)
+      (when (file-exists-p temporary)
+        (delete-file temporary)))))
+
+(defun chirp-media--finish-xchat-attachment
+    (app resource-key entry attachment encrypted)
+  "In APP, finish RESOURCE-KEY's ENTRY for ATTACHMENT from ENCRYPTED bytes."
+  (condition-case _err
+      (let* ((plaintext
+              (chirp-xchat-native-decrypt-media-bytes
+               (plist-get entry :conversation-id)
+               (plist-get entry :key-version)
+               encrypted))
+             (hint (chirp-media--xchat-attachment-extension attachment))
+             (extension
+              (if (memq (plist-get attachment :kind)
+                        '(image gif svg media))
+                  (appkit-media-bytes-to-extension plaintext hint)
+                hint))
+             (file (format "%s.%s" (plist-get entry :cache-base) extension)))
+        (unwind-protect
+            (progn
+              (chirp-media--write-xchat-attachment plaintext file)
+              (chirp-media--finish-image-resource
+               app resource-key entry 'ready file))
+          (clear-string plaintext)))
+    (error
+     (chirp-media--finish-image-resource
+      app resource-key entry 'failed))))
+
+(cl-defun chirp-media-request-xchat-attachment-resource
+    (view resource-key attachment &key conversation-id key-version)
+  "Acquire encrypted XChat ATTACHMENT for RESOURCE-KEY in VIEW.
+
+CONVERSATION-ID and KEY-VERSION select the native media decryption key.
+Return RESOURCE-KEY only when the verified media metadata is usable."
+  (let ((media-hash (plist-get attachment :media-hash)))
+    (when (and (appkit-view-live-p view)
+               resource-key
+               (stringp conversation-id)
+               (stringp key-version)
+               (stringp media-hash)
+               (not (string-empty-p media-hash))
+               (chirp-media--prefetch-enabled-p))
+      (let* ((app (appkit-view-app view))
+             (store (appkit-app-resource-store app))
+             (source (list conversation-id key-version media-hash))
+             (current (gethash resource-key store))
+             (cache-base
+              (chirp-media-cache-base
+               (mapconcat #'identity source ":") "xchat"))
+             (hint-file
+              (format "%s.%s" cache-base
+                      (chirp-media--xchat-attachment-extension attachment)))
+             (cached
+              (or (and (chirp-media--valid-cache-file-p hint-file) hint-file)
+                  (appkit-media-image-cache-existing-file cache-base))))
+        (cond
+         ((and (eq (plist-get current :status) 'ready)
+               (equal (plist-get current :source) source)
+               (chirp-media--valid-cache-file-p
+                (plist-get current :file))))
+         ((and (eq (plist-get current :status) 'pending)
+               (equal (plist-get current :source) source))
+          (cl-pushnew view (plist-get current :views) :test #'eq))
+         ((and (eq (plist-get current :status) 'failed)
+               (equal (plist-get current :source) source)))
+         (t
+          (let ((entry
+                 (list :source source :status 'pending :file nil :handle nil
+                       :conversation-id conversation-id
+                       :key-version key-version :cache-base cache-base
+                       :views (cl-adjoin view (plist-get current :views)
+                                         :test #'eq))))
+            (puthash resource-key entry store)
+            (if cached
+                (setf (plist-get entry :status) 'ready
+                      (plist-get entry :file) cached)
+              (chirp-backend-dm-media
+               conversation-id media-hash
+               (lambda (encrypted)
+                 (unwind-protect
+                     (chirp-media--finish-xchat-attachment
+                      app resource-key entry attachment encrypted)
+                   (clear-string encrypted)))
+               :errback
+               (lambda (_message)
+                 (chirp-media--finish-image-resource
+                  app resource-key entry 'failed))
+               :owner app)))))
+        resource-key))))
+
+(defun chirp-media-xchat-resource-status (view resource-key)
+  "Return RESOURCE-KEY's XChat media status in VIEW, or nil."
+  (when (appkit-view-live-p view)
+    (plist-get
+     (gethash resource-key
+              (appkit-app-resource-store (appkit-view-app view)))
+     :status)))
+
+(defun chirp-media-xchat-resource-file (view resource-key)
+  "Return RESOURCE-KEY's valid cached XChat media file in VIEW, or nil."
+  (when (appkit-view-live-p view)
+    (let ((file
+           (plist-get
+            (gethash resource-key
+                     (appkit-app-resource-store (appkit-view-app view)))
+            :file)))
+      (and (stringp file) (chirp-media--valid-cache-file-p file) file))))
+
+(defun chirp-media-open-xchat-resource (view resource-key)
+  "Open RESOURCE-KEY's decrypted XChat attachment from VIEW."
+  (if-let* ((file (chirp-media-xchat-resource-file view resource-key)))
+      (appkit-media-open-file file)
+    (user-error "XChat attachment is unavailable")))
 
 (defun chirp-media--trusted-xchat-media-url-p (value)
   "Return non-nil when VALUE is an allowlisted HTTPS XChat media URL."

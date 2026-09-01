@@ -144,7 +144,8 @@
                          (funcall callback [] nil)
                          nil))
                       ((symbol-function 'chirp-xchat-native-decrypt-events)
-                       (lambda (_events _signing-keys)
+                       (lambda (conversation-id _events _signing-keys)
+                         (should (equal conversation-id "conversation-1"))
                          '((:sequence-id "20"
                             :message-id "message-20"
                             :conversation-id "conversation-1"
@@ -207,7 +208,8 @@
                          (funcall callback [] nil)
                          nil))
                       ((symbol-function 'chirp-xchat-native-decrypt-events)
-                       (lambda (events _signing-keys)
+                       (lambda (conversation-id events _signing-keys)
+                         (should (equal conversation-id "conversation-1"))
                          (push 'decrypt calls)
                          (should (equal events
                                         '("encoded-key" "encoded-message")))

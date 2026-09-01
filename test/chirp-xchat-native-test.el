@@ -109,9 +109,14 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
                   (text . "hello")
                   (attachments
                    . (((kind . "image")
+                       (media_hash_key . "media-hash")
                        (url . "https://pbs.twimg.com/media/example.jpg")
                        (preview_url)
-                       (name . "example.jpg"))))
+                       (name . "example.jpg")
+                       (attachment_id . "attachment-1")
+                       (filesize_bytes . 4096)
+                       (width . 640)
+                       (height . 480))))
                   (reply . t)
                   (reply_text . "earlier")
                   (reply_attachment_count . 0)
@@ -124,6 +129,8 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
     (should (eq (plist-get message :content-kind) 'text))
     (should (plist-get message :reply-p))
     (should (equal (plist-get attachment :kind) 'image))
+    (should (equal (plist-get attachment :media-hash) "media-hash"))
+    (should (= (plist-get attachment :filesize-bytes) 4096))
     (should (equal (plist-get attachment :name) "example.jpg"))))
 
 (ert-deftest chirp-xchat-native-rejects-invalid-domain-output ()
@@ -156,8 +163,14 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
   (cl-letf (((symbol-function 'chirp-xchat-native--session)
              (lambda () :session))
             ((symbol-function 'chirp-xchat-native-decrypt)
-             (lambda (session _input-json)
+             (lambda (session input-json)
                (should (eq session :session))
+               (should
+                (equal
+                 (alist-get
+                  'conversation_id
+                  (json-parse-string input-json :object-type 'alist))
+                 "conversation-1"))
                (json-encode
                 '(("messages"
                    . [(("sequence_id" . "20")
@@ -169,10 +182,31 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
                        ("reply_attachment_count" . 0)
                        ("verified" . t))])
                   ("errors" . ()))))))
-    (let ((messages (chirp-xchat-native-decrypt-events '("event") [])))
+    (let ((messages
+           (chirp-xchat-native-decrypt-events
+            "conversation-1" '("event") [])))
       (should (= (length messages) 1))
       (should (eq (plist-get (car messages) :content-kind) 'text))
       (should (equal (plist-get (car messages) :text) "hello")))))
+
+(ert-deftest chirp-xchat-native-media-wrapper-preserves-binary-bytes ()
+  "The Lisp bridge should Base64-frame arbitrary native media bytes exactly."
+  (let ((ciphertext (unibyte-string 0 255 1 2))
+        (plaintext (unibyte-string 137 80 78 71 0 255)))
+    (cl-letf (((symbol-function 'chirp-xchat-native--session)
+               (lambda () :session))
+              ((symbol-function 'chirp-xchat-native-decrypt-media)
+               (lambda (session conversation-id key-version encoded)
+                 (should (eq session :session))
+                 (should (equal conversation-id "conversation-1"))
+                 (should (equal key-version "7"))
+                 (should (equal (base64-decode-string encoded) ciphertext))
+                 (base64-encode-string plaintext t))))
+      (should
+       (equal
+        (chirp-xchat-native-decrypt-media-bytes
+         "conversation-1" "7" ciphertext)
+        plaintext)))))
 
 (ert-deftest chirp-xchat-native-loader-requires-explicit-readable-file ()
   (skip-when (featurep 'chirp-xchat-native-module))
@@ -187,8 +221,9 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
   (skip-unless (chirp-xchat-native-test--load))
   (should (module-function-p (symbol-function 'chirp-xchat-native-version)))
   (should (equal (chirp-xchat-native-version)
-                 "0.2.2/chat-xdk-0.4.3"))
+                 "0.2.3/chat-xdk-0.4.3"))
   (dolist (function '(chirp-xchat-native-encrypt-text
+                      chirp-xchat-native-decrypt-media
                       chirp-xchat-native-recovery-start
                       chirp-xchat-native-recovery-poll
                       chirp-xchat-native-recovery-cancel))
@@ -335,6 +370,8 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
           (setq input-json
                 (json-encode
                  (list
+                  (cons "conversation_id"
+                        (alist-get 'event_conversation_id fixture))
                   (cons
                    "events"
                    (vector (alist-get 'event_key_change_b64 fixture)

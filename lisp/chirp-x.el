@@ -5,9 +5,9 @@
 
 ;;; Commentary:
 
-;; Authenticate and issue persisted GraphQL and allowlisted REST requests to
-;; X's web API.  This module owns credentials, HTTP details, and remote error
-;; decoding; callers own operation selection and response adaptation.
+;; Authenticate and issue persisted GraphQL, allowlisted REST, and XChat media
+;; requests to X's web services.  This module owns credentials, HTTP details,
+;; and remote error decoding; callers own operation selection and adaptation.
 
 ;;; Code:
 
@@ -91,6 +91,10 @@ over dynamically refreshed read IDs and built-in fallbacks."
     (upload . "https://upload.twitter.com/i/media/")
     (upload-legacy . "https://upload.twitter.com/1.1/"))
   "Trusted X web API roots that may receive session credentials.")
+
+(defconst chirp-x--chat-media-base-url
+  "https://ton.x.com/i/ton/data/xchat_media/"
+  "Trusted XChat media root that receives only X session cookies.")
 
 (defconst chirp-x-media-alt-text-limit 1000
   "Maximum number of characters accepted in uploaded image alt text.")
@@ -464,8 +468,9 @@ This does not sign out of X in the browser."
               (concat "?" (chirp-x--urlencode query))))))
 
 (defun chirp-x--trusted-url-p (url)
-  "Return non-nil when URL belongs to an authenticated X API root."
+  "Return non-nil when URL belongs to an authenticated X service root."
   (or (string-prefix-p (concat chirp-x--api-base-url "/") url)
+      (string-prefix-p chirp-x--chat-media-base-url url)
       (cl-some (lambda (entry)
                  (string-prefix-p (cdr entry) url))
                chirp-x--rest-base-urls)))
@@ -516,27 +521,32 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
   (cons (encode-coding-string name 'us-ascii)
         (encode-coding-string value 'us-ascii)))
 
-(defun chirp-x--headers (credentials &optional content-type)
-  "Return authenticated X headers from CREDENTIALS and CONTENT-TYPE."
+(defun chirp-x--headers (credentials &optional content-type cookie-only)
+  "Return authenticated X headers from CREDENTIALS and CONTENT-TYPE.
+
+When COOKIE-ONLY is non-nil, omit the public web bearer token and web API
+client headers for a cookie-authenticated CDN request."
   (unless (chirp--language-tag-p chirp-language)
     (error "Invalid Chirp language tag: %S" chirp-language))
   (mapcar
    (lambda (header)
      (chirp-x--ascii-header (car header) (cdr header)))
    (append
-    `(("Authorization" . ,(concat "Bearer "
-                                  (plist-get credentials :bearer-token)))
-      ("Cookie" . ,(format "auth_token=%s; ct0=%s"
+    (unless cookie-only
+      `(("Authorization" . ,(concat "Bearer "
+                                    (plist-get credentials :bearer-token)))))
+    `(("Cookie" . ,(format "auth_token=%s; ct0=%s"
                            (plist-get credentials :auth-token)
                            (plist-get credentials :ct0)))
       ("X-Csrf-Token" . ,(plist-get credentials :ct0))
-      ("X-Twitter-Active-User" . "yes")
-      ("X-Twitter-Auth-Type" . "OAuth2Session")
-      ("X-Twitter-Client-Language" . ,chirp-language)
       ("Origin" . "https://x.com")
       ("Referer" . "https://x.com/")
       ("User-Agent" . ,chirp-x-user-agent)
       ("Accept" . "*/*"))
+    (unless cookie-only
+      `(("X-Twitter-Active-User" . "yes")
+        ("X-Twitter-Auth-Type" . "OAuth2Session")
+        ("X-Twitter-Client-Language" . ,chirp-language)))
     (when content-type
       `(("Content-Type" . ,content-type))))))
 
@@ -544,11 +554,19 @@ FEATURES and FIELD-TOGGLES are included when non-nil."
   "Return the current HTTP response body when no larger than LIMIT bytes."
   (let* ((header-end (and (boundp 'url-http-end-of-headers)
                           url-http-end-of-headers))
+         (header-position
+          (max (point-min)
+               (cond
+                ((markerp header-end) (marker-position header-end))
+                ((integerp header-end) header-end)
+                (t (point-min)))))
+         ;; url.el leaves its end-of-headers marker on the LF terminating the
+         ;; blank header line, rather than on the first response-body byte.
          (start
-          (cond
-           ((markerp header-end) (marker-position header-end))
-           ((integerp header-end) header-end)
-           (t (point-min))))
+          (if (and (< header-position (point-max))
+                   (eq (char-after header-position) ?\n))
+              (1+ header-position)
+            header-position))
          (end (point-max))
          (bytes (- (position-bytes end) (position-bytes start))))
     (when (> bytes limit)
@@ -828,22 +846,56 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
                 message))))
      (t (list :success payload)))))
 
+(defun chirp-x--decode-binary-response
+    (request-status &optional _allow-empty _method)
+  "Decode a bounded binary X response for REQUEST-STATUS."
+  (let* ((http-status (chirp-x--response-status request-status))
+         (raw (chirp-x--response-body chirp-x--read-response-limit))
+         (body (if (multibyte-string-p raw)
+                   (encode-coding-string raw 'binary)
+                 raw)))
+    (cond
+     ((or (not http-status)
+          (< http-status 200)
+          (>= http-status 300))
+      (list :error
+            (chirp-x--failure-message http-status nil request-status)))
+     ((string-empty-p body)
+      (list :error "X returned an empty media response"))
+     (t (list :success body)))))
+
 ;;; Request Lifecycle
 
 (defvar-local chirp-x--request-handle nil
   "Appkit lifecycle handle for the current X retrieval buffer.")
 
+(defvar-local chirp-x--request-timeout-timer nil
+  "Timeout timer for the current X retrieval buffer.")
+
 (defvar chirp-x--dispatch-buffer nil
   "Dynamically bound retrieval buffer allocated before X write dispatch.")
+
+(defvar-local chirp-x--request-timed-out-p nil
+  "Whether the current X retrieval is being canceled by its timeout.")
 
 (defvar chirp-x--dispatch-attempted-p nil
   "Dynamically bound non-nil once the current X request may be dispatched.")
 
 (defun chirp-x--retire-request-handle ()
-  "Retire the current X retrieval buffer's lifecycle handle."
+  "Retire the current X retrieval buffer's lifecycle handle and timeout."
+  (when (timerp chirp-x--request-timeout-timer)
+    (cancel-timer chirp-x--request-timeout-timer))
+  (setq-local chirp-x--request-timeout-timer nil)
   (when (appkit-handle-p chirp-x--request-handle)
     (appkit-retire-handle chirp-x--request-handle))
   (setq-local chirp-x--request-handle nil))
+
+(defun chirp-x--timeout-request (request)
+  "Cancel live X retrieval buffer REQUEST as a timeout."
+  (when (buffer-live-p request)
+    (with-current-buffer request
+      (setq-local chirp-x--request-timed-out-p t))
+    (chirp-x-cancel-request request)))
 
 (defun chirp-x--discard-request-buffer (buffer)
   "Stop and kill X retrieval BUFFER without delivering a callback."
@@ -859,12 +911,18 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
 
 (defun chirp-x--cancel-request (request)
   "Cancel the X retrieval described by REQUEST and settle its error callback."
-  (let ((buffer (plist-get request :buffer))
-        (method (plist-get request :method))
-        (owner (plist-get request :owner))
-        (settle-on-cancel (plist-get request :settle-on-cancel))
-        (cancel-message (plist-get request :cancel-message))
-        (error-fn (plist-get request :errback)))
+  (let* ((buffer (plist-get request :buffer))
+         (method (plist-get request :method))
+         (owner (plist-get request :owner))
+         (settle-on-cancel (plist-get request :settle-on-cancel))
+         (timed-out-p
+          (and (buffer-live-p buffer)
+               (buffer-local-value 'chirp-x--request-timed-out-p buffer)))
+         (cancel-message
+          (if timed-out-p
+              (plist-get request :timeout-message)
+            (plist-get request :cancel-message)))
+         (error-fn (plist-get request :errback)))
     (chirp-x--discard-request-buffer buffer)
     (when (and (functionp error-fn)
                (or settle-on-cancel
@@ -956,16 +1014,20 @@ preallocated `url-http' buffer so url.el cannot replay or orphan the write."
 
 (cl-defun chirp-x--request
     (request-url method callback
-                 &key data content-type errback allow-empty owner
-                 settle-on-cancel cancel-message)
+                 &key data content-type errback allow-empty owner decoder
+                 settle-on-cancel cancel-message cookie-only timeout
+                 timeout-message)
   "Request trusted REQUEST-URL with METHOD and call CALLBACK.
 
 DATA is encoded as UTF-8 when needed.  CONTENT-TYPE adds its corresponding
 header.  When ALLOW-EMPTY is non-nil, a successful empty body reaches CALLBACK
 as an empty object.  ERRBACK receives setup, transport, HTTP, or response
 errors.  OWNER is the Appkit app or view whose lifecycle owns the retrieval.
-SETTLE-ON-CANCEL asks cancellation to call ERRBACK even for an app-owned read;
-CANCEL-MESSAGE overrides that cancellation error."
+DECODER optionally replaces the JSON response decoder.  SETTLE-ON-CANCEL asks
+cancellation to call ERRBACK even for an app-owned read; CANCEL-MESSAGE
+overrides ordinary cancellation.  COOKIE-ONLY restricts a GET to the XChat
+media CDN without a bearer token.  TIMEOUT bounds the request in seconds, and
+TIMEOUT-MESSAGE describes that terminal failure."
   (unless (functionp callback)
     (error "X request callback is not callable"))
   (let ((error-fn (or errback (lambda (message) (message "%s" message))))
@@ -981,6 +1043,15 @@ CANCEL-MESSAGE overrides that cancellation error."
             (error "X request URL is not trusted: %S" request-url))
           (unless (memq method '(get post))
             (error "X request method is invalid: %S" method))
+          (when (and cookie-only
+                     (or (not (eq method 'get))
+                         (not (string-prefix-p
+                               chirp-x--chat-media-base-url request-url))))
+            (error "Cookie-only X request is not an XChat media GET"))
+          (when (and timeout
+                     (not (and (numberp timeout) (> timeout 0)
+                               (<= timeout 300))))
+            (error "X request timeout is invalid: %S" timeout))
           (setq credentials (chirp-x-credentials))
           (let* ((encoded-url (encode-coding-string request-url 'us-ascii))
                  (encoded-data
@@ -992,17 +1063,19 @@ CANCEL-MESSAGE overrides that cancellation error."
                  ;; redirect target.  Keep the redirect limit buffer-local
                  ;; because redirect handling is asynchronous.
                  (url-max-redirections 0)
-                 ;; A POST asks the server to close its connection and uses a
-                 ;; preallocated no-retry buffer in `chirp-x--retrieve'.
+                 ;; Writes and cookie-authenticated CDN reads close their
+                 ;; connection rather than entering url.el's replay-prone
+                 ;; keepalive path.
                  (url-http-attempt-keepalives
                   (and url-http-attempt-keepalives
-                       (not (eq method 'post))))
+                       (not (eq method 'post))
+                       (not cookie-only)))
                  (url-request-method
                   (encode-coding-string
                    (upcase (symbol-name method)) 'us-ascii))
                  (url-request-data encoded-data)
                  (url-request-extra-headers
-                  (chirp-x--headers credentials content-type)))
+                  (chirp-x--headers credentials content-type cookie-only)))
             (let ((inhibit-quit t))
               (setq chirp-x--dispatch-attempted-p t
                     request-buffer
@@ -1016,12 +1089,13 @@ CANCEL-MESSAGE overrides that cancellation error."
                          (unwind-protect
                              (progn
                                (when (appkit-handle-p handle)
-                                 (appkit-retire-handle handle)
-                                 (setq-local chirp-x--request-handle nil))
+                                 (chirp-x--retire-request-handle))
                                (when deliver-p
                                  (let ((result
                                         (condition-case response-error
-                                            (chirp-x--decode-response
+                                            (funcall
+                                             (or decoder
+                                                 #'chirp-x--decode-response)
                                              request-status allow-empty method)
                                           (error
                                            (let ((message
@@ -1064,13 +1138,19 @@ CANCEL-MESSAGE overrides that cancellation error."
                                :owner request-owner
                                :settle-on-cancel settle-on-cancel
                                :cancel-message cancel-message
+                               :timeout-message timeout-message
                                :errback error-fn)
                          #'chirp-x--cancel-request)))
                 (with-current-buffer request-buffer
                   (setq-local url-max-redirections 0)
                   (setq-local chirp-x--request-handle handle)
                   (add-hook 'kill-buffer-hook
-                            #'chirp-x--retire-request-handle nil t))
+                            #'chirp-x--retire-request-handle nil t)
+                  (when timeout
+                    (setq-local
+                     chirp-x--request-timeout-timer
+                     (run-at-time timeout nil
+                                  #'chirp-x--timeout-request request-buffer))))
                 request-buffer)))))
       ((error quit)
        (let ((quit-p (eq (car err) 'quit))
@@ -1127,6 +1207,46 @@ readable error string.  OWNER optionally owns the transport lifecycle."
              :content-type (and form "application/x-www-form-urlencoded")
              :errback error-fn
              :owner owner)))
+      (chirp-x--callback-error
+       (chirp-x--resignal-callback-error err))
+      (error
+       (funcall error-fn (error-message-string err))
+       nil))))
+
+(cl-defun chirp-x-chat-media-request
+    (conversation-id media-hash callback &key errback owner)
+  "Download encrypted XChat MEDIA-HASH for CONVERSATION-ID.
+
+The request sends X session cookies, but no bearer token, to X's dedicated
+media CDN.  CALLBACK receives a bounded unibyte string.  ERRBACK receives one
+readable error string.  OWNER optionally owns the transport lifecycle."
+  (unless (functionp callback)
+    (error "XChat media callback is not callable"))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (unless (functionp error-fn)
+      (error "XChat media error callback is not callable"))
+    (condition-case err
+        (progn
+          (unless (and (stringp conversation-id)
+                       (<= 1 (length conversation-id) 256)
+                       (string-match-p
+                        "\\`[[:alnum:]_:-]+\\'" conversation-id))
+            (error "XChat media conversation ID is invalid"))
+          (unless (and (stringp media-hash)
+                       (<= 1 (length media-hash) 2048)
+                       (string-match-p "\\`[[:alnum:]_-]+\\'" media-hash))
+            (error "XChat media hash is invalid"))
+          (chirp-x--request
+           (concat chirp-x--chat-media-base-url
+                   conversation-id "/" media-hash)
+           'get callback
+           :decoder #'chirp-x--decode-binary-response
+           :errback error-fn
+           :owner owner
+           :cookie-only t
+           :timeout 30
+           :settle-on-cancel t
+           :timeout-message "XChat media request timed out"))
       (chirp-x--callback-error
        (chirp-x--resignal-callback-error err))
       (error

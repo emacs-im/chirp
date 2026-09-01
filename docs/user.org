@@ -63,7 +63,7 @@ To route those links from ~browse-url~:
              (cons chirp-url-browse-regexp #'chirp-open-url))
 #+end_src
 
-~M-x chirp-direct-messages~ requires one user-confirmed XChat unlock.  Its recent-conversation inbox shows participant avatars, latest-message previews, compact local times, and request or muted status trails; ~RET~ or mouse-1 opens the current row.  Conversations decode signature-verified plain text through Appkit's semantic markup codec, and the composer encodes the same plain codec before native encryption.  Direct-message reads never send read acknowledgments.  Sends are never retried or inserted optimistically.
+~M-x chirp-direct-messages~ requires one user-confirmed XChat unlock.  Its recent-conversation inbox shows participant avatars, latest-message previews, compact local times, and request or muted status trails; ~RET~ or mouse-1 opens the current row.  Conversations decode signature-verified plain text through Appkit's semantic markup codec, and the composer encodes the same plain codec before native encryption.  Chirp downloads encrypted attachment blobs from X's cookie-authenticated TON media service and decrypts each with the exact verified conversation-key version carried by its message: images, GIFs, and SVGs render inline; downloaded videos, audio, and files become native Emacs actions; attached posts render as actionable Chirp tweet cards; other links remain explicit URL actions.  Decrypted attachments are stored in ~chirp-cache-directory~ like other Chirp media, so protect or clear that directory according to the local machine's confidentiality requirements.  Direct-message reads never send read acknowledgments.  Sends are never retried or inserted optimistically.
 
 * Keys
 
@@ -89,10 +89,7 @@ without fetching again; use ~g~ for fresh data.
 | ~x T~ | translate the tweet |
 | ~o~ | open in a browser.  Evil: ~g o~ |
 
-In an XChat conversation, ~RET~ on the timeline moves to the
-composer; Evil users can use ~i~ to move there and enter insert state.
-~RET~ in the composer sends, ~C-u RET~ inserts a newline,
-and ~C-c C-c~ sends.  ~M-p~ and ~M-n~ walk sent-input history.
+In an XChat conversation, ~RET~ activates an attachment or embedded-post action at point; elsewhere on the timeline it moves to the composer.  Evil users can use ~i~ to move there and enter insert state.  ~RET~ in the composer sends, ~C-u RET~ inserts a newline, and ~C-c C-c~ sends.  ~M-p~ and ~M-n~ walk sent-input history.
 
 ~M-x chirp-dm-cancel-unlock~ cancels an active recovery and reports
 an uncertain outcome.

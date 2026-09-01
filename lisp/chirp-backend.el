@@ -1335,6 +1335,28 @@ ERRBACK handles failures, and OWNER owns the transport lifecycle."
        :errback error-fn
        :owner owner))))
 
+(cl-defun chirp-backend-dm-media
+    (conversation-id media-hash callback &key errback owner)
+  "Download encrypted XChat MEDIA-HASH for CONVERSATION-ID.
+
+CALLBACK receives bounded ciphertext bytes.  ERRBACK handles transport
+failures, and OWNER owns the request lifecycle."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (cond
+     ((not (and (stringp conversation-id)
+                (<= (length conversation-id) 256)
+                (string-match-p
+                 "\\`[[:alnum:]_:-]+\\'" conversation-id)))
+      (funcall error-fn "XChat media conversation ID is invalid"))
+     ((not (and (stringp media-hash)
+                (<= 1 (length media-hash) 2048)
+                (string-match-p "\\`[[:alnum:]_-]+\\'" media-hash)))
+      (funcall error-fn "XChat media hash is invalid"))
+     (t
+      (chirp-x-chat-media-request
+       conversation-id media-hash callback
+       :errback error-fn :owner owner)))))
+
 (cl-defun chirp-backend-dm-send-text
     (conversation-id text callback &key errback owner)
   "Encrypt and send TEXT to XChat CONVERSATION-ID, then call CALLBACK.
