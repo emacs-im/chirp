@@ -62,6 +62,87 @@
                        (buffer-string)))
       (should (get-text-property (point-min) 'read-only)))))
 
+(ert-deftest chirp-dm-reactions-project-beneath-their-target-message ()
+  "Reaction operations should become chips on their target message row."
+  (let* ((message (chirp-dm-test--normalized-event "20" "message-20" "wowo"))
+         (added (chirp-dm-test--normalized-event "21" "reaction-21" "🔥" "42"))
+         (also-added
+          (chirp-dm-test--normalized-event "22" "reaction-22" "🔥" "99"))
+         (removed
+          (chirp-dm-test--normalized-event "23" "reaction-23" "🔥" "99"))
+         (conversation
+          (chirp-dm-test--normalized-conversation
+           message added also-added removed)))
+    (setq added
+          (plist-put
+           (plist-put added :content-kind 'reaction)
+           :target-message-id "20")
+          also-added
+          (plist-put
+           (plist-put also-added :content-kind 'reaction)
+           :target-message-id "20")
+          removed
+          (plist-put
+           (plist-put removed :content-kind 'reaction-removed)
+           :target-message-id "20"))
+    (chirp-dm-state-set-events
+     conversation (list message added also-added removed))
+    (let* ((message (car (plist-get conversation :events)))
+           (reaction (car (plist-get message :reactions)))
+           (rows
+            (chirp-dm-render-project-events
+             nil '(:participants ((:id "42" :name "Alice")))
+             (plist-get conversation :events))))
+      (should (= (length rows) 1))
+      (should
+       (equal (plist-get (plist-get conversation :latest-event) :id) "20"))
+      (should (equal (plist-get conversation :preview) "wowo"))
+      (should (equal (plist-get reaction :emoji) "🔥"))
+      (should (= (plist-get reaction :count) 1))
+      (should (equal (plist-get reaction :senders) '("42")))
+      (with-temp-buffer
+        (setq-local fill-column 40)
+        (chirp-dm-render-print-event-row (car rows))
+        (should (string-match-p (regexp-quote "wowo\n 🔥 ")
+                                (buffer-string)))
+        (should-not (string-match-p "Reaction:" (buffer-string)))))))
+
+(ert-deftest chirp-dm-reactions-distinguish-current-user-selection ()
+  "Current-user reactions should use the selected chip presentation."
+  (let* ((message (chirp-dm-test--normalized-event "20" "20" "wowo"))
+         (mine
+          '(:id "21" :sequence-id "21" :kind message
+            :content-kind reaction :text "🔥" :sender-id "42"
+            :target-message-id "20" :created-at-msec "1700000000001"))
+         (theirs
+          '(:id "22" :sequence-id "22" :kind message
+            :content-kind reaction :text "🧠" :sender-id "99"
+            :target-message-id "20" :created-at-msec "1700000000002"))
+         (conversation (chirp-dm-test--normalized-conversation))
+         rows)
+    (chirp-dm-state-set-events conversation (list message mine theirs))
+    (cl-letf (((symbol-function 'chirp-dm-render--view-user-id)
+               (lambda (_view) "42")))
+      (setq rows
+            (chirp-dm-render-project-events
+             nil '(:participants ((:id "42" :name "Alice")))
+             (plist-get conversation :events))))
+    (let ((reactions
+           (plist-get
+            (appkit-chat-timeline-row-context (car rows)) :reactions)))
+      (should (equal (mapcar (lambda (item)
+                               (plist-get item :selected-p))
+                             reactions)
+                     '(t nil))))
+    (with-temp-buffer
+      (chirp-dm-render-print-event-row (car rows))
+      (search-backward "🔥")
+      (should (eq (get-text-property (point) 'face)
+                  'chirp-dm-reaction-selected))
+      (search-forward "🧠")
+      (should (eq (get-text-property (1- (point)) 'face)
+                  'chirp-dm-reaction)))))
+
 (ert-deftest chirp-dm-render-projects-verified-attachments-and-replies ()
   "Verified message facts should reach timeline dependencies and rendering."
   (let ((image

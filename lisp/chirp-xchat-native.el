@@ -51,7 +51,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 
 ;;; Constants
 
-(defconst chirp-xchat-native--expected-version "0.2.3/chat-xdk-0.4.3"
+(defconst chirp-xchat-native--expected-version "0.2.4/chat-xdk-0.4.3"
   "Native adapter and official XChat SDK version required by Chirp.")
 
 ;;; Variables
@@ -278,6 +278,9 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
                        '("text" "reaction" "reaction-removed" "edit"
                          "mark-read" "mark-unread" "unknown"))
                (intern content-name)))
+         (target-message-id
+          (chirp-xchat-native--optional-string
+           raw 'target_message_id 1024 "target message ID"))
          (attachments (alist-get 'attachments raw))
          (reply (alist-get 'reply raw))
          (reply-count (alist-get 'reply_attachment_count raw)))
@@ -285,6 +288,10 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
       (error "XChat native module omitted message identity"))
     (unless content-kind
       (error "XChat native module returned an unknown content kind"))
+    (when (and (memq content-kind '(reaction reaction-removed edit))
+               (not (and (stringp target-message-id)
+                         (not (string-empty-p target-message-id)))))
+      (error "XChat native module omitted target message identity"))
     (unless (and (listp attachments)
                  (<= (length attachments)
                      chirp-xchat-native--max-attachments))
@@ -309,6 +316,7 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
           :text
           (chirp-xchat-native--optional-string
            raw 'text chirp-xchat-native--max-message-bytes "message text")
+          :target-message-id target-message-id
           :attachments
           (mapcar #'chirp-xchat-native--decode-attachment attachments)
           :reply-p (eq reply t)

@@ -271,6 +271,8 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
                       (_ (plist-get copy :kind)))
                     (plist-get copy :content-kind) content-kind
                     (plist-get copy :text) text
+                    (plist-get copy :target-message-id)
+                    (plist-get message :target-message-id)
                     (plist-get copy :document)
                     (chirp-dm-conversation--decode-plain-text text)
                     (plist-get copy :attachments) attachments
