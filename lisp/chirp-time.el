@@ -28,7 +28,7 @@
         (error nil))
     value))
 
-(defun chirp-time--format-compact (value &optional now)
+(defun chirp-time-format-compact (value &optional now)
   "Return X-style compact VALUE relative to NOW.
 
 VALUE may be an Emacs time value or a date-time string.  Return an
@@ -58,7 +58,7 @@ unparseable string unchanged."
             (format-time-string "%b %-d, %Y" time)))))
     value))
 
-(defun chirp-time--format-full (value)
+(defun chirp-time-format-full (value)
   "Return X-style full timestamp VALUE.
 
 VALUE may be an Emacs time value or a date-time string.  Return an

@@ -92,7 +92,7 @@ over dynamically refreshed read IDs and built-in fallbacks."
     (upload-legacy . "https://upload.twitter.com/1.1/"))
   "Trusted X web API roots that may receive session credentials.")
 
-(defconst chirp-x--media-alt-text-limit 1000
+(defconst chirp-x-media-alt-text-limit 1000
   "Maximum number of characters accepted in uploaded image alt text.")
 
 (defconst chirp-x--upload-chunk-size (* 1024 1024)
@@ -1572,7 +1572,7 @@ upload mutation is retried automatically."
     (media-id text callback &key errback owner)
   "Attach alt TEXT to uploaded MEDIA-ID and call CALLBACK.
 
-TEXT may contain at most `chirp-x--media-alt-text-limit' characters.
+TEXT may contain at most `chirp-x-media-alt-text-limit' characters.
 ERRBACK receives setup or write failures.  OWNER optionally owns the
 request.  The metadata write is never retried automatically."
   (unless (functionp callback)
@@ -1588,9 +1588,9 @@ request.  The metadata write is never retried automatically."
           (unless (and (stringp text)
                        (not (string-empty-p (string-trim text))))
             (error "Alt text cannot be empty"))
-          (when (> (length text) chirp-x--media-alt-text-limit)
+          (when (> (length text) chirp-x-media-alt-text-limit)
             (error "Alt text cannot exceed %d characters"
-                   chirp-x--media-alt-text-limit))
+                   chirp-x-media-alt-text-limit))
           (chirp-x--request
            (chirp-x--rest-url 'upload-legacy "media/metadata/create.json" nil)
            'post

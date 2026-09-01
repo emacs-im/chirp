@@ -87,7 +87,7 @@
   "Return a compact local timestamp for MILLISECONDS, or an empty string."
   (if (and (stringp milliseconds)
            (string-match-p "\\`[0-9]+\\'" milliseconds))
-      (chirp-time--format-compact
+      (chirp-time-format-compact
        (seconds-to-time (/ (string-to-number milliseconds) 1000)))
     ""))
 

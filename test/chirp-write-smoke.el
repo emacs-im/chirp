@@ -171,9 +171,9 @@ delete operation and is left for X to expire."
                        (regexp-quote root)
                        (or (plist-get quote-tweet :text) "")))
             (error "Write smoke quote target could not be verified"))
-          (unless (> (chirp-backend--tweet-weighted-length
+          (unless (> (chirp-backend-tweet-weighted-length
                       (plist-get long-tweet :text))
-                     chirp-backend--standard-tweet-weight-limit)
+                     chirp-backend-standard-tweet-weight-limit)
             (error "Write smoke long-form text was not preserved"))
           (unless (plist-get image-tweet :media)
             (error "Write smoke image post had no normalized media"))

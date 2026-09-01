@@ -1152,7 +1152,7 @@ When FALLBACK is non-nil, call it if remote extraction fails."
               image)))
       (error nil))))
 
-(defun chirp-media--video-placeholder-image (size &optional animated-gif-p)
+(defun chirp-media-video-placeholder-image (size &optional animated-gif-p)
   "Return a fixed-size placeholder image for video-like media of SIZE.
 
 When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
@@ -1226,7 +1226,7 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
 (defun chirp-media-thumbnail-placeholder-image (media)
   "Return a stable thumbnail placeholder image for MEDIA, or nil."
   (when (chirp-media-video-like-p media)
-    (chirp-media--video-placeholder-image
+    (chirp-media-video-placeholder-image
      chirp-media-thumbnail-size
      (string= (plist-get media :type) "animated_gif"))))
 

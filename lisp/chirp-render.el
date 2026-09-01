@@ -13,14 +13,10 @@
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
 (declare-function chirp-profile-open "chirp-profile"
                   (handle &optional buffer))
-(declare-function chirp-profile-followers "chirp-profile"
-                  (handle &optional buffer))
-(declare-function chirp-profile-following-users "chirp-profile"
-                  (handle &optional buffer))
+(declare-function chirp-profile-open-followers "chirp-profile" (handle))
+(declare-function chirp-profile-open-following-users "chirp-profile" (handle))
 (declare-function chirp-timeline-open-search "chirp-timeline"
                   (query &optional buffer))
-(declare-function chirp-media-open "chirp-media"
-                  (media-list index &optional title buffer))
 (declare-function chirp-toggle-follow-user-at-point "chirp-actions" ())
 (declare-function chirp-reply-at-point "chirp-actions" ())
 (declare-function chirp-toggle-retweet-at-point "chirp-actions" ())
@@ -33,6 +29,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-chat-ins)
+(require 'appkit-projection)
 (require 'appkit-discussion)
 (require 'appkit-media-image)
 (require 'appkit-ui)
@@ -328,8 +325,8 @@ HELP-ECHO defaults to a short Open-profile description."
      start end
      (lambda ()
        (pcase kind
-         ('followers (chirp-profile-followers handle))
-         ('following (chirp-profile-following-users handle))
+         ('followers (chirp-profile-open-followers handle))
+         ('following (chirp-profile-open-following-users handle))
          (_ (user-error "Unknown profile list at point"))))
      :help-echo (pcase kind
                   ('followers "Open followers")
@@ -1052,8 +1049,8 @@ NEWLINE-P controls the trailing newline."
     (when (and time-p created-at)
       (when-let* ((time
                    (pcase time-format
-                     ('compact (chirp-time--format-compact created-at))
-                     ('full (chirp-time--format-full created-at))
+                     ('compact (chirp-time-format-compact created-at))
+                     ('full (chirp-time-format-full created-at))
                      (_ (error "Invalid Chirp tweet time format: %S"
                                time-format))))
                   ((not (string-empty-p time))))
@@ -1286,9 +1283,9 @@ tweet content and actions."
               (chirp-render--insert-tweet-heading
                tweet :avatar-p t :time-p nil :newline-p nil))
             :time (if focus-p
-                      (chirp-time--format-full
+                      (chirp-time-format-full
                        (plist-get tweet :created-at))
-                    (chirp-time--format-compact
+                    (chirp-time-format-compact
                      (plist-get tweet :created-at)))
             :body-inserter
             (lambda (body-prefix _properties)
@@ -1315,6 +1312,24 @@ tweet content and actions."
 ;;; Rows and Users
 
 ;;;; Tweet Rows
+
+(defun chirp-render--tweet-row-key (tweet)
+  "Return the stable projection key for TWEET."
+  (when-let* ((key (chirp-tweet-key tweet)))
+    (list 'tweet key)))
+
+(defun chirp-render-project-tweet-rows (tweets)
+  "Project normalized TWEETS into keyed Appkit rows."
+  (appkit-projection-project
+   tweets #'chirp-render--tweet-row-key
+   :context-function (lambda (previous _tweet) previous)
+   :dependencies-function #'chirp-media-resource-keys-for-tweet))
+
+(defun chirp-render-print-tweet-row (row)
+  "Insert one projected tweet ROW at point."
+  (chirp-render-insert-tweet-row
+   (appkit-projection-row-payload row)
+   (appkit-projection-row-context row)))
 
 (defun chirp-render--tweet-separator-line ()
   "Return the tweet separator line, or nil when disabled."
