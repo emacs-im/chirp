@@ -1895,7 +1895,7 @@
                (lookup-key map [chirp-media-2 mouse-1]))
               (should (= opened-index 2))))
           (should (equal (nreverse track-offsets)
-                         '(nil 14 28 14)))
+                         '(nil 14 28 14 28)))
           (should-not auto-hscroll-mode)
           (should
            (memq #'chirp-render--media-track-reset-hscroll
@@ -1974,6 +1974,91 @@
                   4
                   (plist-get plan :widths)
                   nil)))))
+
+(ert-deftest chirp-render-single-video-track-installs-lazy-inline-player ()
+  "A single non-condensed video should toggle one lazy Canvas occurrence."
+  (let* ((media
+          '((:type "video"
+             :url "https://example.com/poster.jpg"
+             :variants ((:url "https://example.com/video.mp4"
+                         :bitrate 832000)))))
+         (poster
+          '(image :type svg :data "<svg/>"
+                  :appkit-media-nslices 2
+                  :appkit-media-strip-widths (320)))
+         captured
+         played
+         toggled)
+    (with-temp-buffer
+      (insert "a\nb")
+      (pcase-let* ((`(,map . ,state)
+                     (chirp-render--media-track-hotspot-map
+                      1 media poster 180 4 '(320) nil)))
+        (aset state 4 (list (copy-marker 1) (copy-marker 3)))
+        (chirp-render--media-track-prepare-video-host state)
+        (cl-letf (((symbol-function 'chirp-render--media-track-scene-canvas)
+                   (lambda (&rest _arguments) 'scene-canvas))
+                  ((symbol-function 'video-inline-create)
+                   (lambda (&rest arguments)
+                     (setq captured arguments)
+                     'inline-occurrence))
+                  ((symbol-function 'video-inline-play)
+                   (lambda (inline)
+                     (setq played inline)))
+                  ((symbol-function 'video-inline-toggle-occurrence)
+                   (lambda (inline)
+                     (setq toggled inline))))
+          (call-interactively (lookup-key map (kbd "RET")))
+          (should
+           (equal (seq-take captured 3)
+                  '("https://example.com/video.mp4" 320 180)))
+          (should (eq (plist-get (nthcdr 3 captured) :canvas)
+                      'scene-canvas))
+          (should (eq (aref state 9) 'inline-occurrence))
+          (should (eq played 'inline-occurrence))
+          (should (get-text-property 1 'chirp-video-inline-token))
+          (should (get-text-property 3 'chirp-video-inline-token))
+          (call-interactively (lookup-key map (kbd "RET")))
+          (should (eq toggled 'inline-occurrence)))))))
+
+(ert-deftest chirp-render-carousel-scene-preserves-offset-cover-geometry ()
+  "Canvas scene backgrounds should reuse carousel offsets and cover boxes."
+  (let* ((media
+          '((:type "photo" :file "/tmp/a.jpg")
+            (:type "video" :file "/tmp/b.jpg")))
+         (poster
+          '(image :type svg :data "<svg/>"
+                  :appkit-media-nslices 3
+                  :appkit-media-strip-widths (100 120)
+                  :appkit-media-strip-offset 104))
+         (state
+          (vector 1 '(0 104) media "Media" nil
+                  4 80 '(100 120) 'cover
+                  nil poster nil nil))
+         draws)
+    (cl-letf (((symbol-function 'video-canvas-create)
+               (lambda (width height)
+                 `(image :type canvas :data-width ,width :data-height ,height)))
+              ((symbol-function 'chirp-media--preview-file)
+               (lambda (item) (plist-get item :file)))
+              ((symbol-function 'video-canvas-draw-uri)
+               (lambda (&rest arguments)
+                 (push arguments draws)
+                 t))
+              ((symbol-function 'canvas-refresh) #'ignore))
+      (let ((canvas (chirp-render--media-track-scene-canvas state)))
+        (should (eq (car canvas) 'image))))
+    (setq draws (nreverse draws))
+    (should
+     (equal
+      (mapcar (lambda (arguments)
+                (list (nth 3 arguments)
+                      (nth 4 arguments)
+                      (nth 6 arguments)
+                      (nth 8 arguments)))
+              draws)
+      '(("/tmp/a.jpg" -104 100 cover)
+        ("/tmp/b.jpg" 0 120 cover))))))
 
 (ert-deftest chirp-render-quoted-multi-media-keeps-condensed-grid ()
   "Quoted cards should remain condensed while their parent uses carousel."

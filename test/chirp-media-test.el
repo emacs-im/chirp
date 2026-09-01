@@ -633,46 +633,29 @@ rerender and creates a CPU loop."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-media-open-video-launches-player-with-pipe-connection ()
-  "Opening video media should launch the external player without a PTY."
-  (let ((chirp-video-player-command "/usr/bin/mpv")
+(ert-deftest chirp-media-open-video-uses-dedicated-video-buffer ()
+  "Opening video media should pass the selected variant to `video-open'."
+  (let ((chirp-video-use-internal-player t)
         (chirp-video-playback-max-bitrate 2176000)
-        (source (generate-new-buffer " *chirp-video-source*"))
-        captured-command
-        captured-connection-type
-        captured-query-flag)
-    (unwind-protect
-        (save-window-excursion
-          (switch-to-buffer source)
-          (with-current-buffer source
-            (chirp-view-mode))
-          (cl-letf (((symbol-function 'make-process)
-                     (lambda (&rest args)
-                       (setq captured-command (plist-get args :command))
-                       (setq captured-connection-type (plist-get args :connection-type))
-                       'fake-process))
-                    ((symbol-function 'set-process-query-on-exit-flag)
-                     (lambda (_process flag)
-                       (setq captured-query-flag flag))))
-            (chirp-media-open
-             '((:type "video"
-                :url "https://example.com/high.mp4"
-                :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
-                           (:url "https://example.com/mid.mp4" :bitrate 2176000)
-                           (:url "https://example.com/low.mp4" :bitrate 832000))))
-             0
-             "Media"))
-          (should (equal captured-command
-                         '("/usr/bin/mpv" "https://example.com/mid.mp4")))
-          (should (eq captured-connection-type 'pipe))
-          (should (eq captured-query-flag nil)))
-      (dolist (buffer (list source))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+        opened-url)
+    (cl-letf (((symbol-function 'video-open)
+               (lambda (url)
+                 (setq opened-url url)
+                 'video-buffer)))
+      (chirp-media-open
+       '((:type "video"
+          :url "https://example.com/high.mp4"
+          :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
+                     (:url "https://example.com/mid.mp4" :bitrate 2176000)
+                     (:url "https://example.com/low.mp4" :bitrate 832000))))
+       0
+       "Media"))
+    (should (equal opened-url "https://example.com/mid.mp4"))))
 
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."
   (let ((chirp-video-player-command "/usr/bin/mpv")
+        (chirp-video-use-internal-player nil)
         (chirp-video-playback-max-bitrate 2176000)
         captured-command
         captured-query-flag)
@@ -698,6 +681,7 @@ rerender and creates a CPU loop."
 (ert-deftest chirp-media-play-launches-mpv-with-configured-window-size ()
   "mpv playback should honor `chirp-video-player-window-size'."
   (let ((chirp-video-player-command "/usr/bin/mpv")
+        (chirp-video-use-internal-player nil)
         (chirp-video-player-window-size '(1280 . 720))
         captured-command)
     (with-temp-buffer
@@ -719,6 +703,7 @@ rerender and creates a CPU loop."
 (ert-deftest chirp-media-play-falls-back-to-browser-when-player-is-disabled ()
   "When no external player is configured, Chirp should browse the media URL."
   (let ((chirp-video-player-command nil)
+        (chirp-video-use-internal-player nil)
         browsed-url)
     (with-temp-buffer
       (chirp-media-view-mode)

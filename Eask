@@ -12,9 +12,10 @@
 (source "gnu")
 (source 'melpa)
 
-(depends-on "emacs" "31.1")
+(depends-on "emacs" "32.0")
 (depends-on "appkit" :file "../appkit.el")
 (depends-on "browser-session" :file "../browser-session")
+(depends-on "video" :file "../video.el")
 (depends-on "plz" "0.8")
 (depends-on "transient" "0.4.3")
 (depends-on "websocket" "1.16")
@@ -23,7 +24,7 @@
  (depends-on "evil"))
 
 (script "refresh-local-deps"
-        "eask -f install-file ../appkit.el && eask -f install-file ../browser-session")
+        "eask -f install-file ../appkit.el && eask -f install-file ../browser-session && eask -f install-file ../video.el")
 (script "test" "eask test ert --quiet test/*.el")
 (script "test-local"
-        "eask -f install-file ../appkit.el && eask -f install-file ../browser-session && eask recompile && eask test ert --quiet test/*.el")
+        "eask -f install-file ../appkit.el && eask -f install-file ../browser-session && eask -f install-file ../video.el && eask recompile && eask test ert --quiet test/*.el")

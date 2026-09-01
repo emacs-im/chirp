@@ -23,6 +23,7 @@
 (require 'appkit-media-image)
 (require 'appkit-media-video)
 (require 'appkit-media-resource)
+(require 'video)
 (require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
 (require 'chirp-core)
@@ -138,6 +139,15 @@ When nil, Chirp skips background prefetch and only uses cached list-view images.
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'chirp)
 
+(defcustom chirp-video-use-internal-player t
+  "When non-nil, play tweet video through `video.el' inside Emacs.
+
+Timeline occurrences play in place.  Dedicated media actions open
+`video-mode'.  When internal startup fails, Chirp retains the configured
+external player as a fallback."
+  :type 'boolean
+  :group 'chirp)
+
 (defcustom chirp-video-player-command
   (executable-find "mpv")
   "External video player command used for tweet videos.
@@ -156,7 +166,7 @@ ignore this setting."
   :group 'chirp)
 
 (defcustom chirp-video-playback-max-bitrate 2176000
-  "Maximum preferred MP4 bitrate for direct external playback.
+  "Maximum preferred MP4 bitrate for direct playback.
 
 When non-nil, Chirp picks the highest video variant at or below this bitrate.
 If all known variants exceed the limit, Chirp falls back to the lowest bitrate
@@ -1435,26 +1445,41 @@ distorting the source aspect ratio."
    media crop-spec
    chirp-media-thumbnail-size chirp-media-thumbnail-size))
 
+(defun chirp-media-carousel-items (media-list &optional widths fit)
+  "Return Appkit scene items for MEDIA-LIST.
+
+WIDTHS overrides item widths.  FIT may be `cover' to crop into those boxes."
+  (cl-loop for media in media-list
+           for index from 0
+           collect
+           (append
+            (list :file (chirp-media--preview-file media)
+                  :width (plist-get media :width)
+                  :height (plist-get media :height)
+                  :id (intern (format "chirp-media-%d" index)))
+            (and widths
+                 (list :display-width (nth index widths)))
+            (and fit (list :fit fit))
+            (and (chirp-media-video-like-p media)
+                 (list :play-icon t)))))
+
+(defun chirp-media-carousel-plan
+    (media-list height gap &optional offset widths fit)
+  "Return backend-neutral carousel geometry for MEDIA-LIST.
+
+HEIGHT, GAP, OFFSET, WIDTHS, and FIT have the same meaning as in
+`chirp-media-carousel-image'."
+  (appkit-media-horizontal-strip-plan
+   (chirp-media-carousel-items media-list widths fit)
+   height gap offset))
+
 (defun chirp-media-carousel-image
     (media-list height gap &optional offset widths fit)
   "Return MEDIA-LIST as one horizontal image of HEIGHT separated by GAP.
 
 Optional OFFSET moves that SVG x coordinate to the image's left edge.  WIDTHS
 overrides item widths; FIT may be `cover' to crop into those boxes."
-  (let ((items
-         (cl-loop for media in media-list
-                  for index from 0
-                  collect
-                  (append
-                   (list :file (chirp-media--preview-file media)
-                         :width (plist-get media :width)
-                         :height (plist-get media :height)
-                         :id (intern (format "chirp-media-%d" index)))
-                   (and widths
-                        (list :display-width (nth index widths)))
-                   (and fit (list :fit fit))
-                   (and (chirp-media-video-like-p media)
-                        (list :play-icon t))))))
+  (let ((items (chirp-media-carousel-items media-list widths fit)))
     (when (cl-some (lambda (item) (plist-get item :file)) items)
       (appkit-media-horizontal-strip-image
        items height gap offset))))
@@ -1714,6 +1739,28 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
             (message "Opening video with %s" program))
         (browse-url url))
     (user-error "Current media is not a video or GIF")))
+
+(defun chirp-media-play-video (media &optional external)
+  "Play video-like MEDIA.
+
+Use the configured external player when EXTERNAL is non-nil or internal
+playback is disabled.  Otherwise open a dedicated `video-mode' buffer.  Fall
+back to external playback if the internal player cannot start."
+  (unless (chirp-media-video-like-p media)
+    (user-error "Current media is not a video or GIF"))
+  (if (or external (not chirp-video-use-internal-player))
+      (chirp-media--play-external media)
+    (if-let* ((url (chirp-media-playback-url media)))
+        (condition-case error-data
+            (video-open url)
+          (error
+           (display-warning
+            'chirp-media
+            (format "Internal video playback failed: %s"
+                    (error-message-string error-data))
+            :warning)
+           (chirp-media--play-external media)))
+      (user-error "Current media has no playable URL"))))
 
 (defun chirp-media--photo-file (media)
   "Return a local file path for photo MEDIA."
