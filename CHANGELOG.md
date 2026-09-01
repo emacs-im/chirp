@@ -52,6 +52,8 @@ history remains available in Git.
 
 ### Fixed
 
+- Browser-session login now tracks the returned request handle, rejects concurrent captures, and cancels an active capture when `chirp-forget-browser-session` runs.
+
 - X post permalinks opened through `chirp-open-url` now keep the linked post as the discussion focus, matching RET from a rendered post and keeping ancestor rows in the same order.
 
 - Thread related/retweet attribution now uses Appkit's pre-heading context slot, preserving Chirp's context, author, and body order in discussion rows.
