@@ -132,12 +132,15 @@
       (browse-url url)
     (user-error "No media URL available")))
 
-(defun chirp-media-play ()
-  "Play the current video or GIF using the configured external player."
-  (interactive)
-  (chirp-media--play-external
+(defun chirp-media-play (&optional external)
+  "Play the current video or GIF inside Emacs.
+
+With prefix argument EXTERNAL, use the configured external player."
+  (interactive "P")
+  (chirp-media-play-video
    (or (chirp-media-at-point)
-       (nth chirp--media-index chirp--media-list))))
+       (nth chirp--media-index chirp--media-list))
+   external))
 
 (defun chirp-media-view--set-state (media-list index title file)
   "Record MEDIA-LIST, INDEX, TITLE, and rendered FILE in this viewer."
@@ -229,7 +232,7 @@ RENDERED-FILE is the local resource represented by the preview, when known."
     (if (null media)
         (user-error "No media available")
       (if (chirp-media-video-like-p media)
-          (chirp-media--play-external media)
+          (chirp-media-play-video media)
         (let* ((buffer (or buffer (chirp-buffer)))
                (source-buffer
                 (or (and (buffer-live-p buffer)

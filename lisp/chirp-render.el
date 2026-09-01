@@ -1032,6 +1032,10 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
 
 (defun chirp-render--media-track-select (state delta)
   "Move media track STATE by DELTA items and reveal the selected item."
+  (when-let* ((inline (aref state 9)))
+    (video-inline-close inline)
+    (aset state 9 nil)
+    (aset state 12 nil))
   (let* ((media-list (aref state 2))
          (count (length media-list))
          (index (mod (+ (aref state 0) delta) count))
@@ -1055,6 +1059,7 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
                 (get-text-property 0 'display row)))
              (aref state 4) rows))
           (aset state 0 index)
+          (aset state 10 image)
           (when (eq (window-buffer (selected-window))
                     (current-buffer))
             (set-window-hscroll (selected-window) 0))
@@ -1062,9 +1067,17 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
       (user-error "Unable to reveal media item %d" (1+ index)))))
 
 (defun chirp-render--media-track-open (state)
-  "Open the currently selected item in media track STATE."
-  (chirp-media-open
-   (aref state 2) (aref state 0) (aref state 3)))
+  "Open or toggle the currently selected item in media track STATE."
+  (let ((media (nth (aref state 0) (aref state 2))))
+    (if (and chirp-video-use-internal-player
+             (chirp-media-video-like-p media))
+        (chirp-render--media-track-toggle-video state)
+      (when-let* ((inline (aref state 9)))
+        (video-inline-close inline)
+        (aset state 9 nil)
+        (aset state 12 nil))
+      (chirp-media-open
+       (aref state 2) (aref state 0) (aref state 3)))))
 
 (defun chirp-render--media-track-hotspot-map
     (position media-list image height gap widths fit)
@@ -1086,7 +1099,11 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
            gap
            height
            widths
-           fit)))
+           fit
+           nil
+           image
+           nil
+           nil)))
     (dolist (key '([right] [tab]))
       (define-key
        map key
@@ -1116,9 +1133,148 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                 (vector id 'mouse-1)
                 (lambda ()
                   (interactive)
-                  (aset state 0 item-index)
+                  (let ((delta (- item-index (aref state 0))))
+                    (unless (zerop delta)
+                      (chirp-render--media-track-select state delta)))
                   (chirp-render--media-track-open state)))))
     (cons map state)))
+
+(defun chirp-render--media-track-markers-visible-p (buffer markers)
+  "Return non-nil when one of MARKERS is visible in BUFFER."
+  (and (buffer-live-p buffer)
+       (cl-some
+        (lambda (window)
+          (cl-some
+           (lambda (marker)
+             (and (marker-position marker)
+                  (pos-visible-in-window-p marker window t)))
+           markers))
+        (get-buffer-window-list buffer nil t))))
+
+(defun chirp-render--media-track-activate-video
+    (buffer markers poster canvas)
+  "Replace POSTER rows at MARKERS in BUFFER with video CANVAS slices."
+  (let ((slice-count
+         (plist-get (cdr poster) :appkit-media-nslices))
+        (image-map (plist-get (cdr poster) :map)))
+    (when slice-count
+      (plist-put (cdr canvas) :appkit-media-nslices slice-count))
+    (when image-map
+      (plist-put (cdr canvas) :map image-map)))
+  (let ((rows (appkit-media-image-slice-rows canvas)))
+    (unless (= (length rows) (length markers))
+      (error "Video Canvas changed media track slice geometry"))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (cl-mapc
+           (lambda (marker row)
+             (when (and (marker-position marker)
+                        (eq (marker-buffer marker) buffer))
+               (put-text-property
+                marker (1+ marker) 'display
+                (get-text-property 0 'display row))))
+           markers rows))))))
+
+(defun chirp-render--media-track-prepare-video-host (state)
+  "Attach backend-neutral dynamic scene state to media track STATE."
+  (when (cl-some #'chirp-media-video-like-p (aref state 2))
+    (let ((token (list 'chirp-inline-video)))
+      (dolist (marker (aref state 4))
+        (put-text-property marker (1+ marker)
+                           'chirp-video-inline-token token))
+      (aset state 11 token)))
+  state)
+
+(defun chirp-render--media-track-scene-plan (state)
+  "Return backend-neutral scene geometry for media track STATE."
+  (chirp-media-carousel-plan
+   (aref state 2)
+   (aref state 6)
+   (aref state 5)
+   (nth (aref state 0) (aref state 1))
+   (aref state 7)
+   (aref state 8)))
+
+(defun chirp-render--media-track-scene-width (state)
+  "Return the complete media scene width for STATE."
+  (plist-get (chirp-render--media-track-scene-plan state) :width))
+
+(defun chirp-render--media-track-scene-canvas (state &optional plan)
+  "Build a static Canvas scene for media track STATE using optional PLAN."
+  (setq plan (or plan (chirp-render--media-track-scene-plan state)))
+  (let* ((width (plist-get plan :width))
+         (height (plist-get plan :height))
+         (offset (plist-get plan :offset))
+         (poster (aref state 10))
+         (canvas (video-canvas-create width height)))
+    (dolist (cell (plist-get plan :items))
+      (let ((item (plist-get cell :item)))
+        (when-let* ((file (plist-get item :file)))
+          (video-canvas-draw-uri
+           canvas width height file
+           (- (plist-get cell :x) offset) 0
+           (plist-get cell :width) height
+           (or (plist-get item :fit) 'contain)))))
+    (dolist (property '(:appkit-media-nslices :map
+                        :appkit-media-strip-widths
+                        :appkit-media-strip-offset))
+      (when-let* ((value (plist-get (cdr poster) property)))
+        (plist-put (cdr canvas) property value)))
+    (canvas-refresh canvas)
+    canvas))
+
+(defun chirp-render--media-track-toggle-video (state)
+  "Toggle inline playback for STATE's selected video item."
+  (let ((index (aref state 0)))
+    (if (and (aref state 9)
+             (equal (aref state 12) index))
+        (video-inline-toggle-occurrence (aref state 9))
+      (when-let* ((inline (aref state 9)))
+        (video-inline-close inline))
+      (let* ((media (nth index (aref state 2)))
+             (source (chirp-media-playback-url media))
+             (buffer (current-buffer))
+             (markers (aref state 4))
+             (token (aref state 11))
+             (poster (aref state 10))
+             (plan (chirp-render--media-track-scene-plan state))
+             (selected-cell (nth index (plist-get plan :items)))
+             (scene (chirp-render--media-track-scene-canvas state plan))
+             (scene-width (plist-get plan :width))
+             (target-x (- (plist-get selected-cell :x)
+                          (plist-get plan :offset)))
+             (target-width (plist-get selected-cell :width))
+             (inline
+              (video-inline-create
+               source target-width (aref state 6)
+               :poster poster
+               :fit (or (aref state 8) 'contain)
+               :muted t
+               :buffer buffer
+               :canvas scene
+               :canvas-width scene-width
+               :canvas-height (aref state 6)
+               :destination-x target-x
+               :destination-y 0
+               :visible-function
+               (lambda (_inline)
+                 (chirp-render--media-track-markers-visible-p buffer markers))
+               :alive-function
+               (lambda (_inline)
+                 (and (buffer-live-p buffer)
+                      (marker-position (car markers))
+                      (eq (get-text-property
+                           (car markers) 'chirp-video-inline-token)
+                          token)))
+               :activate-function
+               (lambda (_inline canvas)
+                 (chirp-render--media-track-activate-video
+                  buffer markers poster canvas)))))
+        (aset state 9 inline)
+        (aset state 12 index)
+        (video-inline-play inline)))))
+
 
 (defun chirp-render--insert-media-track
     (media-list prefix prefix-face height gap widths fit)
@@ -1156,7 +1312,9 @@ describe the shared carousel geometry."
                    (put-text-property start (point) 'keymap hotspot-map)
                    (put-text-property start (point)
                                       'chirp-media-track t)))
-        (aset track-state 4 (nreverse track-positions)))
+        (aset track-state 4
+              (mapcar #'copy-marker (nreverse track-positions)))
+        (chirp-render--media-track-prepare-video-host track-state))
     (chirp-render--insert-media-grid media-list prefix prefix-face)))
 
 (defun chirp-render--media-aspect-ratio (media)
