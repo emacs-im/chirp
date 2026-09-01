@@ -460,27 +460,6 @@ REFRESH reloads the thread; optional ID overrides its Appkit identity."
     (chirp-media-prefetch-tweets tweets buffer)
     (chirp-enrich-quoted-tweets tweets buffer)))
 
-(defun chirp-thread--render-view
-    (buffer title refresh ordered &optional anchor-id display-p focus-id)
-  "Present ORDERED thread tweets on a projection view.
-
-BUFFER is accepted for callers that still pass a scratch buffer; the
-Appkit view owns the live buffer.  TITLE and REFRESH are view metadata.
-ANCHOR-ID and FOCUS-ID select the restored point.  DISPLAY-P selects the
-buffer."
-  (let* ((view (or (and (buffer-live-p buffer)
-                        (with-current-buffer buffer
-                          (chirp--live-projection-view)))
-                   (chirp-thread--ensure-view
-                    title refresh focus-id
-                    (list 'thread 'scratch (buffer-name buffer)))))
-         (position (or (and (stringp anchor-id) (list 'tweet anchor-id))
-                       (and (stringp focus-id) (list 'tweet focus-id))
-                       'first)))
-    (chirp-thread--present view ordered position)
-    (when display-p
-      (chirp-display-buffer (appkit-view-buffer view)))
-    (appkit-view-buffer view)))
 
 ;;; Commands
 

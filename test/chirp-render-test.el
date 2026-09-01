@@ -42,6 +42,13 @@
         :focus-p focus-p
         :tweet tweet))
 
+(defun chirp-test--insert-tweet-list (tweets)
+  "Insert TWEETS through the production row renderer."
+  (let (previous)
+    (dolist (tweet tweets)
+      (chirp-render-insert-tweet-row tweet previous)
+      (setq previous tweet))))
+
 (defun chirp-test--sample-article-tweet ()
   "Return a normalized tweet payload with article metadata."
   (chirp-normalize-tweet
@@ -1051,7 +1058,7 @@
         (should-not (looking-at "\n\\[video 640x360\\]\n\n\n"))
         (should (get-text-property image-start 'chirp-media-item))))))
 
-(ert-deftest chirp-render-insert-tweet-list-links-adjacent-replies ()
+(ert-deftest chirp-render-tweet-rows-link-adjacent-replies ()
   "List rendering should indent replies to the previous visible tweet."
   (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets)))
     (with-temp-buffer
@@ -1059,7 +1066,7 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list (list parent reply))))
+          (chirp-test--insert-tweet-list (list parent reply))))
       (goto-char (point-min))
       (should (search-forward "↳ replying to @dingyi above" nil t))
       (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
@@ -1088,7 +1095,7 @@
                    (lambda (&rest args)
                      (setq opened-thread args))))
           (let ((inhibit-read-only t))
-            (chirp-render-insert-tweet-list (list parent reply)))
+            (chirp-test--insert-tweet-list (list parent reply)))
           (goto-char (point-min))
           (search-forward "↳ replying to @dingyi above")
           (goto-char (match-beginning 0))
@@ -1117,7 +1124,7 @@
           (chirp-open-at-point)
           (should (equal opened-thread "100")))))))
 
-(ert-deftest chirp-render-insert-tweet-list-links-replies-via-handle-fallback ()
+(ert-deftest chirp-render-tweet-rows-link-replies-via-handle-fallback ()
   "List rendering should also catch replies linked by handle and conversation."
   (pcase-let ((`(,parent ,reply) (chirp-test--sample-adjacent-reply-tweets-with-handle-fallback)))
     (with-temp-buffer
@@ -1125,13 +1132,13 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-thumbnail-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list (list parent reply))))
+          (chirp-test--insert-tweet-list (list parent reply))))
       (goto-char (point-min))
       (should (search-forward "↳ replying to @dingyi above" nil t))
       (should (equal (get-text-property (match-beginning 0) 'chirp-reply-parent-id)
                      "200")))))
 
-(ert-deftest chirp-render-insert-tweet-list-inserts-customizable-separator ()
+(ert-deftest chirp-render-tweet-rows-insert-customizable-separator ()
   "List rendering should place a non-entry separator between tweets."
   (let ((tweets (list
                  '(:kind tweet :id "100" :text "First" :author-name "Alice" :author-handle "alice"
@@ -1142,7 +1149,7 @@
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list tweets)))
+          (chirp-test--insert-tweet-list tweets)))
       (goto-char (point-min))
       (should (search-forward chirp-tweet-separator nil t))
       (let ((pos (match-beginning 0)))
@@ -1151,7 +1158,7 @@
                  (get-text-property pos 'face)))
         (should-not (get-text-property pos 'chirp-entry-item))))))
 
-(ert-deftest chirp-render-insert-tweet-list-indents-separator-from-left ()
+(ert-deftest chirp-render-tweet-rows-indent-separator-from-left ()
   "List separators should use a stable left indent."
   (let ((chirp-tweet-separator "|")
         (chirp-tweet-separator-indent 6)
@@ -1168,7 +1175,7 @@
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-render--metric-string) (lambda (&rest _args) "")))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list tweets)))
+          (chirp-test--insert-tweet-list tweets)))
       (goto-char (point-min))
       (should (search-forward "|" nil t))
       (should (= (save-excursion
@@ -1176,7 +1183,7 @@
                    (current-column))
                  6)))))
 
-(ert-deftest chirp-render-insert-tweet-list-can-disable-separator ()
+(ert-deftest chirp-render-tweet-rows-can-disable-separator ()
   "Setting `chirp-tweet-separator' to nil should disable list separators."
   (let ((chirp-tweet-separator nil)
         (tweets (list
@@ -1188,7 +1195,7 @@
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list tweets)))
+          (chirp-test--insert-tweet-list tweets)))
       (should-not (string-match-p "- - - -" (buffer-string))))))
 
 (ert-deftest chirp-render-insert-discussion-entry-renders-full-article-body ()
@@ -1956,7 +1963,7 @@
                    (setq opened-profile handle))))
         (let ((inhibit-read-only t))
           (chirp-render-insert-user-summary user)
-          (chirp-render-insert-tweet-list (list tweet)))
+          (chirp-test--insert-tweet-list (list tweet)))
         (goto-char (point-min))
         (search-forward "Hello world")
         (goto-char (match-beginning 0))
@@ -2010,7 +2017,7 @@
       (setq-local chirp--entry-wrap-navigation nil)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil)))
         (let ((inhibit-read-only t))
-          (chirp-render-insert-tweet-list tweets)))
+          (chirp-test--insert-tweet-list tweets)))
       (goto-char (point-min))
       (search-forward "Second")
       (goto-char (match-beginning 0))

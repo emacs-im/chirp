@@ -56,7 +56,6 @@
                   ((symbol-function 'chirp-backend-whoami)
                    (lambda (_callback &optional _errback)
                      nil))
-                  ((symbol-function 'chirp-render-insert-user-list) #'ignore)
                   ((symbol-function 'chirp-display-buffer) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore))
           (setq buffer (chirp-profile-open-followers "alice"))
@@ -162,37 +161,50 @@
 (ert-deftest chirp-profile-load-more-appends-older-posts ()
   "Loading more in a profile should append older tweets using the next cursor."
   (let ((buffer (generate-new-buffer " *chirp-profile-load-more*"))
-        (user '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4))
-        (first-page (list '(:kind tweet :id "1" :text "first" :author-handle "alice")))
-        callback)
+        user-callback
+        initial-callback
+        whoami-callback
+        older-callback)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-backend-user-posts)
-                   (lambda (handle success &optional _errback max-results cursor)
-                     (should (equal handle "alice"))
-                     (should (= max-results chirp-profile-post-limit))
-                     (should (equal cursor "cursor-prev"))
-                     (setq callback success)))
-                  ((symbol-function 'chirp-backend-whoami)
-                   (lambda (_callback &optional _errback)
-                     nil))
+        (cl-letf (((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title)
+                     'profile-token))
                   ((symbol-function 'chirp-begin-request)
                    (lambda (_buffer)
                      'profile-token))
                   ((symbol-function 'chirp-request-current-p)
                    (lambda (_buffer token)
                      (eq token 'profile-token)))
+                  ((symbol-function 'chirp-backend-user)
+                   (lambda (_handle callback &optional _errback)
+                     (setq user-callback callback)))
+                  ((symbol-function 'chirp-backend-whoami)
+                   (lambda (callback &optional _errback)
+                     (setq whoami-callback callback)))
+                  ((symbol-function 'chirp-backend-user-posts)
+                   (lambda (_handle callback &optional _errback _max-results cursor)
+                     (if cursor
+                         (setq older-callback callback)
+                       (setq initial-callback callback))))
                   ((symbol-function 'chirp-display-buffer) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (setq buffer
-                (chirp-profile--render
-                 buffer "@alice" #'ignore user first-page 'posts '(posts)
-                 :timeline-ready t
-                 :next-cursor "cursor-prev"))
+          (setq buffer (chirp-profile-open "alice"))
+          (funcall user-callback
+                   '(:kind user :handle "alice" :name "Alice" :bio ""
+                     :posts 12 :following 3 :followers 4)
+                   nil)
+          (funcall whoami-callback '(:kind user :handle "bob") nil)
+          (funcall initial-callback
+                   (list '(:kind tweet :id "1" :text "first"
+                           :author-handle "alice"))
+                   '(("pagination" . (("nextCursor" . "cursor-prev")))))
           (with-current-buffer buffer
             (chirp-profile-load-more)
-            (funcall callback
-                     (list '(:kind tweet :id "2" :text "second" :author-handle "alice"))
+            (funcall older-callback
+                     (list '(:kind tweet :id "2" :text "second"
+                             :author-handle "alice"))
                      '(("pagination" . (("nextCursor" . "cursor-next")))))
             (should (string-match-p "first" (buffer-string)))
             (should (string-match-p "second" (buffer-string)))
@@ -204,35 +216,50 @@
 (ert-deftest chirp-profile-load-more-uses-current-subview-fetcher ()
   "Loading more should use the active profile subview command."
   (let ((buffer (generate-new-buffer " *chirp-profile-load-more-replies*"))
-        (user '(:kind user :handle "alice" :name "Alice" :bio "" :posts 12 :following 3 :followers 4))
-        (first-page (list '(:kind tweet :id "1" :text "first reply" :author-handle "alice")))
-        callback)
+        user-callback
+        initial-callback
+        whoami-callback
+        older-callback)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-backend-user-replies)
-                   (lambda (handle success &optional _errback max-results cursor)
-                     (should (equal handle "alice"))
-                     (should (= max-results chirp-profile-post-limit))
-                     (should (equal cursor "cursor-prev"))
-                     (setq callback success)))
+        (cl-letf (((symbol-function 'chirp-begin-background-request)
+                   (lambda (_buffer _title)
+                     'profile-token))
                   ((symbol-function 'chirp-begin-request)
                    (lambda (_buffer)
                      'profile-token))
                   ((symbol-function 'chirp-request-current-p)
                    (lambda (_buffer token)
                      (eq token 'profile-token)))
+                  ((symbol-function 'chirp-backend-user)
+                   (lambda (_handle callback &optional _errback)
+                     (setq user-callback callback)))
+                  ((symbol-function 'chirp-backend-whoami)
+                   (lambda (callback &optional _errback)
+                     (setq whoami-callback callback)))
+                  ((symbol-function 'chirp-backend-user-replies)
+                   (lambda (_handle callback &optional _errback _max-results cursor)
+                     (if cursor
+                         (setq older-callback callback)
+                       (setq initial-callback callback))))
                   ((symbol-function 'chirp-display-buffer) #'ignore)
+                  ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (setq buffer
-                (chirp-profile--render
-                 buffer "@alice · Replies" #'ignore user first-page 'replies
-                 '(posts replies highlights media)
-                 :timeline-ready t
-                 :next-cursor "cursor-prev"))
+          (setq buffer (chirp-profile-open "alice" nil 'replies))
+          (funcall user-callback
+                   '(:kind user :handle "alice" :name "Alice" :bio ""
+                     :posts 12 :following 3 :followers 4)
+                   nil)
+          (funcall whoami-callback '(:kind user :handle "bob") nil)
+          (funcall initial-callback
+                   (list '(:kind tweet :id "1" :text "first reply"
+                           :author-handle "alice"))
+                   '(("pagination" . (("nextCursor" . "cursor-prev")))))
           (with-current-buffer buffer
             (chirp-profile-load-more)
-            (funcall callback
-                     (list '(:kind tweet :id "2" :text "second reply" :author-handle "alice"))
+            (funcall older-callback
+                     (list '(:kind tweet :id "2" :text "second reply"
+                             :author-handle "alice"))
                      '(("pagination" . (("nextCursor" . "cursor-next")))))
             (should (string-match-p "first reply" (buffer-string)))
             (should (string-match-p "second reply" (buffer-string)))

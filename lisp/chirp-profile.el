@@ -233,37 +233,6 @@ REFRESH reloads the selected MODE."
          (chirp-show-error buffer title refresh message))))
     buffer))
 
-(cl-defun chirp-profile--render
-    (buffer title refresh user tweets current-mode modes
-            &key _anchor-id display-p timeline-ready next-cursor status-message)
-  "Install USER and TWEETS in BUFFER's profile view titled TITLE.
-
-REFRESH reloads the view.  CURRENT-MODE selects one of MODES.  DISPLAY-P
-shows the buffer.  TIMELINE-READY, NEXT-CURSOR, and STATUS-MESSAGE update
-pagination and empty-state chrome."
-  (let* ((handle (or (plist-get user :handle)
-                     (with-current-buffer buffer chirp--profile-handle)))
-         (view (or (and (buffer-live-p buffer)
-                        (with-current-buffer buffer
-                          (chirp--live-projection-view)))
-                   (chirp-profile--ensure-view
-                    handle title refresh current-mode)))
-         (state (appkit-view-state view)))
-    (setf (plist-get state :user) user
-          (plist-get state :items) tweets
-          (plist-get state :mode) current-mode
-          (plist-get state :modes) modes
-          (plist-get state :title) title
-          (plist-get state :refresh) refresh
-          (plist-get state :timeline-ready) timeline-ready
-          (plist-get (plist-get state :page) :next-cursor) next-cursor
-          (plist-get (plist-get state :status) :phase)
-          (if status-message 'error 'idle)
-          (plist-get (plist-get state :status) :message) status-message)
-    (chirp-profile--present view)
-    (when display-p
-      (chirp-display-buffer (appkit-view-buffer view)))
-    (appkit-view-buffer view)))
 
 ;;; Pagination
 

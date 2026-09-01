@@ -24,6 +24,7 @@
           "\\(?:[/:?#]\\|\\'\\)")
   "Regexp suitable for routing X URLs through `browse-url-handlers'.")
 
+
 ;;; Parsing
 
 (defun chirp-url--query-value (query name)
