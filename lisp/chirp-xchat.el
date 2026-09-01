@@ -51,7 +51,7 @@
   "Maximum Base64 size accepted for one prepared outbound XChat event.")
 
 (defconst chirp-xchat--live-keepalive-bytes
-  (unibyte-string #x0c #x00 #x02 #x0c #x00 #x02 #x00 #x00)
+  (unibyte-string #x0c #x00 #x02 #x0c #x00 #x02 #x00 #x00 #x00)
   "Official XChat binary-Thrift websocket keepalive frame.")
 
 (defconst chirp-xchat--detail-kinds

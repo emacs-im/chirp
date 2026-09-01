@@ -150,6 +150,7 @@ commands still work, and displays alt text when the backend provides it."
   backend-pending-reads
   primary-feed-states
   dm-conversations
+  dm-live
   media-runtime
   xchat-native-session
   xchat-native-epoch

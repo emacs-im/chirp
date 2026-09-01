@@ -68,6 +68,37 @@ not replaced by a later encrypted snapshot."
   (setf (plist-get conversation :events) events)
   (chirp-dm-state--refresh-derived-fields conversation))
 
+(defun chirp-dm-state-accept-live-event (event)
+  "Merge normalized websocket EVENT into its canonical conversation.
+
+Return the canonical conversation, or nil when its metadata has not been
+loaded.  Existing inboxes promote the changed conversation to the recent edge."
+  (let* ((conversation-id (and (listp event)
+                               (plist-get event :conversation-id)))
+         (conversation
+          (and (stringp conversation-id)
+               (gethash conversation-id (chirp-dm-state--table)))))
+    (when conversation
+      (chirp-dm-state--event-id event)
+      (chirp-dm-state-set-events
+       conversation
+       (chirp-dm-state-merge-events
+        (plist-get conversation :events) (list event)))
+      (when (appkit-app-live-p chirp--app)
+        (maphash
+         (lambda (_id view)
+           (when (appkit-view-live-p view)
+             (let ((state (appkit-view-state view)))
+               (when (eq (plist-get state :type) 'dm-inbox)
+                 (setf (plist-get state :items)
+                       (cons conversation
+                             (delq conversation
+                                   (copy-sequence
+                                    (plist-get state :items)))))))))
+         (appkit-app-view-registry chirp--app)))
+      (chirp-dm-state-publish conversation)
+      conversation)))
+
 (defun chirp-dm-state--copy-field (target source property)
   "Copy PROPERTY from SOURCE to TARGET when SOURCE carries it."
   (when (plist-member source property)

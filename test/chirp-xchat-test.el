@@ -615,6 +615,74 @@
      (chirp-xchat-send-result
       payload "42-99" "42" "11111111-1111-1111-1111-111111111111"))))
 
+(ert-deftest chirp-xchat-live-token-is-bounded-and-never-adapted-loosely ()
+  "Live token normalization should require one bounded JWT-shaped value."
+  (let ((payload
+         '(("data" .
+            (("user_get_x_chat_auth_token" .
+              (("token" . "header.payload.signature"))))))))
+    (should (equal (chirp-xchat-live-token payload)
+                   "header.payload.signature"))
+    (should-error
+     (chirp-xchat-live-token
+      '(("data" .
+         (("user_get_x_chat_auth_token" . (("token" . "not-a-jwt"))))))))))
+
+(ert-deftest chirp-xchat-live-frame-decodes-event-and-instructions-boundedly ()
+  "Binary live frames should expose events and classify control instructions."
+  (let* ((encoded
+          (chirp-dm-test--event
+           :sequence "31" :message-id "message-31" :sender-id "42"
+           :conversation-id "conversation-1" :text "live"))
+         (event-frame
+          (concat (unibyte-string 12 0 1)
+                  (base64-decode-string encoded)
+                  (unibyte-string 0)))
+         (event-result (chirp-xchat-decode-live-frame event-frame)))
+    (should (eq (plist-get event-result :kind) 'event))
+    (should (equal (plist-get (plist-get event-result :event) :id) "31"))
+    (should
+     (eq (plist-get
+          (chirp-xchat-decode-live-frame
+           (chirp-xchat-live-keepalive-frame))
+          :kind)
+         'keepalive))
+    (should
+     (eq (plist-get
+          (chirp-xchat-decode-live-frame
+           (unibyte-string 12 0 2 12 0 8 2 0 1 1 0 0 0))
+          :kind)
+         'instruction))
+    (should-error (chirp-xchat-decode-live-frame "multibyte-λ"))))
+
+(ert-deftest chirp-backend-xchat-live-token-uses-fixed-write-operation ()
+  "Live token acquisition should use the fixed mutation and strict adapter."
+  (let (operation variables owner token)
+    (cl-letf
+        (((symbol-function 'chirp-x-graphql-request)
+          (lambda (requested-operation requested-variables callback
+                                       &rest options)
+            (setq operation requested-operation
+                  variables requested-variables
+                  owner (plist-get options :owner))
+            (funcall
+             callback
+             '(("data" .
+                (("user_get_x_chat_auth_token" .
+                  (("token" . "header.payload.signature")))))))
+            'request)))
+      (chirp-backend-dm-live-token
+       (lambda (value _envelope) (setq token value))
+       :owner 'app))
+    (should (equal (plist-get operation :query-id)
+                   "Qh3fZRjPPtPoHYR_2sCZsA"))
+    (should (equal (plist-get operation :name)
+                   "GenerateXChatTokenMutation"))
+    (should (eq (plist-get operation :method) 'post))
+    (should-not variables)
+    (should (eq owner 'app))
+    (should (equal token "header.payload.signature"))))
+
 (provide 'chirp-xchat-test)
 
 ;;; chirp-xchat-test.el ends here

@@ -14,6 +14,7 @@
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-dm-inbox)
+(require 'chirp-dm-live)
 
 (declare-function chirp-xchat-native-load "chirp-xchat-native" ())
 (declare-function chirp-xchat-native-recovery-active-p
@@ -129,7 +130,9 @@
          (user-id (chirp--session-xchat-user-id state)))
     (if (and (stringp user-id)
              (string-match-p "\\`[0-9]+\\'" user-id))
-        (chirp-dm-inbox-open)
+        (progn
+          (chirp-dm-live-ensure)
+          (chirp-dm-inbox-open))
       (message "Resolving the authenticated XChat identity...")
       (chirp-backend-whoami
        (lambda (user _envelope)
@@ -137,6 +140,7 @@
                    ((appkit-app-live-p app)))
              (progn
                (setf (chirp--session-xchat-user-id state) resolved)
+               (chirp-dm-live-ensure)
                (chirp-dm-inbox-open))
            (chirp-dm--unlock-error
             "Authenticated X profile has no user identity")))

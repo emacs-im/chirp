@@ -18,6 +18,7 @@
 (require 'url)
 (require 'url-http)
 (require 'url-util)
+(require 'websocket)
 (require 'chirp-core)
 
 (declare-function plz "plz" (method url &rest options))
@@ -95,6 +96,9 @@ over dynamically refreshed read IDs and built-in fallbacks."
 (defconst chirp-x--chat-media-base-url
   "https://ton.x.com/i/ton/data/xchat_media/"
   "Trusted XChat media root that receives only X session cookies.")
+
+(defconst chirp-x--chat-live-base-url "wss://chat-ws.x.com/ws?token="
+  "Trusted XChat websocket root receiving one short-lived live token.")
 
 (defconst chirp-x-media-alt-text-limit 1000
   "Maximum number of characters accepted in uploaded image alt text.")
@@ -1252,6 +1256,80 @@ readable error string.  OWNER optionally owns the transport lifecycle."
       (error
        (funcall error-fn (error-message-string err))
        nil))))
+
+
+(cl-defun chirp-x-chat-live-open
+    (token on-open on-message on-close on-error)
+  "Open XChat's authenticated live websocket with TOKEN.
+
+ON-OPEN receives the exact websocket.  ON-MESSAGE receives the websocket,
+frame opcode, and payload.  ON-CLOSE receives the websocket.  ON-ERROR
+receives the websocket, callback type, and error data.  The caller owns
+reconnection and must close the returned websocket."
+  (unless (and (stringp token)
+               (<= 1 (length token) 8192)
+               (string-match-p
+                "\\`[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\'"
+                token))
+    (error "XChat live token is invalid"))
+  (dolist (callback (list on-open on-message on-close on-error))
+    (unless (functionp callback)
+      (error "XChat live websocket callback is not callable")))
+  (let ((original-open-network-stream
+         (symbol-function #'open-network-stream))
+        socket)
+    (condition-case nil
+        (progn
+          ;; websocket.el derives its process and debug-buffer names from the
+          ;; complete URL.  Suppress constructor debugging, replace the
+          ;; process label, then erase the token-bearing URL retained by its
+          ;; otherwise read-only diagnostic slot.
+          (cl-letf
+              (((symbol-function 'open-network-stream)
+                (lambda (_name buffer host service &rest parameters)
+                  (apply original-open-network-stream
+                         "chirp XChat live" buffer host service parameters))))
+            (let ((websocket-debug nil))
+              (setq socket
+                    (websocket-open
+                     (concat chirp-x--chat-live-base-url token)
+                     :custom-header-alist '(("Origin" . "https://x.com"))
+                     :on-open on-open
+                     :on-message
+                     (lambda (websocket frame)
+                       (funcall on-message websocket
+                                (websocket-frame-opcode frame)
+                                (websocket-frame-payload frame)))
+                     :on-close on-close
+                     :on-error on-error))))
+          (setf (cl-struct-slot-value 'websocket 'url socket)
+                "wss://chat-ws.x.com/ws")
+          socket)
+      (error
+       (when socket
+         (ignore-errors (websocket-close socket)))
+       (error "Unable to establish the XChat live websocket")))))
+
+(defun chirp-x-chat-live-open-p (websocket)
+  "Return non-nil when WEBSOCKET is an open XChat live transport."
+  (and (websocket-p websocket) (websocket-openp websocket)))
+
+(defun chirp-x-chat-live-send-bytes (websocket bytes)
+  "Send bounded binary BYTES over open XChat live WEBSOCKET."
+  (unless (and (chirp-x-chat-live-open-p websocket)
+               (stringp bytes)
+               (not (multibyte-string-p bytes))
+               (<= 1 (length bytes) (* 1024 1024)))
+    (error "XChat live binary send is invalid"))
+  (websocket-send
+   websocket
+   (make-websocket-frame
+    :opcode 'binary :payload bytes :completep t)))
+
+(defun chirp-x-chat-live-close (websocket)
+  "Close XChat live WEBSOCKET without allowing transport errors to escape."
+  (when (websocket-p websocket)
+    (ignore-errors (websocket-close websocket))))
 
 ;;;; GraphQL Requests
 

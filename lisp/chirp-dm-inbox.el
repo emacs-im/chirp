@@ -441,6 +441,16 @@ VIEW and STATE identify the inbox whose request is completing."
        view state generation "XChat inbox request did not start")))
     request))
 
+(defun chirp-dm-inbox-refresh-live-view (view)
+  "Start a fallback live refresh for inbox VIEW when it is idle.
+
+Return non-nil when the refresh was accepted."
+  (when (and (appkit-view-live-p view)
+             (eq (plist-get (appkit-view-state view) :type) 'dm-inbox)
+             (null (plist-get (appkit-view-state view) :generation)))
+    (chirp-dm-inbox--request view 'refresh)
+    t))
+
 (defun chirp-dm-refresh-inbox ()
   "Refresh the current XChat inbox without sending a read acknowledgment."
   (interactive)
