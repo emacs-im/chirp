@@ -10,10 +10,12 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'appkit-core)
 (require 'appkit-projection)
 (require 'appkit-invalidation)
 (require 'appkit-position)
 (require 'appkit-view)
+(require 'appkit-scroll)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-media)
@@ -23,6 +25,25 @@
 (declare-function chirp-profile-load-more "chirp-profile" (&optional anchor-id))
 
 ;;; Primary Timeline
+;;;; Options
+
+(defcustom chirp-timeline-poll-interval 30
+  "Seconds between background checks for new primary-timeline posts.
+
+Set this to nil to disable automatic checks.  Manual refreshes with `g' still
+check for new posts without immediately moving the current timeline."
+  :type '(choice (const :tag "Disable automatic checks" nil)
+                 number)
+  :group 'chirp)
+
+(defcustom chirp-timeline-auto-load-threshold 2000
+  "Character distance from the visible timeline end that loads older posts.
+
+Set this to nil to disable automatic pagination.  Manual loading with
+`chirp-load-more' remains available."
+  :type '(choice (const :tag "Disable automatic pagination" nil)
+                 integer)
+  :group 'chirp)
 
 (defun chirp-timeline--title (kind)
   "Return the buffer title for timeline KIND."
@@ -52,13 +73,32 @@
   "Major mode for Appkit-owned primary timeline buffers."
   (setq-local chirp--refresh-function #'chirp-timeline--refresh-primary)
   (setq-local chirp--entry-wrap-navigation nil)
+  (setq-local chirp-timeline--scroll-observer nil)
+  (setq-local chirp-timeline--auto-load-pending-recheck-p nil)
   (setq-local header-line-format nil))
+
+(keymap-set chirp-timeline--mode-map "." #'chirp-timeline-show-new)
+
+(defvar chirp-timeline--header-line-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [header-line down-mouse-1] #'ignore)
+    (define-key map [header-line mouse-1] #'chirp-timeline-show-new)
+    (define-key map [follow-link] 'mouse-face)
+    map)
+  "Mouse keymap for the pending-new-posts header-line button.")
+
+(defvar-local chirp-timeline--scroll-observer nil
+  "Lifecycle-owned visible-end observer for the primary timeline.")
+
+(defvar-local chirp-timeline--auto-load-pending-recheck-p nil
+  "Non-nil while an automatic older-page request awaits projection.")
 
 (defun chirp-timeline--make-state (kind limit)
   "Return canonical state for primary timeline KIND and LIMIT."
   (list :type 'timeline
         :query (list :kind kind :limit limit)
         :items nil
+        :pending-new-items nil
         :page (list :next-cursor nil :exhausted-p nil)
         :status (list :phase 'initial :message nil)
         :generation nil
@@ -110,17 +150,47 @@
 ;;;; Projection
 
 (defun chirp-timeline--frame-text (state)
-  "Return header text representing timeline STATE."
+  "Return generated frame text representing timeline STATE."
   (let* ((status (plist-get state :status))
          (phase (plist-get status :phase))
          (message (plist-get status :message))
          (title (downcase (or (plist-get state :title) "timeline"))))
     (pcase phase
       ('initial (format "Loading %s...\n\n" title))
-      ('refresh "Refreshing timeline...\n\n")
+      ('refresh "Checking for new posts...\n\n")
       ('older "Loading older posts...\n\n")
       ('error (format "Unable to load data.\n\n%s\n\n" message))
       (_ (and (null (plist-get state :items)) "No posts returned.\n")))))
+
+(defun chirp-timeline--header-line ()
+  "Return the pending-new-posts header line for the current timeline."
+  (when-let* ((view (chirp-timeline--current-view))
+              (state (chirp-timeline--view-state view))
+              (pending (plist-get state :pending-new-items)))
+    (let* ((count (length pending))
+           (label (format "Show %d post%s" count (if (= count 1) "" "s")))
+           (window (get-buffer-window (current-buffer) 'visible))
+           (width (if window (window-body-width window) fill-column))
+           (padding (max 0 (/ (- width (string-width label)) 2))))
+      (concat
+       (make-string padding ?\s)
+       (propertize
+        label
+        'face 'chirp-link-face
+        'keymap chirp-timeline--header-line-map
+        'mouse-face 'mode-line-highlight
+        'help-echo "Mouse-1: Show pending posts"
+        'follow-link 'ignore)))))
+
+(defun chirp-timeline--sync-header-line (view state)
+  "Synchronize VIEW's conditional header line from timeline STATE."
+  (with-current-buffer (appkit-view-buffer view)
+    (let ((format
+           (and (plist-get state :pending-new-items)
+                '(:eval (chirp-timeline--header-line)))))
+      (unless (equal header-line-format format)
+        (setq-local header-line-format format)
+        (force-mode-line-update)))))
 
 (defun chirp-timeline--remember-position ()
   "Remember durable primary feed positions before their buffer is killed."
@@ -139,6 +209,34 @@
         (when-let* ((position (plist-get feed-state :position)))
           (setf (appkit-position-snapshot-window-snapshots position) nil))))))
 
+(defun chirp-timeline--maybe-auto-load-older
+    (view _window position end)
+  "Quietly load older posts for VIEW when POSITION approaches END."
+  (when (and (appkit-view-live-p view)
+             (numberp chirp-timeline-auto-load-threshold)
+             (appkit-scroll-near-end-p
+              position end chirp-timeline-auto-load-threshold))
+    (let* ((state (chirp-timeline--view-state view))
+           (page (plist-get state :page))
+           (status (plist-get state :status)))
+      (when (and (plist-get state :loaded-p)
+                 (eq (plist-get status :phase) 'idle)
+                 (null (plist-get state :generation))
+                 (plist-get page :next-cursor)
+                 (not (plist-get page :exhausted-p)))
+        (setq-local chirp-timeline--auto-load-pending-recheck-p t)
+        (chirp-timeline--load-more-primary view t)))))
+
+(defun chirp-timeline--install-scroll-observer (view)
+  "Install VIEW's lifecycle-owned older-page observer."
+  (setq-local
+   chirp-timeline--scroll-observer
+   (appkit-scroll-observer-install
+    view
+    :end-function
+    (lambda (window position end)
+      (chirp-timeline--maybe-auto-load-older view window position end)))))
+
 (defun chirp-timeline--setup-view (view)
   "Initialize VIEW's EWOC and first projection."
   (let* ((state (chirp-timeline--view-state view))
@@ -154,18 +252,27 @@
      :printer #'chirp-render-print-tweet-row
      :anchor-property 'chirp-entry-id
      :no-separator-p t)
+    (chirp-timeline--install-scroll-observer view)
     (appkit-view-enqueue-event
      view (list :position (or (plist-get state :position) 'first)))
     (appkit-invalidate view :structure t :part 'frame :position t)
-    (appkit-sync-invalidations view)))
+    (appkit-sync-invalidations view)
+    (chirp-timeline--start-polling view)))
 
 (defun chirp-timeline--sync (view invalidations)
   "Synchronize VIEW from coalesced INVALIDATIONS."
   (let ((state (chirp-timeline--list-state view)))
+    (chirp-timeline--sync-header-line view state)
     (chirp-sync-projection
      view invalidations
      (chirp-render-project-tweet-rows (plist-get state :items))
-     (chirp-timeline--frame-text state))))
+     (chirp-timeline--frame-text state))
+    (when (and chirp-timeline--auto-load-pending-recheck-p
+               (not (eq (plist-get (plist-get state :status) :phase)
+                        'older)))
+      (setq-local chirp-timeline--auto-load-pending-recheck-p nil)
+      (when (appkit-scroll-observer-p chirp-timeline--scroll-observer)
+        (appkit-scroll-observer-check chirp-timeline--scroll-observer)))))
 
 ;;;; Requests
 
@@ -174,7 +281,7 @@
   (let ((limit (plist-get (plist-get state :query) :limit)))
     (pcase phase
       ('older (max 1 chirp-timeline-load-more-step))
-      ('refresh
+      ((or 'refresh 'poll)
        (min limit
             (or (and chirp-timeline-refresh-max-results
                      (max 1 chirp-timeline-refresh-max-results))
@@ -196,24 +303,33 @@
            new-count)
       (pcase phase
         ('older
-         (let ((merged (chirp-append-unique-tweets current tweets)))
+         (let* ((cursor (plist-get page :next-cursor))
+                (merged (chirp-append-unique-tweets current tweets)))
            (unless (> (length merged) (length current))
              (message "No older posts."))
            (setf (plist-get state :items) merged
                  (plist-get page :next-cursor) next-cursor
-                 (plist-get page :exhausted-p) (not next-cursor))))
-        ('refresh
-         (let ((merged (chirp-timeline--merge-refreshed-tweets current tweets)))
-           (setq new-count (plist-get merged :new-count))
-           (setf (plist-get state :items) (plist-get merged :tweets)
-                 (plist-get page :next-cursor)
-                 (if (> (length current) (plist-get query :limit))
-                     (plist-get page :next-cursor)
-                   (or next-cursor (plist-get page :next-cursor))))
-           (when (or (null current) (> new-count 0))
-             (setq position-intent 'first))))
+                 (plist-get page :exhausted-p)
+                 (or (not next-cursor) (equal cursor next-cursor)))))
+        ((or 'refresh 'poll)
+         (if (null current)
+             (setf (plist-get state :items) tweets
+                   (plist-get state :pending-new-items) nil
+                   (plist-get page :next-cursor) next-cursor
+                   (plist-get page :exhausted-p) (not next-cursor)
+                   position-intent 'first)
+           (let ((pending
+                  (chirp-timeline--stage-new-tweets
+                   current (plist-get state :pending-new-items) tweets)))
+             (setq new-count (length pending))
+             (setf (plist-get state :pending-new-items) pending
+                   (plist-get page :next-cursor)
+                   (if (> (length current) (plist-get query :limit))
+                       (plist-get page :next-cursor)
+                     (or next-cursor (plist-get page :next-cursor)))))))
         (_
          (setf (plist-get state :items) tweets
+               (plist-get state :pending-new-items) nil
                (plist-get page :next-cursor) next-cursor
                (plist-get page :exhausted-p) (not next-cursor))
          (setq position-intent 'first)))
@@ -227,19 +343,22 @@
        view :structure t :part 'frame :position t)
       (chirp-media-prefetch-tweets tweets (appkit-view-buffer view))
       (chirp-enrich-quoted-tweets tweets (appkit-view-buffer view))
-      (when new-count
+      (when (and new-count (eq phase 'refresh))
         (message "%s" (chirp-timeline--refresh-message new-count))))))
 
 (defun chirp-timeline--settle-error (view state generation message)
   "Settle GENERATION in VIEW and STATE with error MESSAGE."
   (setf (chirp-timeline--generation-settled-p generation) t)
   (when (chirp-view-state-token-current-p view state generation)
-    (let ((status (plist-get state :status)))
-      (setf (plist-get status :phase) 'error
-            (plist-get status :message) message
+    (let ((phase (chirp-timeline--generation-phase generation))
+          (status (plist-get state :status)))
+      (setf (plist-get status :phase) (if (eq phase 'poll) 'idle 'error)
+            (plist-get status :message) (and (not (eq phase 'poll)) message)
             (plist-get state :generation) nil)
       (appkit-request-sync view :part 'frame :position t)
-      (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))))
+      (unless (eq phase 'poll)
+        (message "%s"
+                 (replace-regexp-in-string "[\r\n]+" "  " message))))))
 
 (defun chirp-timeline--interrupt-state-request (state)
   "Retire STATE's interrupted request generation, if any."
@@ -315,6 +434,27 @@
                (null (plist-get state :generation)))
       (chirp-timeline--request view 'initial))))
 
+(defun chirp-timeline--poll (view)
+  "Check live and visible primary timeline VIEW for new posts."
+  (when (and (appkit-view-live-p view)
+             (get-buffer-window (appkit-view-buffer view) 'visible))
+    (let* ((state (chirp-timeline--view-state view))
+           (status (plist-get state :status)))
+      (when (and (plist-get state :loaded-p)
+                 (eq (plist-get status :phase) 'idle)
+                 (null (plist-get state :generation)))
+        (chirp-timeline--request view 'poll)))))
+
+(defun chirp-timeline--start-polling (view)
+  "Start official-style foreground polling for primary timeline VIEW."
+  (when (and (numberp chirp-timeline-poll-interval)
+             (> chirp-timeline-poll-interval 0))
+    (let ((timer
+           (run-at-time chirp-timeline-poll-interval
+                        chirp-timeline-poll-interval
+                        #'chirp-timeline--poll view)))
+      (appkit-register-handle view 'timer timer))))
+
 (defun chirp-timeline--open-primary (kind)
   "Open or reuse the Appkit-owned primary timeline for KIND."
   (let* ((app (chirp-app))
@@ -381,10 +521,27 @@
         (chirp-timeline--ensure-initial-request view)))))
 
 (defun chirp-timeline--refresh-primary ()
-  "Refresh the current Appkit-owned primary timeline."
+  "Check the current Appkit-owned primary timeline for new posts."
   (if-let* ((view (chirp-timeline--current-view)))
       (chirp-timeline--request view 'refresh)
     (user-error "Current view is not a primary timeline")))
+
+(defun chirp-timeline-show-new ()
+  "Insert pending new posts and move to the newest timeline entry."
+  (interactive)
+  (if-let* ((view (chirp-timeline--current-view))
+            (state (chirp-timeline--view-state view))
+            (pending (plist-get state :pending-new-items)))
+      (let* ((current (plist-get state :items))
+             (merged (chirp-timeline--merge-refreshed-tweets current pending))
+             (count (length pending)))
+        (setf (plist-get state :items) (plist-get merged :tweets)
+              (plist-get state :pending-new-items) nil)
+        (appkit-view-enqueue-event view (list :position 'first))
+        (appkit-request-sync
+         view :structure t :part 'frame :position t)
+        (message "Showing %d new post%s." count (if (= count 1) "" "s")))
+    (user-error "No new posts are waiting")))
 
 ;;; Collections
 
@@ -461,15 +618,35 @@ see after the merge."
             (puthash key t seen-keys)
             (unless (gethash key current-keys)
               (setq count (1+ count)))))))))
+(defun chirp-timeline--stage-new-tweets (current pending fetched)
+  "Return unseen FETCHED and PENDING tweets in newest-first order.
+
+CURRENT contains the visible timeline.  FETCHED takes precedence over older
+PENDING copies of the same tweet."
+  (let ((current-keys (make-hash-table :test #'equal))
+        (staged-keys (make-hash-table :test #'equal))
+        staged)
+    (dolist (tweet current)
+      (puthash (chirp-tweet-key tweet) t current-keys))
+    (dolist (tweet fetched)
+      (let ((key (chirp-tweet-key tweet)))
+        (unless (or (gethash key current-keys)
+                    (gethash key staged-keys))
+          (puthash key t staged-keys)
+          (push tweet staged))))
+    (dolist (tweet pending)
+      (let ((key (chirp-tweet-key tweet)))
+        (unless (or (gethash key current-keys)
+                    (gethash key staged-keys))
+          (puthash key t staged-keys)
+          (push tweet staged))))
+    (nreverse staged)))
 
 (defun chirp-timeline--merge-refreshed-tweets (current fetched)
   "Return a plist describing how FETCHED should merge over CURRENT."
-  (let ((current-keys (make-hash-table :test #'equal))
-        (merged nil)
+  (let ((merged nil)
         (merged-keys (make-hash-table :test #'equal))
         (new-count (chirp-timeline--prepended-new-count current fetched)))
-    (dolist (tweet current)
-      (puthash (chirp-tweet-key tweet) t current-keys))
     (dolist (tweet fetched)
       (let ((key (chirp-tweet-key tweet)))
         (unless (gethash key merged-keys)
@@ -553,17 +730,19 @@ REFRESH retries the request after failure."
   "Open Chirp's unique Appkit-owned following timeline."
   (chirp-timeline--open-primary 'following))
 
-(defun chirp-timeline--load-more-primary (view)
-  "Load an older page for primary timeline VIEW."
+(defun chirp-timeline--load-more-primary (view &optional quiet)
+  "Load an older page for primary timeline VIEW.
+
+When QUIET is non-nil, suppress status messages for automatic pagination."
   (let* ((state (chirp-timeline--view-state view))
          (page (plist-get state :page))
          (phase (plist-get (plist-get state :status) :phase)))
     (cond
-     ((memq phase '(initial refresh older))
-      (message "Timeline request already in progress..."))
+     ((memq phase '(initial refresh poll older))
+      (unless quiet (message "Timeline request already in progress...")))
      ((or (plist-get page :exhausted-p)
           (not (plist-get page :next-cursor)))
-      (message "No older posts."))
+      (unless quiet (message "No older posts.")))
      (t
       (chirp-timeline--request view 'older)))))
 

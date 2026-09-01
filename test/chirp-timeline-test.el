@@ -411,6 +411,72 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-primary-visible-end-auto-loads-and-preserves-position ()
+  "Reaching the visible end should quietly append an older page."
+  (let ((chirp--app nil)
+        (chirp-timeline-poll-interval nil)
+        (chirp-timeline-auto-load-threshold 50)
+        buffer
+        requests
+        rechecks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success following _errback _max-results
+                                      cursor owner)
+                       (setq requests
+                             (append requests
+                                     (list (list :success success
+                                                 :following following
+                                                 :cursor cursor
+                                                 :owner owner))))
+                       (list 'request (length requests))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                   (observer
+                    (with-current-buffer buffer
+                      chirp-timeline--scroll-observer)))
+              (should (appkit-scroll-observer-p observer))
+              (should (appkit-scroll-observer-active-p observer))
+              (should (eq view (appkit-scroll-observer-owner observer)))
+              (funcall
+               (plist-get (nth 0 requests) :success)
+               (list '(:kind tweet :id "1" :text "Visible post"))
+               '(("pagination" . (("nextCursor" . "older-1")))))
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (search-forward "Visible post"))
+              (cl-letf (((symbol-function 'appkit-scroll-observer-check)
+                         (lambda (candidate &optional _window)
+                           (should (eq candidate observer))
+                           (setq rechecks (1+ (or rechecks 0))))))
+                (with-current-buffer buffer
+                  (funcall
+                   (appkit-scroll-observer-end-function observer)
+                   'window 975 1000))
+                (should (= 2 (length requests)))
+                (should
+                 (equal (plist-get (nth 1 requests) :cursor) "older-1"))
+                (funcall
+                 (plist-get (nth 1 requests) :success)
+                 (list '(:kind tweet :id "2" :text "Older post"))
+                 '(("pagination" . (("nextCursor" . "older-2")))))
+                (appkit-sync-invalidations view)
+                (should (= 1 rechecks)))
+              (with-current-buffer buffer
+                (should-not chirp-timeline--auto-load-pending-recheck-p)
+                (should (equal (plist-get (chirp-entry-at-point) :id) "1")))
+              (should
+               (equal
+                (mapcar (lambda (tweet) (plist-get tweet :id))
+                        (plist-get (appkit-view-state view) :items))
+                '("1" "2"))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-primary-tweet-actions-update-canonical-state-by-key ()
   "Tweet actions should not recover primary state from rendered text."
   (let ((chirp--app nil)
@@ -961,10 +1027,10 @@
                     (funcall sync live-view invalidations)))
             (chirp-request-rerender buffer 60)
             (chirp-request-rerender buffer 60)
-            (should (= (length (appkit-view-handles view)) 1))
+            (should (= (length (appkit-view-handles view)) 5))
             (appkit-sync-invalidations view)
             (should (= sync-count 1))
-            (should-not (appkit-view-handles view))))
+            (should (= (length (appkit-view-handles view)) 4))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1000,6 +1066,139 @@
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-polling-timer-is-owned-by-the-view ()
+  "Killing the primary view should cancel its foreground polling timer."
+  (let ((chirp--app nil)
+        (chirp-timeline-poll-interval 30)
+        buffer
+        canceled
+        scheduled)
+    (unwind-protect
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (delay repeat function &rest arguments)
+                     (if (= delay 30)
+                         (progn
+                           (setq scheduled
+                                 (list delay repeat function arguments))
+                           'chirp-test-poll-timer)
+                       'chirp-test-sync-timer)))
+                  ((symbol-function 'timerp)
+                   (lambda (object)
+                     (memq object
+                           '(chirp-test-poll-timer
+                             chirp-test-sync-timer))))
+                  ((symbol-function 'cancel-timer)
+                   (lambda (timer)
+                     (push timer canceled)))
+                  ((symbol-function 'chirp-backend-feed)
+                   (lambda (&rest _arguments) 'request)))
+          (setq buffer (chirp-timeline-open-home))
+          (let ((view (with-current-buffer buffer (appkit-current-view))))
+            (should
+             (equal (butlast scheduled)
+                    '(30 30 chirp-timeline--poll)))
+            (should (equal (car (last scheduled)) (list view)))
+            (should
+             (cl-find
+              'chirp-test-poll-timer
+              (appkit-view-handles view)
+              :key #'appkit-handle-object))
+            (kill-buffer buffer)
+            (setq buffer nil)
+            (should (memq 'chirp-test-poll-timer canceled))
+            (should-not (appkit-view-live-p view))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-primary-poll-stages-new-posts-until-activated ()
+  "Foreground polling should expose a header button without moving the row."
+  (let ((chirp--app nil)
+        (chirp-timeline-poll-interval nil)
+        buffer
+        callbacks)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-feed)
+                     (lambda (success &rest _args)
+                       (setq callbacks (append callbacks (list success)))
+                       (list 'request (length callbacks))))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (setq buffer (chirp-timeline-open-home))
+            (let ((view (with-current-buffer buffer (appkit-current-view))))
+              (funcall
+               (nth 0 callbacks)
+               (list '(:kind tweet :id "old" :text "Visible old post"))
+               nil)
+              (appkit-sync-invalidations view)
+              (with-current-buffer buffer
+                (search-forward "Visible old post"))
+              (chirp-timeline--poll view)
+              (should (= (length callbacks) 2))
+              (funcall
+               (nth 1 callbacks)
+               (list '(:kind tweet :id "new" :text "Pending new post")
+                     '(:kind tweet :id "old" :text "Visible old post"))
+               nil)
+              (appkit-sync-invalidations view)
+              (let ((state (appkit-view-state view)))
+                (should
+                 (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                (plist-get state :items))
+                        '("old")))
+                (should
+                 (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                (plist-get state :pending-new-items))
+                        '("new"))))
+              (with-current-buffer buffer
+                (should (equal (plist-get (chirp-entry-at-point) :id) "old"))
+                (should header-line-format)
+                (should-not (string-match-p "Show 1 post" (buffer-string)))
+                (let* ((header (chirp-timeline--header-line))
+                       (start (string-match "Show 1 post" header))
+                       (map (and start
+                                 (get-text-property start 'keymap header)))
+                       (command
+                        (and map
+                             (lookup-key map [header-line mouse-1]))))
+                  (should start)
+                  (should (eq command #'chirp-timeline-show-new))
+                  (should
+                   (eq (lookup-key map [header-line down-mouse-1])
+                       #'ignore))
+                  (funcall-interactively command)))
+              (appkit-sync-invalidations view)
+              (let ((state (appkit-view-state view)))
+                (should-not (plist-get state :pending-new-items))
+                (should
+                 (equal (mapcar (lambda (tweet) (plist-get tweet :id))
+                                (plist-get state :items))
+                        '("new" "old"))))
+              (with-current-buffer buffer
+                (should-not header-line-format)
+                (should (equal (plist-get (chirp-entry-at-point) :id)
+                               "new"))
+                (should-not (string-match-p "Show 1 post"
+                                            (buffer-string)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-timeline-staging-accumulates-unique-new-posts ()
+  "Successive foreground polls should retain unseen posts in newest-first order."
+  (let* ((current (list '(:kind tweet :id "old")))
+         (pending (list '(:kind tweet :id "one" :text "older copy")))
+         (fetched (list '(:kind tweet :id "two")
+                        '(:kind tweet :id "one" :text "fresh copy")
+                        '(:kind tweet :id "old")))
+         (staged
+          (chirp-timeline--stage-new-tweets current pending fetched)))
+    (should
+     (equal (mapcar (lambda (tweet) (plist-get tweet :id)) staged)
+            '("two" "one")))
+    (should (equal (plist-get (cadr staged) :text) "fresh copy"))))
 
 (ert-deftest chirp-timeline-refresh-uses-smaller-head-window ()
   "Refreshing should fetch a smaller head page when configured."
