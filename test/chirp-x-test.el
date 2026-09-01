@@ -473,6 +473,7 @@
 (ert-deftest chirp-x-graphql-get-encodes-a-persisted-operation ()
   "GET operations should carry compact JSON parameters and web auth headers."
   (let ((chirp-language "zh-CN")
+        (chirp-x--client-uuid "01234567-89ab-4def-8123-456789abcdef")
         captured-url captured-headers captured-method silent inhibit-cookies
         redirect-limit received)
     (cl-letf (((symbol-function 'chirp-x-credentials)
@@ -516,6 +517,10 @@
                    "auth_token=auth; ct0=csrf"))
     (should (equal (alist-get "X-Csrf-Token" captured-headers nil nil #'string=)
                    "csrf"))
+    (should
+     (equal (alist-get "X-Client-UUID"
+                       captured-headers nil nil #'string=)
+            "01234567-89ab-4def-8123-456789abcdef"))
     (should (equal
              (alist-get "X-Twitter-Client-Language"
                         captured-headers nil nil #'string=)
@@ -582,11 +587,65 @@
             "https://ton.x.com/i/ton/data/xchat_media/1:2/hash_key"))
     (should-not
      (alist-get "Authorization" captured-headers nil nil #'string=))
+    (should-not
+     (alist-get "X-Client-UUID" captured-headers nil nil #'string=))
     (should (equal (alist-get "Cookie" captured-headers nil nil #'string=)
                    "auth_token=auth; ct0=csrf"))
     (should-not captured-keepalives)
     (should-not (multibyte-string-p received))
     (should (equal received ciphertext))))
+
+(ert-deftest chirp-x-chat-media-post-uses-the-cookie-authenticated-ton-route ()
+  "XChat ciphertext should reach only the exact TON upload URL without bearer."
+  (let ((ciphertext (unibyte-string 0 1 127 128 255))
+        captured-url captured-method captured-body captured-headers
+        captured-keepalives received failure)
+    (cl-letf (((symbol-function 'chirp-x-credentials)
+               (lambda ()
+                 '(:auth-token "auth" :ct0 "csrf"
+                   :bearer-token "web-bearer")))
+              ((symbol-function 'chirp-x--retrieve)
+               (lambda (url callback _callback-args _silent _inhibit-cookies)
+                 (setq captured-url url
+                       captured-method url-request-method
+                       captured-body url-request-data
+                       captured-headers url-request-extra-headers
+                       captured-keepalives url-http-attempt-keepalives)
+                 (chirp-x-test--response 204 "" callback))))
+      (chirp-x--request
+       (concat
+        "https://ton.x.com/i/ton/data/xchat_media/1:2/hash_key"
+        "?concurrent=true&resumeId=123&partNumber=0")
+       'post (lambda (_payload) (setq received t))
+       :data ciphertext
+       :content-type "application/octet-stream"
+       :allow-empty t
+       :cookie-only t
+       :errback (lambda (message) (setq failure message))))
+    (should-not failure)
+    (should received)
+    (should
+     (equal
+      captured-url
+      (concat
+       "https://ton.x.com/i/ton/data/xchat_media/1:2/hash_key"
+       "?concurrent=true&resumeId=123&partNumber=0")))
+    (should (equal captured-method "POST"))
+    (should (equal captured-body ciphertext))
+    (should-not (multibyte-string-p captured-body))
+    (should-not
+     (alist-get "Authorization" captured-headers nil nil #'string=))
+    (should-not
+     (alist-get "X-Client-UUID" captured-headers nil nil #'string=))
+    (should (equal (alist-get "Cookie" captured-headers nil nil #'string=)
+                   "auth_token=auth; ct0=csrf"))
+    (should (equal (alist-get "X-Csrf-Token"
+                              captured-headers nil nil #'string=)
+                   "csrf"))
+    (should
+     (equal (alist-get "Content-Type" captured-headers nil nil #'string=)
+            "application/octet-stream"))
+    (should-not captured-keepalives)))
 
 (ert-deftest chirp-x-chat-media-timeout-settles-the-request ()
   "A stalled XChat media GET should terminate and report its timeout."

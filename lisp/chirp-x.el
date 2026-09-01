@@ -97,11 +97,18 @@ over dynamically refreshed read IDs and built-in fallbacks."
   "https://ton.x.com/i/ton/data/xchat_media/"
   "Trusted XChat media root that receives only X session cookies.")
 
-(defconst chirp-x--chat-api-base-url "https://api.x.com/2/chat/"
-  "Official XChat API root for authenticated media operations.")
+(defconst chirp-x--chat-media-initialize-operation
+  '(:query-id "DidmR9ZXZhbiOAUY31bh_Q"
+    :name "xChatInitializeMediaUpload" :method post)
+  "Current X web operation for initializing one XChat media upload.")
+
+(defconst chirp-x--chat-media-finalize-operation
+  '(:query-id "zxijIBKSw0Icf8xz0Ok9hA"
+    :name "xChatFinalizeMediaUpload" :method post)
+  "Current X web operation for finalizing one XChat media upload.")
 
 (defconst chirp-x--chat-upload-chunk-size (* 3 1024 1024)
-  "Number of encrypted bytes in one XChat media append request.")
+  "Maximum bytes sent in one XChat TON media part.")
 
 (defconst chirp-x--chat-upload-limit
   (+ (* 50 1024 1024) (* 17 50 1024) 24)
@@ -158,6 +165,25 @@ over dynamically refreshed read IDs and built-in fallbacks."
 
 (defvar chirp-x--browser-session-request nil
   "Current asynchronous browser-session capture request, or nil.")
+
+(defun chirp-x--make-uuid ()
+  "Return a fresh UUID-shaped X request identifier."
+  (let ((digest
+         (secure-hash
+          'sha256
+          (format "%S:%s:%s:%s"
+                  (current-time)
+                  (emacs-pid)
+                  (random most-positive-fixnum)
+                  (user-uid)))))
+    (concat (substring digest 0 8) "-"
+            (substring digest 8 12) "-4"
+            (substring digest 13 16) "-8"
+            (substring digest 17 20) "-"
+            (substring digest 20 32))))
+
+(defvar chirp-x--client-uuid (chirp-x--make-uuid)
+  "Process-local UUID sent with authenticated X web API requests.")
 
 (defvar chirp-x--query-id-cache (make-hash-table :test #'equal)
   "Process cache of dynamically discovered read-operation query IDs.")
@@ -484,7 +510,6 @@ This does not sign out of X in the browser."
 (defun chirp-x--trusted-url-p (url)
   "Return non-nil when URL belongs to an authenticated X service root."
   (or (string-prefix-p (concat chirp-x--api-base-url "/") url)
-      (string-prefix-p chirp-x--chat-api-base-url url)
       (string-prefix-p chirp-x--chat-media-base-url url)
       (cl-some (lambda (entry)
                  (string-prefix-p (cdr entry) url))
@@ -559,7 +584,8 @@ client headers for a cookie-authenticated CDN request."
       ("User-Agent" . ,chirp-x-user-agent)
       ("Accept" . "*/*"))
     (unless cookie-only
-      `(("X-Twitter-Active-User" . "yes")
+      `(("X-Client-UUID" . ,chirp-x--client-uuid)
+        ("X-Twitter-Active-User" . "yes")
         ("X-Twitter-Auth-Type" . "OAuth2Session")
         ("X-Twitter-Client-Language" . ,chirp-language)))
     (when content-type
@@ -1059,10 +1085,10 @@ TIMEOUT-MESSAGE describes that terminal failure."
           (unless (memq method '(get post))
             (error "X request method is invalid: %S" method))
           (when (and cookie-only
-                     (or (not (eq method 'get))
+                     (or (not (memq method '(get post)))
                          (not (string-prefix-p
                                chirp-x--chat-media-base-url request-url))))
-            (error "Cookie-only X request is not an XChat media GET"))
+            (error "Cookie-only X request is not an XChat media request"))
           (when (and timeout
                      (not (and (numberp timeout) (> timeout 0)
                                (<= timeout 300))))
@@ -1274,15 +1300,17 @@ readable error string.  OWNER optionally owns the transport lifecycle."
   "Upload ENCRYPTED-FILE for XChat CONVERSATION-ID.
 
 ENCRYPTED-BYTES is the exact ciphertext size.  CALLBACK receives the
-`media_hash_key' returned by the official three-step XChat media API.
-ERRBACK owns setup, transport, cancellation, and response failures.  OWNER
-owns the complete Appkit lifecycle.  PROGRESS receives bounded phase plists.
-No upload request is retried automatically."
+`media_hash_key' returned by X web's initialize, TON upload, and finalize
+workflow.  Chirp generates the upload's transport UUID internally.  ERRBACK
+owns setup, transport, cancellation, and response failures.  OWNER owns the
+complete Appkit lifecycle.  PROGRESS receives bounded phase plists.  No upload
+request is retried automatically."
   (unless (functionp callback)
     (error "XChat media upload callback is not callable"))
   (when (and progress (not (functionp progress)))
     (error "XChat media upload progress callback is not callable"))
-  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+  (let ((error-fn (or errback (lambda (message) (message "%s" message))))
+        (upload-message-id (chirp-x--make-uuid)))
     (unless (functionp error-fn)
       (error "XChat media upload error callback is not callable"))
     (condition-case err
@@ -1301,22 +1329,17 @@ No upload request is retried automatically."
                           (file-attribute-size
                            (file-attributes encrypted-file))))
             (error "Encrypted XChat media staging file is invalid"))
-          (let* ((segments
-                  (cl-loop for start from 0 below encrypted-bytes
-                           by chirp-x--chat-upload-chunk-size
-                           collect
-                           (cons
-                            start
-                            (min chirp-x--chat-upload-chunk-size
-                                 (- encrypted-bytes start)))))
-                 (segment-count (length segments))
-                 (upload-owner (or owner (chirp-app)))
-                 settled-p workflow-handle)
+          (let ((segment-count
+                 (ceiling encrypted-bytes
+                          chirp-x--chat-upload-chunk-size))
+                (upload-owner (or owner (chirp-app)))
+                settled-p workflow-handle)
             (cl-labels
                 ((notify
-                   (phase &optional extra)
+                   (phase progress-value)
                    (chirp-x--notify-upload-progress
-                    progress (append (list :phase phase) extra)))
+                    progress
+                    (list :phase phase :progress progress-value)))
                  (retire-workflow
                    ()
                    (when (and (appkit-handle-p workflow-handle)
@@ -1344,97 +1367,142 @@ No upload request is retried automatically."
                      (fail "XChat media upload was canceled")
                      nil)))
                  (finalize
-                   (session-id media-hash)
+                   (media-hash resume-id)
                    (when (ensure-active)
-                     (notify 'finalize (list :progress 1.0))
-                     (chirp-x--request
-                      (concat chirp-x--chat-api-base-url
-                              "media/upload/" session-id "/finalize")
-                      'post
+                     (notify 'finalize 1.0)
+                     (chirp-x-graphql-request
+                      chirp-x--chat-media-finalize-operation
+                      `(("conversationId" . ,conversation-id)
+                        ("isPublic" . :json-false)
+                        ("mediaHashKey" . ,media-hash)
+                        ("messageId" . ,upload-message-id)
+                        ("numParts" . ,(number-to-string segment-count))
+                        ("resumeId" . ,resume-id)
+                        ("ttlMsec" . "2592000000"))
                       (lambda (payload)
-                        (if (eq
-                             (chirp-get (chirp-get payload "data") "success")
-                             t)
-                            (succeed media-hash)
-                          (fail "XChat media upload was not finalized")))
-                      :data
-                      (json-encode
-                       `(("conversation_id" . ,conversation-id)
-                         ("media_hash_key" . ,media-hash)
-                         ("num_parts" . ,(number-to-string segment-count))))
-                      :content-type "application/json"
-                      :errback #'fail
-                      :owner upload-owner
-                      :settle-on-cancel t
-                      :cancel-message "XChat media upload was canceled")))
-                 (append-segment
-                   (session-id media-hash remaining segment-index)
+                        (let* ((result
+                                (chirp-get-in
+                                 payload
+                                 '("data"
+                                   "xchat_finalize_media_upload")))
+                               (upload-error
+                                (and (chirp-object-p result)
+                                     (chirp-get result "upload_error"))))
+                          (cond
+                           ((not (chirp-object-p result))
+                            (fail
+                             "XChat media finalize returned invalid metadata"))
+                           ((chirp-x--nonblank-string upload-error)
+                            (fail
+                             (format
+                              "XChat media finalize failed: %s"
+                              upload-error)))
+                           (t
+                            (succeed media-hash)))))
+                      :errback
+                      (lambda (message)
+                        (fail
+                         (format
+                          "XChat media finalize request failed: %s"
+                          message)))
+                      :owner upload-owner)))
+                 (upload
+                   (media-hash resume-id part-number)
                    (when (ensure-active)
-                     (if (null remaining)
-                         (finalize session-id media-hash)
-                       (pcase-let ((`(,start . ,length) (car remaining)))
-                         (notify
-                          'append
-                          (list :index (1+ segment-index)
-                                :count segment-count
-                                :progress
-                                (/ (float segment-index)
-                                   (max 1 segment-count))))
-                         (chirp-x--request
-                          (concat chirp-x--chat-api-base-url
-                                  "media/upload/" session-id "/append")
-                          'post
-                          (lambda (_payload)
-                            (append-segment
-                             session-id media-hash (cdr remaining)
-                             (1+ segment-index)))
-                          :data
-                          (json-encode
-                           `(("conversation_id" . ,conversation-id)
-                             ("media_hash_key" . ,media-hash)
-                             ("segment_index" . ,segment-index)
-                             ("media" .
-                              ,(base64-encode-string
-                                (chirp-x--read-file-range
-                                 encrypted-file start length)
-                                t))))
-                          :content-type "application/json"
-                          :errback #'fail
-                          :owner upload-owner
-                          :settle-on-cancel t
-                          :cancel-message "XChat media upload was canceled"))))))
+                     (let* ((start
+                             (* part-number
+                                chirp-x--chat-upload-chunk-size))
+                            (length
+                             (min chirp-x--chat-upload-chunk-size
+                                  (- encrypted-bytes start))))
+                       (notify
+                        'upload
+                        (+ 0.05
+                           (* 0.9
+                              (/ (float part-number) segment-count))))
+                       (chirp-x--request
+                        (concat
+                         chirp-x--chat-media-base-url
+                         conversation-id "/" media-hash
+                         "?concurrent=true&resumeId="
+                         (url-hexify-string resume-id)
+                         "&partNumber="
+                         (number-to-string part-number))
+                        'post
+                        (lambda (_payload)
+                          (let ((next-part (1+ part-number)))
+                            (if (< next-part segment-count)
+                                (upload media-hash resume-id next-part)
+                              (finalize media-hash resume-id))))
+                        :data
+                        (chirp-x--read-file-range encrypted-file start length)
+                        :content-type "application/octet-stream"
+                        :allow-empty t
+                        :errback
+                        (lambda (message)
+                          (fail
+                           (format
+                            "XChat media part %d request failed: %s"
+                            part-number message)))
+                        :owner upload-owner
+                        :cookie-only t
+                        :settle-on-cancel t
+                        :cancel-message
+                        "XChat media upload was canceled"))))
+                 (initialize-result
+                   (payload)
+                   (let* ((result
+                           (chirp-get-in
+                            payload
+                            '("data" "xchat_initialize_media_upload")))
+                          (upload-error
+                           (and (chirp-object-p result)
+                                (chirp-get result "upload_error")))
+                          (media-hash
+                           (and (chirp-object-p result)
+                                (chirp-get result "media_hash_key")))
+                          (resume-id
+                           (and (chirp-object-p result)
+                                (chirp-get result "resume_id"))))
+                     (cond
+                      ((not (chirp-object-p result))
+                       (fail
+                        "XChat media initialize returned invalid metadata"))
+                      ((chirp-x--nonblank-string upload-error)
+                       (fail
+                        (format
+                         "XChat media initialize failed: %s"
+                         upload-error)))
+                      ((and
+                        (stringp media-hash)
+                        (<= 1 (length media-hash) 2048)
+                        (string-match-p
+                         "\\`[[:alnum:]_-]+\\'" media-hash)
+                        (stringp resume-id)
+                        (string-match-p
+                         "\\`[0-9]\\{1,64\\}\\'" resume-id))
+                       (upload media-hash resume-id 0))
+                      (t
+                       (fail
+                        "XChat media initialize returned invalid metadata"))))))
               (setq workflow-handle
                     (appkit-register-handle
                      upload-owner 'function
                      (lambda () (fail "XChat media upload was canceled"))))
-              (notify 'initialize (list :progress 0.0))
-              (chirp-x--request
-               (concat chirp-x--chat-api-base-url "media/upload/initialize")
-               'post
-               (lambda (payload)
-                 (let* ((data (chirp-get payload "data"))
-                        (session-id (chirp-get data "session_id"))
-                        (media-hash (chirp-get data "media_hash_key")))
-                   (if (and
-                        (stringp session-id)
-                        (string-match-p "\\`[0-9]\\{1,19\\}\\'" session-id)
-                        (stringp media-hash)
-                        (<= 1 (length media-hash) 2048)
-                        (string-match-p
-                         "\\`[[:alnum:]_-]+\\'" media-hash))
-                       (append-segment
-                        session-id media-hash segments 0)
-                     (fail
-                      "XChat media initialize returned invalid upload metadata"))))
-               :data
-               (json-encode
-                `(("conversation_id" . ,conversation-id)
-                  ("total_bytes" . ,encrypted-bytes)))
-               :content-type "application/json"
-               :errback #'fail
-               :owner upload-owner
-               :settle-on-cancel t
-               :cancel-message "XChat media upload was canceled"))))
+              (notify 'initialize 0.0)
+              (chirp-x-graphql-request
+               chirp-x--chat-media-initialize-operation
+               `(("conversationId" . ,conversation-id)
+                 ("messageId" . ,upload-message-id)
+                 ("totalBytes" . ,(number-to-string encrypted-bytes)))
+               #'initialize-result
+               :errback
+               (lambda (message)
+                 (fail
+                  (format
+                   "XChat media initialize request failed: %s"
+                   message)))
+               :owner upload-owner))))
       (chirp-x--callback-error
        (chirp-x--resignal-callback-error err))
       (error

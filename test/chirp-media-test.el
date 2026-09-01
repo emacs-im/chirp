@@ -376,28 +376,37 @@ rerender and creates a CPU loop."
                        :preview-url "https://example.com/preview.jpg"))
                     'preview-image))))))
 
-(ert-deftest chirp-media-track-image-uses-large-natural-ratio-bounds ()
-  "Focused media should preserve aspect ratio within the larger track height."
-  (let ((chirp-media-render-from-cache-only t)
-        preview-arguments)
-    (cl-letf (((symbol-function 'chirp-media-cached-file)
-               (lambda (&rest _args) "/tmp/chirp-track.jpg"))
-              ((symbol-function
-                'appkit-media-cropped-preview-image-from-file)
-               (lambda (&rest _args)
-                 (ert-fail "track media unexpectedly requested a crop")))
-              ((symbol-function 'appkit-media-preview-image-from-file)
-               (lambda (&rest arguments)
-                 (setq preview-arguments arguments)
+(ert-deftest chirp-media-track-strip-uses-natural-ratio-montage ()
+  "Focused media should form one fixed-height uncropped strip."
+  (let (captured-items captured-height captured-gap captured-offset)
+    (cl-letf (((symbol-function 'chirp-media--preview-file)
+               (lambda (media) (plist-get media :file)))
+              ((symbol-function 'appkit-media-horizontal-strip-image)
+               (lambda (items height gap &optional offset)
+                 (setq captured-items items
+                       captured-height height
+                       captured-gap gap
+                       captured-offset offset)
                  'track-image)))
       (should
        (eq
-        (chirp-media-track-image
-         '(:type "photo" :url "https://example.com/photo.jpg"))
+        (chirp-media-track-strip-image
+         '((:type "photo" :file "/tmp/a.jpg"
+            :width 430 :height 600)
+           (:type "photo" :file "/tmp/b.jpg"
+            :width 600 :height 375))
+         8 28)
         'track-image))
+      (should (= captured-height 384))
+      (should (= captured-gap 8))
+      (should (= captured-offset 28))
       (should
-       (equal preview-arguments
-              '("/tmp/chirp-track.jpg" 1536 384))))))
+       (equal
+        captured-items
+        '((:file "/tmp/a.jpg" :width 430 :height 600
+           :id chirp-media-0)
+          (:file "/tmp/b.jpg" :width 600 :height 375
+           :id chirp-media-1)))))))
 
 (ert-deftest chirp-media-side-by-side-thumbnail-prefers-fixed-crop ()
   "Grid thumbnails should crop to one fixed tile and retain a decoder fallback."

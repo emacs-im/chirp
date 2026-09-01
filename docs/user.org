@@ -92,9 +92,17 @@ Conversations decode signature-verified plain text through Appkit's semantic mar
 
 ** Attachments
 
-Incoming encrypted attachment blobs are downloaded from X's cookie-authenticated TON media service and decrypted with the exact verified conversation-key version carried by their message.  Images, GIFs, and SVGs render inline; downloaded videos, audio, and files become native Emacs actions; attached posts render as actionable Chirp tweet cards; other links remain explicit URL actions.  Decrypted attachments are stored in ~chirp-cache-directory~ like other Chirp media, so protect or clear that directory according to the local machine's confidentiality requirements.
+*** Incoming attachments
 
-Outgoing photo and GIF objects retain inline previews, while video, audio, and file objects use distinct typed cards.  The selected kind is part of the immutable Appkit capture: native byte detection validates photo, video, audio, and GIF choices, while ~file~ deliberately sends any selected content as a document.  Chirp encrypts local media inside the native session, pins the enclosing message to the same verified conversation-key version, uploads only temporary ciphertext through X's official three-step Chat media API, and removes native staging files on success, failure, or cancellation.
+Chirp downloads encrypted attachment bytes from X's TON media service and asks the native module to decrypt them with the exact verified conversation-key version named by the message.  Images, GIFs, and SVGs render inline.  Videos, audio, and documents expose native Emacs actions; attached posts render as Chirp tweet cards; other links remain explicit URL actions.
+
+Decrypted files use ~chirp-cache-directory~, like other Chirp media.  Protect or clear that directory according to the local machine's confidentiality requirements.
+
+*** Outgoing attachments
+
+Use ~C-c C-a~ to choose a photo, GIF, video, audio file, or document; ~C-c C-f~ attaches a document directly.  Photos and GIFs keep inline draft previews, while the other kinds use typed cards.  The chosen kind belongs to the captured draft: native byte detection verifies photo, GIF, video, and audio selections, while the document kind intentionally accepts any file.
+
+On send, the native module validates and encrypts each file under the conversation's latest verified key.  Chirp then initializes the upload, sends bounded encrypted parts to TON, finalizes it, and encrypts the message envelope under the same key version.  Uploads use the browser session already captured by ~chirp-login~; no separate media credential is required.  Temporary ciphertext is removed after success, failure, or cancellation.
 
 ** Delivery guarantees
 
@@ -190,7 +198,7 @@ Edited posts show ~Edited · N versions~; activate it or use ~x H~.
 
 * Media
 
-Images render as gapless row-sliced previews.  Timelines, retweets, quoted posts, and other compact contexts use X Web's center-cropped ~TweetPhotos~ cover grids: 16:9 groups with the stacked three-item, 2×2 four-item, 2+3 five-item, and 3+3 six-item topologies, separated by 2-pixel gutters.  A thread's focused post instead uses a large horizontal media track: every image keeps its complete natural ratio, the items share a preferred height, and Chirp expands the row rather than reproducing Web viewport clipping.  Track items use 8-pixel gutters.  ~RET~ on an image opens a Chirp media buffer.  Videos open in ~mpv~ when available.
+Images render as gapless row-sliced previews.  Timelines, retweets, quoted posts, and other compact contexts use X Web's center-cropped ~TweetPhotos~ cover grids: 16:9 groups with the stacked three-item, 2×2 four-item, 2+3 five-item, and 3+3 six-item topologies, separated by 2-pixel gutters.  A thread's focused post instead uses a large horizontal media track: every image keeps its complete natural ratio, the items share a fixed preferred height, and 8-pixel gutters separate them.  Chirp composites each track slice into one display object, so an over-wide track extends past the window edge instead of shrinking or wrapping its images onto separate visual lines.  On a track, ~RIGHT~ or ~TAB~ moves the SVG viewport to the next item, ~LEFT~ or ~S-TAB~ moves to the previous item, and ~RET~ opens the selected item.  The surrounding post and window remain horizontally anchored.  Mouse clicks use per-image hot spots.  Compact images remain individually actionable.  Videos open in ~mpv~ when available.
 
 #+begin_src emacs-lisp
 (setq chirp-media-thumbnail-size 256

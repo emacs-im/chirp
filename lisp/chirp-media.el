@@ -1484,39 +1484,36 @@ When CROP-SPEC is non-nil, center-crop to that fixed box instead."
         (appkit-media-preview-image-from-file
          file max-width max-height))))
 
+(defun chirp-media--preview-file (media)
+  "Return the local preview file for MEDIA, or nil."
+  (cond
+   ((string= (plist-get media :type) "photo")
+    (if chirp-media-render-from-cache-only
+        (chirp-media-cached-file (plist-get media :url) "media" "jpg")
+      (chirp-media-local-file (plist-get media :url) "media" "jpg")))
+   ((chirp-media-video-like-p media)
+    (if chirp-media-render-from-cache-only
+        (or (and-let* ((preview-url (plist-get media :preview-url)))
+              (chirp-media-cached-file
+               preview-url "video-thumbnails" "jpg"))
+            (let ((thumbnail-file
+                   (chirp-media--video-thumbnail-file media)))
+              (and (file-exists-p thumbnail-file) thumbnail-file)))
+      (chirp-media-video-thumbnail-file media)))))
+
 (defun chirp-media--preview-image
     (media crop-spec max-width max-height)
   "Return a MEDIA preview using CROP-SPEC or natural-ratio bounds.
 
 MAX-WIDTH and MAX-HEIGHT bound the uncropped result."
-  (cond
-   ((string= (plist-get media :type) "photo")
-    (when-let* ((file (if chirp-media-render-from-cache-only
-                          (chirp-media-cached-file (plist-get media :url)
-                                                   "media"
-                                                   "jpg")
-                        (chirp-media-local-file (plist-get media :url)
-                                                "media"
-                                                "jpg"))))
-      (chirp-media--preview-image-from-file
-       file crop-spec max-width max-height)))
-   ((chirp-media-video-like-p media)
-    (when-let* ((file (if chirp-media-render-from-cache-only
-                          (or (and-let* ((preview-url
-                                         (plist-get media :preview-url)))
-                                (chirp-media-cached-file preview-url
-                                                         "video-thumbnails"
-                                                         "jpg"))
-                              (let ((thumbnail-file
-                                     (chirp-media--video-thumbnail-file media)))
-                                (and (file-exists-p thumbnail-file)
-                                     thumbnail-file)))
-                        (chirp-media-video-thumbnail-file media)))
-                (image
-                 (chirp-media--preview-image-from-file
-                  file crop-spec max-width max-height)))
-      (or (appkit-media-video-preview-display-image image 'chirp)
-          image)))))
+  (when-let* ((file (chirp-media--preview-file media))
+              (image
+               (chirp-media--preview-image-from-file
+                file crop-spec max-width max-height)))
+    (if (chirp-media-video-like-p media)
+        (or (appkit-media-video-preview-display-image image 'chirp)
+            image)
+      image)))
 
 (defun chirp-media-thumbnail-image (media &optional crop-spec)
   "Return a timeline thumbnail descriptor for MEDIA.
@@ -1528,12 +1525,21 @@ distorting the source aspect ratio."
    media crop-spec
    chirp-media-thumbnail-size chirp-media-thumbnail-size))
 
-(defun chirp-media-track-image (media)
-  "Return a large natural-ratio track image for focused MEDIA."
-  (chirp-media--preview-image
-   media nil
-   (* 4 chirp-media-track-height)
-   chirp-media-track-height))
+(defun chirp-media-track-strip-image (media-list gap &optional offset)
+  "Return focused MEDIA-LIST as one natural-ratio image separated by GAP.
+
+Optional OFFSET moves that SVG x coordinate to the image's left edge."
+  (let ((items
+         (cl-loop for media in media-list
+                  for index from 0
+                  collect
+                  (list :file (chirp-media--preview-file media)
+                        :width (plist-get media :width)
+                        :height (plist-get media :height)
+                        :id (intern (format "chirp-media-%d" index))))))
+    (when (cl-some (lambda (item) (plist-get item :file)) items)
+      (appkit-media-horizontal-strip-image
+       items chirp-media-track-height gap offset))))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."

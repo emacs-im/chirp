@@ -1795,9 +1795,16 @@
          '((:type "photo" :url "https://example.com/a.jpg"))))
       (should (equal crop-specs '(nil))))))
 
+(ert-deftest chirp-render-media-track-does-not-disable-body-wrapping ()
+  "Media track handling should leave normal Chirp visual wrapping intact."
+  (with-temp-buffer
+    (chirp-view-mode)
+    (should visual-line-mode)
+    (should word-wrap)
+    (should-not truncate-lines)))
 
-(ert-deftest chirp-render-discussion-focus-uses-natural-ratio-track ()
-  "The focused thread post should select large uncropped track images."
+(ert-deftest chirp-render-discussion-focus-uses-unbreakable-media-track ()
+  "The focused thread post should render one composite slice per line."
   (let ((tweet
          '(:kind tweet
            :id "focus"
@@ -1805,42 +1812,87 @@
            :author-name "Alice"
            :author-handle "alice"
            :media
-           ((:type "photo" :url "media-0")
-            (:type "photo" :url "media-1")
-            (:type "photo" :url "media-2"))))
-        track-media)
+           ((:type "photo" :url "media-0" :width 430 :height 600)
+            (:type "photo" :url "media-1" :width 600 :height 375)
+            (:type "photo" :url "media-2" :width 458 :height 600))))
+        track-media
+        track-gap
+        track-offsets)
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-track-image)
-                 (lambda (media)
-                   (push media track-media)
-                   `(image
-                     :type png
-                     :file ,(plist-get media :url)
-                     :appkit-media-nslices 6)))
+                ((symbol-function 'chirp-media-track-strip-image)
+                 (lambda (media-list gap &optional offset)
+                   (setq track-media media-list
+                         track-gap gap)
+                   (push offset track-offsets)
+                   '(image
+                     :type svg
+                     :data "strip"
+                     :appkit-media-nslices 6
+                     :appkit-media-strip-widths (10 10 10)
+                     :map
+                     (((rect . ((0 . 0) . (10 . 10)))
+                       chirp-media-0 nil)
+                      ((rect . ((10 . 0) . (20 . 10)))
+                       chirp-media-1 nil)
+                      ((rect . ((20 . 0) . (30 . 10)))
+                       chirp-media-2 nil)))))
                 ((symbol-function 'chirp-media-thumbnail-image)
                  (lambda (&rest _args)
                    (ert-fail "focused media unexpectedly used a cover crop")))
-                ((symbol-function 'chirp-media-thumbnail-placeholder-image)
-                 (lambda (&rest _args) nil))
                 ((symbol-function 'image-size)
-                 (lambda (&rest _args) '(10 . 6)))
+                 (lambda (&rest _args) '(30 . 6)))
                 ((symbol-function 'appkit-media--char-pixel-height)
                  (lambda () 18)))
         (let ((inhibit-read-only t))
           (chirp-render-insert-discussion-entry
-           (chirp-test--discussion-row tweet t))))
-      (should
-       (cl-loop for position from (point-min) below (point-max)
-                thereis
-                (equal (get-text-property position 'display)
-                       '(space :width (8))))))
-    (should
-     (equal (mapcar (lambda (media) (plist-get media :url))
-                    (nreverse track-media))
-            '("media-0" "media-1" "media-2")))))
+           (chirp-test--discussion-row tweet t)))
+      (let ((track-positions
+             (cl-loop for position from (point-min) below (point-max)
+                      when (get-text-property position 'chirp-media-track)
+                      collect position)))
+        (should (= (length track-positions) 6))
+        (dolist (position track-positions)
+          (should
+           (eq (car-safe
+                (car-safe (get-text-property position 'display)))
+               'slice))
+          (save-excursion
+            (goto-char position)
+            (should (= position (line-beginning-position)))
+            (should (= (1+ position) (line-end-position)))))
+        (should
+         (commandp
+          (lookup-key
+           (get-text-property (car track-positions) 'keymap)
+           [chirp-media-2 mouse-1])))
+        (let ((map (get-text-property (car track-positions) 'keymap))
+              opened-index)
+          (cl-letf (((symbol-function 'chirp-media-open)
+                     (lambda (_media-list index _title)
+                       (setq opened-index index))))
+            (call-interactively (lookup-key map [right]))
+            (call-interactively (lookup-key map (kbd "RET")))
+            (should (= opened-index 1))
+            (call-interactively (lookup-key map [right]))
+            (call-interactively (lookup-key map (kbd "RET")))
+            (should (= opened-index 2))
+            (call-interactively (lookup-key map [left]))
+            (call-interactively (lookup-key map (kbd "RET")))
+            (should (= opened-index 1))
+            (call-interactively
+             (lookup-key map [chirp-media-2 mouse-1]))
+            (should (= opened-index 2))))
+        (should (equal (nreverse track-offsets)
+                       '(nil 18 36 18)))
+        (should-not auto-hscroll-mode)
+        (should
+         (memq #'chirp-render--media-track-reset-hscroll
+               post-command-hook))
+    (should (eq track-media (plist-get tweet :media)))
+    (should (= track-gap 8)))))))
 
 (ert-deftest chirp-render-discussion-focus-retweet-keeps-cover-grid ()
   "A focused retweet should retain the compact TweetPhotos cover grid."
@@ -1860,7 +1912,7 @@
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image)
                  (lambda (&rest _args) nil))
-                ((symbol-function 'chirp-media-track-image)
+                ((symbol-function 'chirp-media-track-strip-image)
                  (lambda (&rest _args)
                    (ert-fail "retweet unexpectedly used the media track")))
                 ((symbol-function 'chirp-media-thumbnail-image)

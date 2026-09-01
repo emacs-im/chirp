@@ -7,7 +7,7 @@ history remains available in Git.
 
 ### Added
 
-- XChat composers now offer typed photo, GIF, video, audio, and file attachments through `C-c C-a`.  Appkit preserves type-specific previews in the draft; the native module validates and encrypts local bytes into bounded temporary ciphertext, pins the enclosing message to the same verified conversation-key version, Chirp uploads that ciphertext through X's official three-step Chat media API, and only a validated message acknowledgement clears the owning draft.
+- Direct-message composers now support typed photo, GIF, video, audio, and document attachments through `C-c C-a`. Drafts preserve type-specific previews, native staging encrypts local files without exposing keys, and only a validated message acknowledgement clears the captured text, reply context, and attachments.
 - Added `M-x chirp-open-url` and an opt-in `browse-url-handlers` regexp for opening supported HTTPS X and legacy Twitter links directly in their owning Chirp views. Tweet, list, profile, search, and account-collection URL parsing now share one trusted-host parser.
 - Visible Home and Following timelines now follow X web's foreground-polling model: a view-owned 30-second check stages unseen posts behind a centered, clickable `Show N posts` header-line button, preserves the current row, and inserts the pending posts only when the button or `.` is activated.  `g` performs the same check immediately, and `chirp-timeline-poll-interval` can change or disable automatic checks.
 - Home and Following now load older pages automatically when a visible window approaches the timeline bottom.  The Appkit-owned scroll observer follows mouse-wheel, scroll-bar, keyboard, and inactive-window scrolling, preserves semantic position, chains short pages only while the view remains near the bottom, and can be tuned or disabled with `chirp-timeline-auto-load-threshold`; `N` remains the manual fallback.
@@ -56,8 +56,9 @@ history remains available in Git.
 
 ### Fixed
 
+- Fixed XChat attachment sends that failed before dispatch because a transport upload UUID was incorrectly required from native staging metadata. Upload identity now belongs to the Lisp transport layer, which follows X web's authenticated GraphQL initialize, cookie-authenticated bounded TON upload, and GraphQL finalize flow.
 - The actions transient now routes timeline entries through Chirp's interactive public commands, so opening the menu no longer fails while validating non-command timeline functions.
-- Media layout planning now lives in `chirp-media-layout.el`. Timelines, retweets, and quoted posts retain X Web's complete one-to-six-item center-cropped `TweetPhotos` cover grids, now using larger 256-pixel cells. A thread's focused post uses a separate 384-pixel-high horizontal track with natural image ratios, no crop or viewport clipping, and 8-pixel gutters.
+- Media layout planning now lives in `chirp-media-layout.el`. Timelines, retweets, and quoted posts retain X Web's complete one-to-six-item center-cropped `TweetPhotos` cover grids, now using larger 256-pixel cells. A thread's focused post uses a separate fixed-height natural-ratio track up to 384 pixels high with 8-pixel gutters. Appkit composites each sliced track row into one mapped SVG display object, so over-wide media extends beyond the window edge without shrinking or wrapping individual images. Arrow or Tab navigation moves the SVG `viewBox` to each track item without horizontally shifting the surrounding post, and RET opens the selected item.
 
 - Browser-session login now tracks the returned request handle, rejects concurrent captures, and cancels an active capture when `chirp-forget-browser-session` runs.
 - Profile timelines now preserve and label each X timeline occurrence, including a pinned row repeated inside a conversation module, while using the server entry identity to keep every Appkit projection row stable and independently refreshable.

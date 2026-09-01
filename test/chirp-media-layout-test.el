@@ -65,6 +65,7 @@
        (:width 255 :height 216)
        (:width 254 :height 216)]))))
 
+
 (ert-deftest chirp-media-layout-uses-distinct-grid-and-track-gutters ()
   "Focused tracks should keep the wider carousel separation."
   (should (= chirp-media-layout-cover-gap 2))
