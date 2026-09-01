@@ -8,6 +8,8 @@ history remains available in Git.
 ### Added
 
 - Added `M-x chirp-open-url` and an opt-in `browse-url-handlers` regexp for opening supported HTTPS X and legacy Twitter links directly in their owning Chirp views. Tweet, list, profile, search, and account-collection URL parsing now share one trusted-host parser.
+- Visible Home and Following timelines now follow X web's foreground-polling model: a view-owned 30-second check stages unseen posts behind a centered, clickable `Show N posts` header-line button, preserves the current row, and inserts the pending posts only when the button or `.` is activated.  `g` performs the same check immediately, and `chirp-timeline-poll-interval` can change or disable automatic checks.
+- Home and Following now load older pages automatically when a visible window approaches the timeline bottom.  The Appkit-owned scroll observer follows mouse-wheel, scroll-bar, keyboard, and inactive-window scrolling, preserves semantic position, chains short pages only while the view remains near the bottom, and can be tuned or disabled with `chirp-timeline-auto-load-threshold`; `N` remains the manual fallback.
 
 - Tweet timestamps now use localized X-style forms: list rows and replies show compact relative or calendar text at the live right edge, while a thread's focused tweet shows its exact time and date. The new `chirp-language` option defaults to Simplified Chinese.
 

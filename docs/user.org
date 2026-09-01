@@ -75,14 +75,12 @@ Direct-message reads never send read acknowledgments.  Sends are never retried o
 
 * Keys
 
-~chirp-home~ and ~chirp-following~ share one primary timeline buffer
-and retain independent posts, pagination, and positions.  Reopening
-either subview or switching with ~TAB~ restores canonical state
-without fetching again; use ~g~ for fresh data.
+~chirp-home~ and ~chirp-following~ share one primary timeline buffer and retain independent posts, pagination, pending new posts, and positions.  Reopening either subview or switching with ~TAB~ restores canonical state without fetching again.  While the primary buffer is visible, Chirp checks the active feed every ~chirp-timeline-poll-interval~ seconds (30 by default); set the option to nil to disable automatic checks.  Fresh posts remain behind a centered, clickable ~Show N posts~ header-line button, which stays visible while the timeline scrolls and never moves the current row.  Scrolling within ~chirp-timeline-auto-load-threshold~ characters of the visible bottom quietly loads the next older page and preserves the current row; the default is 2000, and nil disables only automatic pagination.
 
 | Key | Action |
 |-----+--------|
-| ~g~ | refresh; Home and Following merge newer posts at the top.  Evil: ~g r~ |
+| ~g~ | check immediately for new Home or Following posts without moving the current row.  Evil: ~g r~ |
+| ~.~ | show pending new Home or Following posts and move to the newest entry |
 | ~TAB~ | Home/Following, or profile subviews |
 | ~n~ / ~p~ | next or previous entry.  Evil: ~g j~ / ~g k~ |
 | ~N~ | older posts, conversations, or message history.  Evil: ~g n~ |
