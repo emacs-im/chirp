@@ -353,7 +353,7 @@ When zero or negative, the in-memory read cache is disabled."
    :warning))
 
 (defun chirp-backend--dispatch-read-success (requesters value envelope)
-  "Invoke every REQUESTER with VALUE and ENVELOPE."
+  "Invoke all REQUESTERS with VALUE and ENVELOPE."
   (dolist (requester requesters)
     (condition-case err
         (funcall (car requester)
@@ -362,7 +362,7 @@ When zero or negative, the in-memory read cache is disabled."
       (error (chirp-backend--report-requester-error err)))))
 
 (defun chirp-backend--dispatch-read-error (requesters message)
-  "Invoke every REQUESTER error callback with MESSAGE."
+  "Invoke all REQUESTERS' error callbacks with MESSAGE."
   (dolist (requester requesters)
     (condition-case err
         (funcall (or (cdr requester)
