@@ -109,24 +109,6 @@
 
 ;;;; Projection
 
-(defun chirp-timeline--row-key (tweet)
-  "Return the stable projection key for TWEET."
-  (when-let* ((key (chirp-tweet-key tweet)))
-    (list 'tweet key)))
-
-(defun chirp-timeline--project-rows (tweets)
-  "Project normalized TWEETS into keyed Appkit rows."
-  (appkit-projection-project
-   tweets #'chirp-timeline--row-key
-   :context-function (lambda (previous _tweet) previous)
-   :dependencies-function #'chirp-media-resource-keys-for-tweet))
-
-(defun chirp-timeline--print-row (row)
-  "Insert one projected timeline ROW at point."
-  (chirp-render-insert-tweet-row
-   (appkit-projection-row-payload row)
-   (appkit-projection-row-context row)))
-
 (defun chirp-timeline--frame-text (state)
   "Return header text representing timeline STATE."
   (let* ((status (plist-get state :status))
@@ -169,7 +151,7 @@
     (chirp--apply-buffer-name buffer chirp--view-title)
     (appkit-projection-ensure
      view
-     :printer #'chirp-timeline--print-row
+     :printer #'chirp-render-print-tweet-row
      :anchor-property 'chirp-entry-id
      :no-separator-p t)
     (appkit-view-enqueue-event
@@ -182,7 +164,7 @@
   (let ((state (chirp-timeline--list-state view)))
     (chirp-sync-projection
      view invalidations
-     (chirp-timeline--project-rows (plist-get state :items))
+     (chirp-render-project-tweet-rows (plist-get state :items))
      (chirp-timeline--frame-text state))))
 
 ;;;; Requests
@@ -542,7 +524,7 @@ REFRESH reloads the collection."
    :title title
    :state (chirp-timeline--collection-state kind title refresh)
    :sync-function #'chirp-timeline--sync
-   :printer #'chirp-timeline--print-row
+   :printer #'chirp-render-print-tweet-row
    :select t))
 
 (defun chirp-timeline--install-tweets (view tweets)

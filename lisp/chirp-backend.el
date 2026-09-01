@@ -35,7 +35,7 @@ When zero or negative, the in-memory read cache is disabled."
 (defconst chirp-backend--lists-cache-key '(:lists)
   "Cache key for the authenticated account's list catalog.")
 
-(defconst chirp-backend--standard-tweet-weight-limit 280
+(defconst chirp-backend-standard-tweet-weight-limit 280
   "Maximum weighted length routed through CreateTweet.")
 
 (defconst chirp-backend--transformed-url-length 23
@@ -541,7 +541,7 @@ ERRBACK handles failures.  FETCHER is called with success and error callbacks."
             (push (cons start end) spans)))))
     (nreverse spans)))
 
-(defun chirp-backend--tweet-weighted-length (text)
+(defun chirp-backend-tweet-weighted-length (text)
   "Return the X weighted length used to select a create operation for TEXT."
   (let* ((normalized (ucs-normalize-NFC-string text))
          (cursor 0)
@@ -718,8 +718,8 @@ mutations are never retried automatically."
              (when (functionp progress)
                (funcall progress (list :phase 'publish)))
              (let* ((note-tweet-p
-                     (> (chirp-backend--tweet-weighted-length text)
-                        chirp-backend--standard-tweet-weight-limit))
+                     (> (chirp-backend-tweet-weighted-length text)
+                        chirp-backend-standard-tweet-weight-limit))
                     (operation-key
                      (if note-tweet-p 'create-note-tweet 'create-tweet))
                     (variables
@@ -768,9 +768,9 @@ mutations are never retried automatically."
            (description (plist-get spec :description)))
       (when (and (stringp description)
                  (> (length (string-trim description))
-                    chirp-x--media-alt-text-limit))
+                    chirp-x-media-alt-text-limit))
         (error "Alt text cannot exceed %d characters"
-               chirp-x--media-alt-text-limit)))))
+               chirp-x-media-alt-text-limit)))))
 
 (defun chirp-backend--validate-compose-item (item)
   "Signal an error when ITEM is not a sendable compose item."

@@ -113,7 +113,7 @@
   (let ((state (appkit-view-state view)))
     (chirp-sync-projection
      view invalidations
-     (chirp-timeline--project-rows (plist-get state :items))
+     (chirp-render-project-tweet-rows (plist-get state :items))
      (chirp-profile--header-text state))))
 
 (defun chirp-profile--users-sync (view invalidations)
@@ -180,7 +180,7 @@ REFRESH reloads the selected MODE."
                 :loading-more nil
                 :expanded-tweet-ids (make-hash-table :test #'equal))
    :sync-function #'chirp-profile--sync
-   :printer #'chirp-timeline--print-row
+   :printer #'chirp-render-print-tweet-row
    :select t))
 
 (defun chirp-profile--present (view)

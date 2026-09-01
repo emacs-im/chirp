@@ -566,8 +566,8 @@
                        :author-avatar-url "https://example.com/two.jpg"))
                nil)
               (appkit-sync-invalidations view)
-              (let ((printer (symbol-function 'chirp-timeline--print-row)))
-                (cl-letf (((symbol-function 'chirp-timeline--print-row)
+              (let ((printer (symbol-function 'chirp-render-print-tweet-row)))
+                (cl-letf (((symbol-function 'chirp-render-print-tweet-row)
                            (lambda (row)
                              (push (appkit-projection-row-key row) printed)
                              (funcall printer row))))
@@ -692,7 +692,8 @@
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :retweet-id))
                            tweets)
                    '("100" nil)))
-    (should (equal (mapcar #'chirp-timeline--row-key tweets)
+    (should (equal (mapcar #'appkit-projection-row-key
+                           (chirp-render-project-tweet-rows tweets))
                    '((tweet "100") (tweet "200"))))))
 
 (ert-deftest chirp-collect-top-level-tweets-can-keep-promoted-posts ()

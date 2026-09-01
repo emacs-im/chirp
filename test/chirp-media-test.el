@@ -797,7 +797,7 @@ rerender and creates a CPU loop."
                       :title "Bookmarks"
                       :state state
                       :sync-function #'chirp-timeline--sync
-                      :printer #'chirp-timeline--print-row))
+                      :printer #'chirp-render-print-tweet-row))
           (with-current-buffer (appkit-view-buffer view)
             (text-scale-increase 2)
             (let ((amount text-scale-mode-amount)

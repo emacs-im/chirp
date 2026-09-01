@@ -21,7 +21,6 @@
 (require 'chirp-backend)
 (require 'chirp-media)
 
-(declare-function chirp-backend-clear-cache "chirp-backend" ())
 (declare-function chirp-timeline-open-home "chirp-timeline" ())
 (declare-function chirp-timeline-open-following "chirp-timeline" ())
 (declare-function chirp-timeline-open-bookmarks "chirp-timeline" (&optional buffer))
@@ -260,7 +259,7 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
       (setq chirp-compose--chrome-timer nil)
       (when (and (derived-mode-p 'chirp-compose-mode)
                  (not (appkit-compose-operation-active-p)))
-        (let ((weight (chirp-backend--tweet-weighted-length
+        (let ((weight (chirp-backend-tweet-weighted-length
                        (appkit-chat-compose-body))))
           (unless (eql weight chirp-compose--shown-weight)
             (setq chirp-compose--shown-weight weight)
@@ -327,7 +326,7 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
   (and (stringp message)
        (string-prefix-p "X write outcome is unknown" message)))
 
-(defun chirp-actions--show-error (message)
+(defun chirp-actions-show-error (message)
   "Show MESSAGE as a condensed action failure."
   (let ((condensed (replace-regexp-in-string "[\r\n]+" "  " message)))
     (if (chirp-actions--unknown-write-outcome-p condensed)
@@ -365,7 +364,7 @@ When ON-ERROR is non-nil, call it with the human-readable error message."
      (chirp-backend-clear-cache)
      (funcall on-success data envelope))
    (or on-error
-       #'chirp-actions--show-error)))
+       #'chirp-actions-show-error)))
 
 ;;;; Tweet State
 
@@ -835,16 +834,16 @@ When called interactively, prompt for AUDIENCE."
               (chirp-compose--prefetch-preview (current-buffer) url)
               nil)))
       (and (chirp-compose--video-attachment-p attachment)
-           (chirp-media--video-placeholder-image 48))))
+           (chirp-media-video-placeholder-image 48))))
 
 (defun chirp-compose--length-label ()
   "Return the status-field value for the current body's weighted length."
-  (let ((weight (chirp-backend--tweet-weighted-length
+  (let ((weight (chirp-backend-tweet-weighted-length
                  (appkit-chat-compose-body))))
     (setq chirp-compose--shown-weight weight)
-    (if (> weight chirp-backend--standard-tweet-weight-limit)
+    (if (> weight chirp-backend-standard-tweet-weight-limit)
         (format "%d long" weight)
-      (format "%d/%d" weight chirp-backend--standard-tweet-weight-limit))))
+      (format "%d/%d" weight chirp-backend-standard-tweet-weight-limit))))
 
 (defun chirp-compose--status-fields ()
   "Return current Chirp compose status fields."
@@ -1165,9 +1164,9 @@ When PATH is nil, prompt for one attached image."
                                (or (chirp-compose--attachment-description
                                     current)
                                    "")))))
-      (when (> (length text) chirp-x--media-alt-text-limit)
+      (when (> (length text) chirp-x-media-alt-text-limit)
         (user-error "Alt text cannot exceed %d characters"
-                    chirp-x--media-alt-text-limit))
+                    chirp-x-media-alt-text-limit))
       (chirp-compose--set-current-item
        (plist-put (copy-sequence item) :attachments
                   (mapcar
@@ -1246,7 +1245,7 @@ SUCCESS-MESSAGE."
    (lambda (message)
      (chirp-compose--close-after-send
       compose-buffer source-buffer temp-attachments success-message)
-     (chirp-actions--show-error
+     (chirp-actions-show-error
       (format "Post sent, but the X %s was not deleted: %s"
               (if (eq kind 'scheduled) "scheduled post" "draft")
               message)))))
@@ -1288,7 +1287,7 @@ shown.  A stored draft or scheduled object is deleted after acceptance."
            'rejected)))
     (when (chirp-compose--settle-editable
            compose-buffer owner temp-attachments outcome message)
-      (chirp-actions--show-error message))))
+      (chirp-actions-show-error message))))
 
 (defun chirp-compose--send-next
     (compose-buffer owner source-buffer draft items index previous-id
@@ -1719,9 +1718,9 @@ target."
                 (plist-put tweet :translation-language destination))
               t)
              (message "Translated to %s." destination))
-         (chirp-actions--show-error
+         (chirp-actions-show-error
           "No translated text returned by X")))
-     #'chirp-actions--show-error)))
+     #'chirp-actions-show-error)))
 
 (transient-define-prefix chirp-dispatch ()
   "Show Chirp write actions."

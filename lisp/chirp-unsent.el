@@ -160,7 +160,7 @@ Either `draft' or `scheduled'.")
      (lambda (message)
        (when (chirp-request-current-p buffer token)
          (chirp-clear-status buffer)
-         (chirp-actions--show-error message))))))
+         (chirp-actions-show-error message))))))
 
 ;;; Commands
 
@@ -278,7 +278,7 @@ KIND is `draft' or `scheduled'."
      (lambda (message)
        (when (buffer-live-p buffer)
          (chirp-clear-status buffer))
-       (chirp-actions--show-error message)))))
+       (chirp-actions-show-error message)))))
 
 (defun chirp-unsent-execute ()
   "Delete every unsent post flagged with `chirp-unsent-flag-delete'."

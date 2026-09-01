@@ -519,7 +519,7 @@ Return a list of (compose source foreign)."
             (cl-letf (((symbol-function 'chirp-backend-compose)
                        (lambda (&rest draft)
                          (setq error-callback (plist-get draft :errback))))
-                      ((symbol-function 'chirp-actions--show-error)
+                      ((symbol-function 'chirp-actions-show-error)
                        (lambda (message)
                          (setq reported message))))
               (with-current-buffer compose
@@ -564,7 +564,7 @@ Return a list of (compose source foreign)."
                             (_ '(("processing_info" .
                                   (("state" . "pending")
                                    ("check_after_secs" . 30)))))))))
-                      ((symbol-function 'chirp-actions--show-error)
+                      ((symbol-function 'chirp-actions-show-error)
                        (lambda (message)
                          (setq reported message))))
               (with-current-buffer compose
@@ -625,7 +625,7 @@ Return a list of (compose source foreign)."
     (cl-letf (((symbol-function 'display-warning)
                (lambda (type message level &rest _args)
                  (setq warning (list type message level)))))
-      (chirp-actions--show-error
+      (chirp-actions-show-error
        (concat "X write outcome is unknown; the request may have succeeded. "
                "Check X before trying again.")))
     (should (eq (car warning) 'chirp))
