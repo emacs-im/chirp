@@ -79,6 +79,89 @@
         (chirp-dm-render--insert-reply-preview reply-model)
         (should (equal (buffer-string) "↪ earlier message"))))))
 
+(ert-deftest chirp-dm-attachments-render-as-semantic-provider-objects ()
+  "Media, files, and posts should expose semantic and keyboard actions."
+  (let ((event (chirp-dm-test--normalized-event "20" "20" "photo"))
+        activated)
+    (setf
+     (plist-get event :attachments)
+     '((:kind gif :name "giphy.gif" :media-hash "gif-hash"
+        :resource-key (xchat-media "gif"))
+       (:kind file :name "d.cpp" :media-hash "file-hash"
+        :resource-key (xchat-media "file"))
+       (:kind post :url "https://x.com/i/status/123"
+        :resource-key (xchat-media "post")))
+     (plist-get event :attachment-count) 3)
+    (let* ((document (chirp-dm-render--message-document event))
+           (blocks (appkit-markup-document-blocks document)))
+      (should (= (length blocks) 4))
+      (should (appkit-markup-object-block-p (cadr blocks))))
+    (with-temp-buffer
+      (use-local-map chirp-dm-conversation--mode-map)
+      (cl-letf (((symbol-function 'chirp-media-insert-image-resource)
+                 (lambda (&rest _arguments) 'pending))
+                ((symbol-function 'chirp-media-xchat-resource-file)
+                 (lambda (&rest _arguments) nil))
+                ((symbol-function 'chirp-media-xchat-resource-status)
+                 (lambda (&rest _arguments) 'failed))
+                ((symbol-function 'browse-url)
+                 (lambda (url &rest _arguments)
+                   (setq activated url))))
+        (chirp-dm-render--insert-message-content :view event nil)
+        (should
+         (equal
+          (buffer-string)
+          (concat "photo\nGIF: giphy.gif loading…\n"
+                  "File: d.cpp\nOpen attached post")))
+        (goto-char (point-min))
+        (search-forward "Open attached post")
+        (goto-char (match-beginning 0))
+        (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
+        (call-interactively (key-binding (kbd "RET")))
+        (should (equal activated "https://x.com/i/status/123"))))))
+
+(ert-deftest chirp-dm-post-resource-redraws-as-an-embedded-tweet ()
+  "A fetched post attachment should replace its loading row with a tweet card."
+  (let ((chirp--app nil)
+        buffer callback requested)
+    (unwind-protect
+        (save-window-excursion
+          (let* ((event (chirp-dm-test--normalized-event "20" "20" ""))
+                 (conversation
+                  (chirp-dm-test--normalized-conversation event)))
+            (setf
+             (plist-get event :attachments)
+             '((:kind post :url "https://x.com/i/status/123"
+                :resource-key (xchat-media "conversation-1" "20" 0)))
+             (plist-get event :attachment-count) 1)
+            (setq conversation
+                  (chirp-dm-test--normalized-conversation event))
+            (cl-letf (((symbol-function 'chirp-backend-tweet)
+                       (lambda (tweet-id success _error)
+                         (setq requested tweet-id
+                               callback success)))
+                      ((symbol-function 'chirp-render-insert-tweet-card)
+                       (lambda (tweet &rest _options)
+                         (insert (format "Embedded: %s"
+                                         (plist-get tweet :text))))))
+              (setq buffer (chirp-dm-conversation-open conversation))
+              (should (equal requested "123"))
+              (with-current-buffer buffer
+                (should (string-match-p "Attached post loading…"
+                                        (buffer-string))))
+              (funcall callback
+                       '(:kind tweet :id "123" :text "Post body"
+                         :url "https://x.com/i/status/123")
+                       nil)
+              (let ((view (with-current-buffer buffer (appkit-current-view))))
+                (appkit-sync-invalidations view))
+              (with-current-buffer buffer
+                (should (string-match-p "Embedded: Post body"
+                                        (buffer-string)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-dm-message-avatars-use-appkit-prefix-geometry ()
   "Message rows should project participant avatars into two-line prefixes."
   (let* ((event
@@ -157,6 +240,34 @@
     (should
      (equal (appkit-chat-timeline-row-dependencies (car rows))
             '((xchat-avatar "42") (xchat-media "20"))))))
+
+(ert-deftest chirp-dm-projects-encrypted-media-download-metadata ()
+  "Media hashes should select authenticated download and exact decryption key."
+  (let ((event
+         (chirp-dm-test--normalized-event
+          "20" "20" "gif" "42" "1:2"))
+        seen)
+    (setf
+     (plist-get event :key-version) "7"
+     (plist-get event :attachments)
+     '((:kind gif :media-hash "media_hash" :name "giphy.gif"
+        :resource-key (xchat-media "1:2" "20" 0))))
+    (cl-letf
+        (((symbol-function 'chirp-media-request-xchat-attachment-resource)
+          (lambda (view resource-key attachment &rest options)
+            (setq seen
+                  (list view resource-key (plist-get attachment :media-hash)
+                        (plist-get options :conversation-id)
+                        (plist-get options :key-version)))
+            resource-key)))
+      (should
+       (equal
+        (chirp-dm-render--request-event-media :view event)
+        '((xchat-media "1:2" "20" 0)))))
+    (should
+     (equal seen
+            '(:view (xchat-media "1:2" "20" 0)
+              "media_hash" "1:2" "7")))))
 
 (ert-deftest chirp-dm-participant-avatar-resources-redraw-dependent-rows ()
   "Avatar completion should redraw only messages from that participant."
@@ -267,6 +378,119 @@
                 (should (eq (plist-get (gethash resource-key store) :status)
                             'ready))
                 (should (equal printed '("20")))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-dm-encrypted-media-is-downloaded-decrypted-and-cached ()
+  "A media hash should cross authenticated transport and native decryption."
+  (let ((chirp--app nil)
+        buffer downloaded decrypted written owner)
+    (unwind-protect
+        (save-window-excursion
+          (let* ((event
+                  (chirp-dm-test--normalized-event
+                   "20" "20" "gif" "42" "conversation-1"))
+                 (resource-key
+                  '(xchat-media "conversation-1" "message-20" 0))
+                 (conversation
+                  (chirp-dm-test--normalized-conversation event)))
+            (setf
+             (plist-get event :key-version) "7"
+             (plist-get event :attachments)
+             `((:kind gif :media-hash "media_hash" :name "giphy.gif"
+                :resource-key ,resource-key))
+             (plist-get event :attachment-count) 1)
+            (setq conversation
+                  (chirp-dm-test--normalized-conversation event))
+            (cl-letf
+                (((symbol-function 'chirp-media--prefetch-enabled-p)
+                  (lambda () t))
+                 ((symbol-function 'appkit-media-image-cache-existing-file)
+                  (lambda (_cache-base) nil))
+                 ((symbol-function 'chirp-media--valid-cache-file-p)
+                  (lambda (path) (and written (equal path written))))
+                 ((symbol-function 'chirp-backend-dm-media)
+                  (lambda (conversation-id media-hash callback &rest options)
+                    (setq downloaded (list conversation-id media-hash)
+                          owner (plist-get options :owner))
+                    (funcall callback (unibyte-string 0 1 2))))
+                 ((symbol-function
+                   'chirp-xchat-native-decrypt-media-bytes)
+                  (lambda (conversation-id key-version ciphertext)
+                    (setq decrypted
+                          (list conversation-id key-version
+                                (copy-sequence ciphertext)))
+                    (encode-coding-string "GIF89a" 'binary)))
+                 ((symbol-function 'chirp-media--write-xchat-attachment)
+                  (lambda (_bytes path)
+                    (setq written path)
+                    path)))
+              (setq buffer (chirp-dm-conversation-open conversation))
+              (let* ((view
+                      (with-current-buffer buffer (appkit-current-view)))
+                     (_requested
+                      (chirp-dm-render--request-event-media view event))
+                     (entry
+                      (gethash
+                       resource-key
+                       (appkit-app-resource-store
+                        (appkit-view-app view)))))
+                (should (equal downloaded '("conversation-1" "media_hash")))
+                (should (eq owner (appkit-view-app view)))
+                (should
+                 (equal decrypted
+                        (list "conversation-1" "7"
+                              (unibyte-string 0 1 2))))
+                (should (string-suffix-p ".gif" written))
+                (should (eq (plist-get entry :status) 'ready))
+                (should (equal (plist-get entry :file) written))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest chirp-dm-encrypted-media-failure-settles-without-retry-loop ()
+  "A failed attachment request should leave one terminal failed resource."
+  (let ((chirp--app nil)
+        buffer errback requests)
+    (unwind-protect
+        (save-window-excursion
+          (let* ((event
+                  (chirp-dm-test--normalized-event
+                   "20" "20" "file" "42" "conversation-1"))
+                 (resource-key
+                  '(xchat-media "conversation-1" "message-20" 0)))
+            (setf
+             (plist-get event :key-version) "7"
+             (plist-get event :attachments)
+             `((:kind file :media-hash "media_hash" :name "file.txt"
+                :resource-key ,resource-key))
+             (plist-get event :attachment-count) 1)
+            (cl-letf
+                (((symbol-function 'chirp-media--prefetch-enabled-p)
+                  (lambda () t))
+                 ((symbol-function 'appkit-media-image-cache-existing-file)
+                  (lambda (_cache-base) nil))
+                 ((symbol-function 'chirp-backend-dm-media)
+                  (lambda (_conversation-id _media-hash _callback
+                                            &rest options)
+                    (setq requests (1+ (or requests 0))
+                          errback (plist-get options :errback))
+                    :request)))
+              (setq buffer
+                    (chirp-dm-conversation-open
+                     (chirp-dm-test--normalized-conversation event)))
+              (let* ((view (with-current-buffer buffer (appkit-current-view)))
+                     (store
+                      (appkit-app-resource-store (appkit-view-app view))))
+                (should (eq (plist-get (gethash resource-key store) :status)
+                            'pending))
+                (funcall errback "HTTP 403")
+                (appkit-sync-invalidations view)
+                (should (eq (plist-get (gethash resource-key store) :status)
+                            'failed))
+                (chirp-dm-render--request-event-media view event)
+                (should (= requests 1))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

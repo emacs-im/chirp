@@ -10,6 +10,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'browse-url)
+(require 'url-parse)
 (require 'subr-x)
 (require 'appkit-chat-avatar)
 (require 'appkit-chat-history)
@@ -21,8 +23,10 @@
 (require 'appkit-ui)
 (require 'appkit-view)
 (require 'chirp-core)
+(require 'chirp-backend)
 (require 'chirp-media)
 (require 'chirp-time)
+(require 'chirp-render)
 
 (defun chirp-dm-render--one-line (text)
   "Return TEXT collapsed into one trimmed display line."
@@ -91,39 +95,187 @@
       'face 'shadow))))
 
 (defun chirp-dm-render--attachment-label (attachment)
-  "Return a passive fallback label for verified ATTACHMENT."
-  (pcase (plist-get attachment :kind)
-    ('image "[Image unavailable]")
-    ('gif "[GIF unavailable]")
-    ('video "[Video attachment]")
-    ('audio "[Audio attachment]")
-    ('file "[File attachment]")
-    ('svg "[SVG unavailable]")
-    ('url "[Link attachment]")
-    ('post "[Post attachment]")
-    ('unified-card "[Card attachment]")
-    ('money "[Payment attachment]")
-    (_ "[Attachment]")))
+  "Return a visible semantic label for verified ATTACHMENT."
+  (let ((name
+         (when-let* ((value (plist-get attachment :name)))
+           (truncate-string-to-width
+            (chirp-dm-render--one-line value) 80 nil nil "…"))))
+    (pcase (plist-get attachment :kind)
+      ('image (if name (format "Image: %s" name) "Image"))
+      ('gif (if name (format "GIF: %s" name) "GIF"))
+      ('video (if name (format "Video: %s" name) "Video"))
+      ('audio (if name (format "Audio: %s" name) "Audio"))
+      ('file (if name (format "File: %s" name) "File"))
+      ('svg (if name (format "SVG: %s" name) "SVG"))
+      ('url (or name "Link"))
+      ('post "Open attached post")
+      ('unified-card (or name "Open attached card"))
+      ('money (or name "Payment attachment"))
+      (_ (or name "Attachment")))))
 
-(defun chirp-dm-render--insert-attachment (view attachment)
-  "Insert verified ATTACHMENT using VIEW's shared media workflow."
-  (let ((status
-         (when (memq (plist-get attachment :kind) '(image gif svg))
-           (chirp-media-insert-image-resource
-            view (plist-get attachment :resource-key)
-            :alternate-text "[image]" :help-echo "Open image in Emacs"))))
-    (pcase status
-      ('rendered nil)
-      ('pending
-       (insert (propertize "[Image loading…]" 'face 'shadow)))
-      (_
-       (insert (propertize
-                (chirp-dm-render--attachment-label attachment)
-                'face 'shadow))))))
+(defun chirp-dm-render--safe-attachment-url-p (value)
+  "Return non-nil when VALUE is a safe user-activated attachment URL."
+  (and (stringp value)
+       (<= (length value) 8192)
+       (not (string-match-p "[[:cntrl:]]" value))
+       (condition-case nil
+           (let ((parsed (url-generic-parse-url value)))
+             (and (equal (url-type parsed) "https")
+                  (null (url-user parsed))
+                  (null (url-password parsed))
+                  (memq (url-port parsed) '(nil 443))))
+         (error nil))))
+
+(defun chirp-dm-render--post-resource-key (attachment)
+  "Return the tweet resource key represented by ATTACHMENT, or nil."
+  (when-let* ((url (plist-get attachment :url))
+              ((chirp-dm-render--safe-attachment-url-p url))
+              ((string-match
+                "\\`https://x\\.com/i/status/\\([0-9]+\\)\\'" url)))
+    (list 'xchat-post (match-string 1 url))))
+
+(defun chirp-dm-render--finish-post-resource
+    (app resource-key entry status &optional tweet)
+  "Finish APP post ENTRY for RESOURCE-KEY with STATUS and optional TWEET."
+  (when (and (appkit-app-live-p app)
+             (eq entry
+                 (gethash resource-key (appkit-app-resource-store app))))
+    (setf (plist-get entry :status) status
+          (plist-get entry :tweet) tweet)
+    (dolist (view (plist-get entry :views))
+      (when (appkit-view-live-p view)
+        (appkit-request-sync view :resource resource-key :position t)))))
+
+(defun chirp-dm-render--request-post-resource (view attachment)
+  "Ensure ATTACHMENT's embedded post resource for Appkit VIEW."
+  (when-let* (((appkit-view-live-p view))
+              (resource-key
+               (chirp-dm-render--post-resource-key attachment)))
+    (let* ((app (appkit-view-app view))
+           (store (appkit-app-resource-store app))
+           (current (gethash resource-key store)))
+      (cond
+       ((eq (plist-get current :status) 'ready))
+       ((eq (plist-get current :status) 'pending)
+        (cl-pushnew view (plist-get current :views) :test #'eq))
+       ((eq (plist-get current :status) 'failed))
+       (t
+        (let ((entry
+               (list :status 'pending :tweet nil
+                     :views (cl-adjoin view (plist-get current :views)
+                                       :test #'eq))))
+          (puthash resource-key entry store)
+          (chirp-backend-tweet
+           (cadr resource-key)
+           (lambda (tweet _envelope)
+             (chirp-dm-render--finish-post-resource
+              app resource-key entry 'ready tweet))
+           (lambda (_message)
+             (chirp-dm-render--finish-post-resource
+              app resource-key entry 'failed))))))
+      resource-key)))
+
+(defun chirp-dm-render--attachment-block (attachment)
+  "Return ATTACHMENT as one Appkit semantic provider-object block."
+  (appkit-markup-object-block
+   attachment
+   (list
+    (appkit-markup-paragraph
+     (list
+      (appkit-markup-text
+       (chirp-dm-render--attachment-label attachment)))))))
+
+(defun chirp-dm-render--message-document (event)
+  "Return EVENT's text and attachments as one semantic document."
+  (let* ((document (plist-get event :document))
+         (attachments (plist-get event :attachments))
+         (blocks
+          (append
+           (and document (appkit-markup-document-blocks document))
+           (mapcar #'chirp-dm-render--attachment-block attachments))))
+    (dotimes (_index (max 0 (- (or (plist-get event :attachment-count) 0)
+                               (length attachments))))
+      (setq blocks
+            (append
+             blocks
+             (list
+              (chirp-dm-render--attachment-block
+               '(:kind unknown))))))
+    (and blocks (appkit-markup-document blocks))))
+
+(defun chirp-dm-render--insert-attachment-action
+    (label action help-echo)
+  "Insert attachment LABEL with optional ACTION and HELP-ECHO."
+  (let ((start (point)))
+    (insert label)
+    (if action
+        (appkit-ui-add-action
+         start (point) action :help-echo help-echo
+         :face 'appkit-markup-link-face)
+      (add-face-text-property start (point) 'shadow 'append))))
+
+(defun chirp-dm-render--insert-attachment-object (view node)
+  "Insert XChat attachment object NODE using resources in VIEW."
+  (let* ((attachment
+          (and (appkit-markup-object-block-p node)
+               (appkit-markup-object-block-value node)))
+         (kind (and (listp attachment) (plist-get attachment :kind)))
+         (resource-key
+          (and attachment (plist-get attachment :resource-key)))
+         (media-resource-p
+          (and resource-key (plist-get attachment :media-hash)))
+         (label (chirp-dm-render--attachment-label attachment)))
+    (cond
+     ((eq kind 'post)
+      (let* ((url (plist-get attachment :url))
+             (post-key (chirp-dm-render--post-resource-key attachment))
+             (entry
+              (and post-key
+                   (appkit-view-live-p view)
+                   (gethash post-key
+                            (appkit-app-resource-store
+                             (appkit-view-app view))))))
+        (if-let* ((tweet (and (eq (plist-get entry :status) 'ready)
+                              (plist-get entry :tweet))))
+            (chirp-render-insert-tweet-card tweet)
+          (chirp-dm-render--insert-attachment-action
+           (if (eq (plist-get entry :status) 'pending)
+               "Attached post loading…"
+             label)
+           (and (chirp-dm-render--safe-attachment-url-p url)
+                (lambda () (browse-url url)))
+           (and (chirp-dm-render--safe-attachment-url-p url) url)))))
+     ((and media-resource-p (memq kind '(image gif svg)))
+      (pcase (chirp-media-insert-image-resource
+              view resource-key
+              :alternate-text (format "[%s]" label)
+              :help-echo "Open decrypted attachment in Emacs")
+        ('rendered nil)
+        ('pending
+         (insert (propertize (format "%s loading…" label) 'face 'shadow)))
+        (_
+         (insert
+          (propertize (format "%s unavailable" label) 'face 'shadow)))))
+     (media-resource-p
+      (let ((file (chirp-media-xchat-resource-file view resource-key))
+            (status (chirp-media-xchat-resource-status view resource-key)))
+        (chirp-dm-render--insert-attachment-action
+         (if (eq status 'pending) (format "%s loading…" label) label)
+         (and file
+              (lambda ()
+                (chirp-media-open-xchat-resource view resource-key)))
+         (and file "Open decrypted attachment in Emacs"))))
+     ((chirp-dm-render--safe-attachment-url-p
+       (plist-get attachment :url))
+      (let ((url (plist-get attachment :url)))
+        (chirp-dm-render--insert-attachment-action
+         label (lambda () (browse-url url)) url)))
+     (t
+      (chirp-dm-render--insert-attachment-action label nil nil)))))
 
 (defun chirp-dm-render--insert-message-content (view event context)
   "Insert EVENT content and projected CONTEXT using Appkit VIEW resources."
-  (let* ((document (plist-get event :document))
+  (let* ((document (chirp-dm-render--message-document event))
          (content-label
           (pcase (plist-get event :content-kind)
             ('reaction "Reaction: ")
@@ -131,7 +283,6 @@
             ('edit "Edited message: ")
             (_ nil)))
          (reply (plist-get context :reply))
-         (attachments (plist-get event :attachments))
          inserted-p)
     (when reply
       (chirp-dm-render--insert-reply-preview reply)
@@ -142,18 +293,15 @@
         (insert content-label))
       (pcase-let ((`(,start . ,end)
                    (appkit-markup-ui-insert-document
-                    document :final-newline-p nil)))
+                    document
+                    :final-newline-p nil
+                    :interactive-p t
+                    :object-inserter
+                    (lambda (node)
+                      (chirp-dm-render--insert-attachment-object
+                       view node)))))
         (setq inserted-p
               (or inserted-p content-label (< start end)))))
-    (dolist (attachment attachments)
-      (when inserted-p (insert "\n"))
-      (chirp-dm-render--insert-attachment view attachment)
-      (setq inserted-p t))
-    (dotimes (_index (max 0 (- (or (plist-get event :attachment-count) 0)
-                               (length attachments))))
-      (when inserted-p (insert "\n"))
-      (insert (propertize "[Attachment]" 'face 'shadow))
-      (setq inserted-p t))
     (unless inserted-p
       (insert (if (plist-get event :decrypted-p)
                   "[Verified non-text message]"
@@ -275,17 +423,32 @@
     (add-text-properties start (point) properties)))
 
 (defun chirp-dm-render--request-event-media (view event)
-  "Request verified image resources carried by EVENT on behalf of VIEW."
+  "Request resources carried by verified EVENT for VIEW."
   (cl-loop
    for attachment in (plist-get event :attachments)
-   when (memq (plist-get attachment :kind) '(image gif svg))
-   when (chirp-media-request-xchat-image-resource
-         view
-         (plist-get attachment :resource-key)
-         (or (plist-get attachment :preview-url)
-             (plist-get attachment :url))
-         :name (plist-get attachment :name))
-   collect (plist-get attachment :resource-key)))
+   for resource-key = (plist-get attachment :resource-key)
+   for source = (cl-find-if
+                 (lambda (value)
+                   (and (stringp value) (not (string-empty-p value))))
+                 (list (plist-get attachment :preview-url)
+                       (plist-get attachment :url)))
+   for post-key =
+   (and (eq (plist-get attachment :kind) 'post)
+        (chirp-dm-render--request-post-resource view attachment))
+   when
+   (or
+    post-key
+    (and (plist-get attachment :media-hash)
+         (chirp-media-request-xchat-attachment-resource
+          view resource-key attachment
+          :conversation-id (plist-get event :conversation-id)
+          :key-version
+          (or (plist-get event :key-version)
+              (plist-get event :conversation-key-version))))
+    (and (memq (plist-get attachment :kind) '(image gif svg media))
+         (chirp-media-request-xchat-image-resource
+          view resource-key source :name (plist-get attachment :name))))
+   collect (or post-key resource-key)))
 
 (defun chirp-dm-render--event-resource-keys (view state event)
   "Ensure and return resources affecting EVENT from STATE in VIEW."

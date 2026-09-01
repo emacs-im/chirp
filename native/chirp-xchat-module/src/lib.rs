@@ -4,7 +4,7 @@
 #[cfg(feature = "test-vector")]
 use std::time::Instant;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
@@ -24,10 +24,10 @@ use chat_xdk_core::{
     ChatCore,
 };
 use chat_xdk_core::{
-    AttachmentInfo, EncryptMessageParams, Event, Message, MessageContent, ReplyPreviewValidation,
-    SendPayload,
+    prelude::XChatConversationKey, AttachmentInfo, EncryptMessageParams, Event, Message,
+    MessageContent, ReplyPreviewValidation, SendPayload,
 };
-use emacs::{defun, Env, Result, ResultExt, Transfer, Value};
+use emacs::{defun, Env, IntoLisp, Result, ResultExt, Transfer, Value};
 use serde::{Deserialize, Serialize};
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
@@ -48,6 +48,9 @@ const PUBLIC_KEY_LENGTHS: &[usize] = &[33, 65, 91];
 const MAX_DECRYPT_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_DECRYPT_EVENT_BASE64_BYTES: usize = 4 * MAX_DECRYPT_EVENT_BYTES.div_ceil(3);
 const MAX_PUBLIC_KEY_BYTES: usize = 91;
+const MAX_MEDIA_BYTES: usize = 50 * 1024 * 1024;
+const MAX_MEDIA_BASE64_BYTES: usize = 4 * MAX_MEDIA_BYTES.div_ceil(3);
+const MAX_MEDIA_CONVERSATIONS: usize = 100;
 #[cfg(feature = "juicebox")]
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -196,6 +199,7 @@ struct RealmConfiguration {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecryptInput {
+    conversation_id: String,
     events: Vec<String>,
     signing_keys: Vec<SigningKeyInput>,
 }
@@ -245,6 +249,7 @@ impl Drop for RecoveryRequest {
 struct NativeState {
     core: Option<ChatCore>,
     user_id: Option<String>,
+    conversation_keys: HashMap<String, HashMap<String, XChatConversationKey>>,
     next_job_id: i64,
     recovery: Option<RecoveryJob>,
 }
@@ -252,6 +257,7 @@ struct NativeState {
 struct ClosedState {
     core: Option<ChatCore>,
     user_id: Option<String>,
+    conversation_keys: HashMap<String, HashMap<String, XChatConversationKey>>,
     recovery: Option<RecoveryJob>,
 }
 
@@ -267,6 +273,7 @@ impl NativeSession {
             state: Mutex::new(NativeState {
                 core: Some(core),
                 user_id: None,
+                conversation_keys: HashMap::new(),
                 next_job_id: 1,
                 recovery: None,
             }),
@@ -277,6 +284,7 @@ impl NativeSession {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    #[cfg(any(test, feature = "test-vector"))]
     fn with_core<T>(
         &self,
         operation: impl FnOnce(&ChatCore) -> std::result::Result<T, NativeError>,
@@ -292,6 +300,7 @@ impl NativeSession {
             core: state.core.take(),
             user_id: state.user_id.take(),
             recovery: state.recovery.take(),
+            conversation_keys: std::mem::take(&mut state.conversation_keys),
         }
     }
 
@@ -303,6 +312,7 @@ impl NativeSession {
         }
         drop(closed.user_id.take());
         drop(closed.core.take());
+        drop(closed.conversation_keys);
         existed
     }
 
@@ -320,16 +330,86 @@ impl NativeSession {
     }
 
     fn decrypt(&self, input_json: String) -> std::result::Result<String, NativeError> {
-        let (events, signing_keys) = parse_decrypt_input(input_json)?;
-        self.with_core(|core| {
-            if !core.is_unlocked() {
+        let (conversation_id, events, signing_keys) = parse_decrypt_input(input_json)?;
+        let mut state = self.lock_state();
+        let core = state.core.as_ref().ok_or(NativeError::Closed)?;
+        if !core.is_unlocked() {
+            return Err(NativeError::InvalidInput(
+                "XChat native session is locked".into(),
+            ));
+        }
+        let (output, conversation_keys) = decrypt_events(core, &events, &signing_keys)?;
+        if output
+            .messages
+            .iter()
+            .any(|message| message.conversation_id.as_deref() != Some(conversation_id.as_str()))
+        {
+            return Err(NativeError::Xdk(
+                "decrypted message belongs to another conversation".into(),
+            ));
+        }
+        if !output.messages.is_empty() && !conversation_keys.is_empty() {
+            if !state.conversation_keys.contains_key(&conversation_id)
+                && state.conversation_keys.len() >= MAX_MEDIA_CONVERSATIONS
+            {
                 return Err(NativeError::InvalidInput(
-                    "XChat native session is locked".into(),
+                    "XChat native media key cache is full".into(),
                 ));
             }
-            let output = decrypt_events(core, &events, &signing_keys)?;
-            serde_json::to_string(&output).map_err(|error| NativeError::Xdk(error.to_string()))
-        })
+            state
+                .conversation_keys
+                .insert(conversation_id, conversation_keys);
+        }
+        serde_json::to_string(&output).map_err(|error| NativeError::Xdk(error.to_string()))
+    }
+
+    fn decrypt_media(
+        &self,
+        conversation_id: &str,
+        key_version: &str,
+        encrypted_base64: &str,
+    ) -> std::result::Result<Zeroizing<Vec<u8>>, NativeError> {
+        if !valid_conversation_id(conversation_id)
+            || !valid_public_key_version(key_version)
+            || encrypted_base64.len() > MAX_MEDIA_BASE64_BYTES
+        {
+            return Err(NativeError::InvalidInput(
+                "XChat native media input is invalid".into(),
+            ));
+        }
+        let encrypted = BASE64.decode(encrypted_base64).map_err(|_| {
+            NativeError::InvalidInput("XChat native media ciphertext is invalid".into())
+        })?;
+        if encrypted.is_empty() || encrypted.len() > MAX_MEDIA_BYTES {
+            return Err(NativeError::InvalidInput(
+                "XChat native media ciphertext size is invalid".into(),
+            ));
+        }
+        let state = self.lock_state();
+        let core = state.core.as_ref().ok_or(NativeError::Closed)?;
+        if !core.is_unlocked() {
+            return Err(NativeError::InvalidInput(
+                "XChat native session is locked".into(),
+            ));
+        }
+        let key = state
+            .conversation_keys
+            .get(conversation_id)
+            .and_then(|keys| keys.get(key_version))
+            .ok_or_else(|| {
+                NativeError::InvalidInput(
+                    "XChat native media conversation key is unavailable".into(),
+                )
+            })?;
+        let plaintext = core
+            .decrypt_stream(&encrypted, key)
+            .map_err(|_| NativeError::Xdk("media decryption failed".into()))?;
+        if plaintext.len() > MAX_MEDIA_BYTES {
+            return Err(NativeError::Xdk(
+                "decrypted XChat media exceeds 50 MiB".into(),
+            ));
+        }
+        Ok(Zeroizing::new(plaintext))
     }
 
     fn prepare_text_payload(
@@ -887,9 +967,16 @@ fn mock_recover(pin: Zeroizing<Vec<u8>>, delay: Duration, cancel: &CancelToken) 
     }
 }
 
+fn valid_conversation_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && !value.contains(',')
+        && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 fn parse_decrypt_input(
     input_json: String,
-) -> std::result::Result<(Vec<String>, Vec<chat_xdk_core::SigningKeyEntry>), NativeError> {
+) -> std::result::Result<(String, Vec<String>, Vec<chat_xdk_core::SigningKeyEntry>), NativeError> {
     if input_json.len() > MAX_DECRYPT_INPUT_BYTES {
         return Err(NativeError::InvalidInput(
             "XChat native decrypt input exceeds 20 MiB".into(),
@@ -897,6 +984,11 @@ fn parse_decrypt_input(
     }
     let input: DecryptInput = serde_json::from_str(&input_json)
         .map_err(|_| NativeError::InvalidInput("XChat native decrypt input is invalid".into()))?;
+    if !valid_conversation_id(&input.conversation_id) {
+        return Err(NativeError::InvalidInput(
+            "XChat native conversation ID is invalid".into(),
+        ));
+    }
     if input.events.is_empty() || input.events.len() > 200 {
         return Err(NativeError::InvalidInput(
             "XChat native decrypt event count is invalid".into(),
@@ -949,7 +1041,7 @@ fn parse_decrypt_input(
             identity_public_key_signature: key.identity_public_key_signature,
         })
         .collect();
-    Ok((input.events, signing_keys))
+    Ok((input.conversation_id, input.events, signing_keys))
 }
 
 fn parse_encrypt_text_input(
@@ -962,14 +1054,7 @@ fn parse_encrypt_text_input(
     }
     let input: EncryptTextInput = serde_json::from_str(input_json)
         .map_err(|_| NativeError::InvalidInput("XChat native message input is invalid".into()))?;
-    if input.conversation_id.is_empty()
-        || input.conversation_id.len() > 256
-        || input.conversation_id.contains(',')
-        || !input
-            .conversation_id
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic())
-    {
+    if !valid_conversation_id(&input.conversation_id) {
         return Err(NativeError::InvalidInput(
             "XChat native conversation ID is invalid".into(),
         ));
@@ -1017,9 +1102,14 @@ struct VerifiedMessage {
 #[derive(Serialize)]
 struct VerifiedAttachment {
     kind: &'static str,
+    media_hash_key: Option<String>,
     url: Option<String>,
     preview_url: Option<String>,
     name: Option<String>,
+    attachment_id: Option<String>,
+    filesize_bytes: Option<i64>,
+    width: Option<i64>,
+    height: Option<i64>,
 }
 
 fn media_kind(value: Option<&str>) -> &'static str {
@@ -1036,35 +1126,67 @@ fn media_kind(value: Option<&str>) -> &'static str {
 
 fn verified_attachment(attachment: AttachmentInfo) -> VerifiedAttachment {
     match attachment {
-        AttachmentInfo::Media(media) => VerifiedAttachment {
-            kind: media_kind(media.media_type.as_deref()),
-            url: media.legacy_media_url_https,
-            preview_url: media.legacy_media_preview_url,
-            name: media.filename,
-        },
+        AttachmentInfo::Media(media) => {
+            let (width, height) = media.dimensions.map_or((None, None), |dimensions| {
+                (dimensions.width, dimensions.height)
+            });
+            VerifiedAttachment {
+                kind: media_kind(media.media_type.as_deref()),
+                media_hash_key: media.media_hash_key,
+                url: media.legacy_media_url_https,
+                preview_url: media.legacy_media_preview_url,
+                name: media.filename,
+                attachment_id: media.attachment_id,
+                filesize_bytes: media.filesize_bytes,
+                width,
+                height,
+            }
+        }
         AttachmentInfo::Url(url) => VerifiedAttachment {
             kind: "url",
+            media_hash_key: url
+                .banner_image_media_hash_key
+                .or(url.favicon_image_media_hash_key),
             url: url.url,
             preview_url: None,
             name: url.display_title,
+            attachment_id: url.attachment_id,
+            filesize_bytes: None,
+            width: None,
+            height: None,
         },
         AttachmentInfo::Post(post) => VerifiedAttachment {
             kind: "post",
+            media_hash_key: None,
             url: post.post_url,
             preview_url: None,
             name: None,
+            attachment_id: post.attachment_id,
+            filesize_bytes: None,
+            width: None,
+            height: None,
         },
         AttachmentInfo::UnifiedCard(card) => VerifiedAttachment {
             kind: "unified-card",
+            media_hash_key: None,
             url: card.url,
             preview_url: None,
             name: None,
+            attachment_id: card.attachment_id,
+            filesize_bytes: None,
+            width: None,
+            height: None,
         },
         AttachmentInfo::Money(money) => VerifiedAttachment {
             kind: "money",
+            media_hash_key: None,
             url: None,
             preview_url: None,
             name: money.fallback_text,
+            attachment_id: None,
+            filesize_bytes: None,
+            width: None,
+            height: None,
         },
     }
 }
@@ -1138,7 +1260,7 @@ fn decrypt_events(
     core: &ChatCore,
     events: &[String],
     signing_keys: &[chat_xdk_core::SigningKeyEntry],
-) -> std::result::Result<DecryptOutput, NativeError> {
+) -> std::result::Result<(DecryptOutput, HashMap<String, XChatConversationKey>), NativeError> {
     if events.len() > 200 {
         return Err(NativeError::InvalidInput(
             "XChat native decrypt accepts at most 200 events".into(),
@@ -1175,7 +1297,10 @@ fn decrypt_events(
         })
         .collect();
     let errors = result.errors.into_iter().collect();
-    Ok(DecryptOutput { messages, errors })
+    Ok((
+        DecryptOutput { messages, errors },
+        result.conversation_keys.keys,
+    ))
 }
 
 #[emacs::module(
@@ -1231,6 +1356,22 @@ fn encrypt_text(env: &Env, session: &NativeSession, input_json: String) -> Resul
     session
         .encrypt_text(input_json)
         .or_signal(env, "chirp-xchat-native-error")
+}
+
+/// Decrypt one downloaded XChat media blob inside SESSION.
+#[defun]
+fn decrypt_media<'e>(
+    env: &'e Env,
+    session: &NativeSession,
+    conversation_id: String,
+    key_version: String,
+    encrypted_base64: String,
+) -> Result<Value<'e>> {
+    let plaintext = session
+        .decrypt_media(&conversation_id, &key_version, &encrypted_base64)
+        .or_signal(env, "chirp-xchat-native-error")?;
+    let encoded = Zeroizing::new(BASE64.encode(plaintext.as_slice()));
+    encoded.as_str().into_lisp(env)
 }
 
 /// Destroy SESSION's native crypto state and return whether it was live.
@@ -1457,7 +1598,7 @@ fn run_official_vector(session: &NativeSession) -> std::result::Result<String, N
             identity_public_key_signature: vector.identity_public_key_signature_b64,
         }];
         let events = vec![vector.event_key_change_b64, vector.event_message_b64];
-        let output = decrypt_events(core, &events, &signing_keys)?;
+        let (output, _) = decrypt_events(core, &events, &signing_keys)?;
         if output.messages.len() != 1
             || output.messages[0].text.as_deref() != Some(&vector.event_message_text)
         {
@@ -1726,6 +1867,10 @@ mod tests {
         assert_eq!(output.attachments.len(), 1);
         assert_eq!(output.attachments[0].kind, "image");
         assert_eq!(
+            output.attachments[0].media_hash_key.as_deref(),
+            Some("media-hash")
+        );
+        assert_eq!(
             output.attachments[0].url.as_deref(),
             Some("https://pbs.twimg.com/photo.jpg")
         );
@@ -1733,6 +1878,64 @@ mod tests {
         assert!(!invalid.reply);
         assert_eq!(invalid.reply_text, None);
         assert_eq!(invalid.reply_attachment_count, 0);
+    }
+
+    #[test]
+    fn media_decryption_uses_the_cached_verified_key_version() {
+        let mut vector = parse_official_vector().expect("official vector parses");
+        let user_id = official_recipient_user_id(&vector).expect("recipient is valid");
+        let private_keys = take_private_keys(&mut vector).expect("private keys decode");
+        let conversation_id = vector.event_conversation_id.clone();
+        let session = NativeSession::new();
+        session
+            .with_core(|core| {
+                core.import_keys_with_version(&private_keys, &vector.event_recipient_key_version)
+                    .map_err(|error| NativeError::Xdk(error.to_string()))
+            })
+            .expect("official identity imports");
+        session.lock_state().user_id = Some(user_id);
+        let output = session
+            .decrypt(
+                serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "events": [
+                        vector.event_key_change_b64,
+                        vector.event_message_b64,
+                    ],
+                    "signing_keys": [{
+                        "user_id": vector.event_sender_id,
+                        "public_key_version": vector.event_signing_key_version,
+                        "public_key": vector.signing_public_b64,
+                        "identity_public_key": vector.identity_public_b64,
+                        "identity_public_key_signature":
+                            vector.identity_public_key_signature_b64,
+                    }],
+                })
+                .to_string(),
+            )
+            .expect("official event batch decrypts");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("decrypt output is JSON");
+        let key_version = parsed["messages"][0]["key_version"]
+            .as_str()
+            .expect("message key version")
+            .to_string();
+        let plaintext = b"GIF89a encrypted attachment";
+        let encrypted = {
+            let state = session.lock_state();
+            let core = state.core.as_ref().expect("session is live");
+            let key = state
+                .conversation_keys
+                .get(&conversation_id)
+                .and_then(|keys| keys.get(&key_version))
+                .expect("verified key is retained");
+            core.encrypt_stream(plaintext, key)
+                .expect("fixture media encrypts")
+        };
+        let decrypted = session
+            .decrypt_media(&conversation_id, &key_version, &BASE64.encode(encrypted))
+            .expect("media decrypts");
+        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]
@@ -1789,6 +1992,7 @@ mod tests {
         let vector = parse_official_vector().expect("official vector parses");
         let input = |user_id: &str, public_key_version: &str| {
             serde_json::json!({
+                "conversation_id": &vector.event_conversation_id,
                 "events": [&vector.event_message_b64],
                 "signing_keys": [{
                     "user_id": user_id,
@@ -2131,7 +2335,7 @@ mod tests {
                     vector.event_key_change_b64.clone(),
                     vector.event_message_b64.clone(),
                 ];
-                let output = decrypt_events(core, &events, &[remote_key])?;
+                let (output, _) = decrypt_events(core, &events, &[remote_key])?;
                 if output.messages.len() != 1 {
                     return Err(NativeError::Xdk(
                         "official key event did not seed the conversation".into(),
@@ -2164,7 +2368,7 @@ mod tests {
             identity_public_key: vector.identity_public_b64.clone(),
             identity_public_key_signature: vector.identity_public_key_signature_b64.clone(),
         };
-        let verified = session
+        let (verified, _) = session
             .with_core(|core| decrypt_events(core, &[framed], &[sender_key]))
             .expect("prepared event decrypts");
         assert_eq!(verified.messages.len(), 1);
@@ -2189,7 +2393,7 @@ mod tests {
             identity_public_key: vector.identity_public_b64,
             identity_public_key_signature: vector.identity_public_key_signature_b64,
         };
-        let rejected = session
+        let (rejected, _) = session
             .with_core(|core| decrypt_events(core, &[forged], &[forged_key]))
             .expect("forged event is processed safely");
         assert!(rejected.messages.is_empty());

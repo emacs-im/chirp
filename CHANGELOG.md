@@ -53,6 +53,7 @@ history remains available in Git.
 ### Fixed
 
 - Browser-session login now tracks the returned request handle, rejects concurrent captures, and cancels an active capture when `chirp-forget-browser-session` runs.
+- XChat media attachments now retain their verified `media_hash_key`, download ciphertext from X's cookie-authenticated TON media service, exclude url.el's header terminator from binary bodies, decrypt with the message's exact conversation-key version inside the native module, and render images and GIFs through Appkit semantic provider objects. Files open from Chirp's media cache, attached posts render as actionable Chirp tweet cards, and failed resources settle instead of remaining pending or retrying on redraw.
 
 - X post permalinks opened through `chirp-open-url` now keep the linked post as the discussion focus, matching RET from a rendered post and keeping ancestor rows in the same order.
 

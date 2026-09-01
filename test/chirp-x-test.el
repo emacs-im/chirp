@@ -24,8 +24,8 @@
   (let ((buffer (generate-new-buffer " *chirp-x-test-response*")))
     (with-current-buffer buffer
       (setq-local url-http-response-status status)
+      (insert "\n" payload)
       (setq-local url-http-end-of-headers (copy-marker (point-min)))
-      (insert payload)
       (funcall callback nil))
     buffer))
 
@@ -561,6 +561,61 @@
                    (concat "https://api.x.com/1.1/followers/list.json?"
                            "user_id=42&count=20")))
     (should (assoc-string "users" received t))))
+
+(ert-deftest chirp-x-chat-media-get-uses-cookie-authenticated-ton-route ()
+  "XChat media GETs should preserve bytes without sending the web bearer."
+  (let ((ciphertext (unibyte-string 0 1 127 128 255))
+        captured-url captured-headers captured-keepalives received)
+    (cl-letf (((symbol-function 'chirp-x-credentials)
+               (lambda ()
+                 '(:auth-token "auth" :ct0 "csrf" :bearer-token "bearer")))
+              ((symbol-function 'chirp-x--retrieve)
+               (lambda (url callback _callback-args _silent _inhibit-cookies)
+                 (setq captured-url url
+                       captured-headers url-request-extra-headers
+                       captured-keepalives url-http-attempt-keepalives)
+                 (chirp-x-test--response 200 ciphertext callback))))
+      (chirp-x-chat-media-request
+       "1:2" "hash_key" (lambda (body) (setq received body))))
+    (should
+     (equal captured-url
+            "https://ton.x.com/i/ton/data/xchat_media/1:2/hash_key"))
+    (should-not
+     (alist-get "Authorization" captured-headers nil nil #'string=))
+    (should (equal (alist-get "Cookie" captured-headers nil nil #'string=)
+                   "auth_token=auth; ct0=csrf"))
+    (should-not captured-keepalives)
+    (should-not (multibyte-string-p received))
+    (should (equal received ciphertext))))
+
+(ert-deftest chirp-x-chat-media-timeout-settles-the-request ()
+  "A stalled XChat media GET should terminate and report its timeout."
+  (let ((chirp--app nil)
+        (request-buffer (generate-new-buffer " *chirp-xchat-timeout*"))
+        scheduled-function scheduled-arguments failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'chirp-x-credentials)
+                   (lambda ()
+                     '(:auth-token "auth" :ct0 "csrf"
+                       :bearer-token "bearer")))
+                  ((symbol-function 'chirp-x--retrieve)
+                   (lambda (&rest _arguments) request-buffer))
+                  ((symbol-function 'run-at-time)
+                   (lambda (delay _repeat function &rest arguments)
+                     (should (= delay 30))
+                     (setq scheduled-function function
+                           scheduled-arguments arguments)
+                     'test-timer)))
+          (chirp-x-chat-media-request
+           "1:2" "hash_key" #'ignore
+           :errback (lambda (message) (setq failure message)))
+          (should (buffer-live-p request-buffer))
+          (apply scheduled-function scheduled-arguments)
+          (should-not (buffer-live-p request-buffer))
+          (should (equal failure "XChat media request timed out")))
+      (chirp-stop)
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))))
 
 (ert-deftest chirp-x-api-post-sends-form-data ()
   "REST POST requests should encode form data without using JSON headers."

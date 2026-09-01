@@ -813,6 +813,25 @@ Precede each card with PREFIX using PREFIX-FACE when provided."
 (defvar chirp-render--quoted-tweet-depth 0
   "Dynamic nesting depth while rendering quoted tweets.")
 
+(cl-defun chirp-render-insert-tweet-card
+    (tweet &key prefix write-actions-p)
+  "Insert normalized TWEET as an actionable nested card.
+
+PREFIX supplies outer indentation.  WRITE-ACTIONS-P controls mutation actions.
+The card opens TWEET's Chirp thread while retaining its nested link actions."
+  (chirp-render--with-card
+   prefix
+   (lambda (card-prefix)
+     (let ((body-start (point)))
+       (chirp-render--insert-tweet
+        tweet :show-reply-context t :write-actions-p write-actions-p)
+       (appkit-ui-apply-line-prefix body-start (point) card-prefix)))
+   :action (lambda () (chirp-thread-open-tweet tweet))
+   :help-echo "Open tweet"
+   :properties
+   `(chirp-subentry-item ,tweet
+                         chirp-subentry-url ,(plist-get tweet :url))))
+
 (defun chirp-render--insert-quoted-tweet
     (tweet &optional prefix prefix-face write-actions-p)
   "Insert a normal tweet presentation inside TWEET's card.
@@ -826,22 +845,8 @@ controls mutation actions.  Nested quoted tweets are omitted after one level."
               (span
                (let ((chirp-render--quoted-tweet-depth
                       (1+ chirp-render--quoted-tweet-depth)))
-                 (chirp-render--with-card
-                  prefix
-                  (lambda (card-prefix)
-                    (let ((body-start (point)))
-                      (chirp-render--insert-tweet
-                       quoted :show-reply-context t
-                       :write-actions-p write-actions-p)
-                      (appkit-ui-apply-line-prefix
-                       body-start (point) card-prefix)))
-                  :action (lambda ()
-                            (chirp-thread-open-tweet quoted))
-                  :help-echo "Open quoted tweet"
-                  :properties
-                  `(chirp-subentry-item ,quoted
-                                        chirp-subentry-url
-                                        ,(plist-get quoted :url))))))
+                 (chirp-render-insert-tweet-card
+                  quoted :prefix prefix :write-actions-p write-actions-p))))
     (put-text-property (car span) (1+ (car span))
                        'chirp-entry-start nil)))
 
