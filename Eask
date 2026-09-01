@@ -17,6 +17,7 @@
 (depends-on "browser-session" :file "../browser-session")
 (depends-on "plz" "0.8")
 (depends-on "transient" "0.4.3")
+(depends-on "websocket" "1.16")
 
 (development
  (depends-on "evil"))

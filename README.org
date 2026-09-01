@@ -14,7 +14,7 @@ for explicit browser login capture.
 
 * Install
 
-GNU Emacs 31.1, Appkit 0.3.0, Plz 0.8 with ~curl~, Transient 0.4.3, and browser-session 0.1.0 with its helper.
+GNU Emacs 31.1, Appkit 0.3.0, Plz 0.8 with ~curl~, Transient 0.4.3, websocket 1.16, and browser-session 0.1.0 with its helper.
 
 #+begin_src emacs-lisp
 (add-to-list 'load-path "~/chirp")

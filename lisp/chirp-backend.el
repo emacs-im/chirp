@@ -212,6 +212,9 @@ When zero or negative, the in-memory read cache is disabled."
     (dm-send
      :query-id "TWRPP7gnKwV_R8-tE-Dd3Q"
      :name "SendMessageCreateMutation" :method post)
+    (dm-live-token
+     :query-id "Qh3fZRjPPtPoHYR_2sCZsA"
+     :name "GenerateXChatTokenMutation" :method post)
     (list
      :query-id "RlZzktZY_9wJynoepm8ZsA" :name "ListLatestTweetsTimeline"
      :field-toggles ,chirp-backend--tweet-field-toggles
@@ -1334,6 +1337,34 @@ ERRBACK handles failures, and OWNER owns the transport lifecycle."
              (funcall callback keys nil))))
        :errback error-fn
        :owner owner))))
+
+
+(cl-defun chirp-backend-dm-live-token
+    (callback &key errback owner)
+  "Fetch one short-lived XChat websocket token and call CALLBACK.
+
+ERRBACK handles transport or strict normalization failures, and OWNER owns the
+GraphQL request lifecycle.  The token must not be persisted or logged."
+  (let ((error-fn (or errback (lambda (message) (message "%s" message)))))
+    (chirp-x-graphql-request
+     (chirp-backend--operation 'dm-live-token) nil
+     (lambda (payload)
+       (let (token normalization-error)
+         (condition-case err
+             (setq token (chirp-xchat-live-token payload))
+           (error
+            (setq normalization-error (error-message-string err))))
+         (if normalization-error
+             (funcall error-fn normalization-error)
+           (funcall callback token nil))))
+     :errback error-fn
+     :owner owner)))
+
+(defun chirp-backend-dm-live-frame (opcode payload)
+  "Adapt one XChat websocket frame OPCODE and binary PAYLOAD."
+  (unless (eq opcode 'binary)
+    (error "XChat live websocket returned a non-binary frame"))
+  (chirp-xchat-decode-live-frame payload))
 
 (cl-defun chirp-backend-dm-media
     (conversation-id media-hash callback &key errback owner)

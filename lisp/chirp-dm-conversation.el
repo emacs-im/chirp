@@ -292,7 +292,12 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
               (chirp-dm-state-publish
                (chirp-dm-conversation--conversation state)))
             (message "Decrypted %d verified XChat message%s"
-                     updated (if (= updated 1) "" "s"))))
+                     updated (if (= updated 1) "" "s")))
+          (let ((remaining
+                 (plist-get
+                  (chirp-dm-conversation--decrypt-input state) :events)))
+            (when (cl-set-difference remaining encoded :test #'equal)
+              (chirp-dm-conversation--decrypt-view view t))))
       (error
        (chirp-dm-conversation--settle-decrypt-error
         view state generation (error-message-string err))))))
@@ -354,6 +359,31 @@ view has no conversation-key event."
         (when (and (null request) (not callback-ran-p))
           (chirp-dm-conversation--settle-decrypt-error
            view state generation "XChat signing-key request did not start")))))))
+
+(defun chirp-dm-conversation-accept-live-event (view conversation)
+  "Process a canonical live update for CONVERSATION through matching VIEW.
+
+Return non-nil when VIEW represents CONVERSATION.  At most one decryption
+request remains active; a later live event is picked up after it settles."
+  (when (appkit-view-live-p view)
+    (let ((state (appkit-view-state view)))
+      (when (and (eq (plist-get state :type) 'dm-conversation)
+                 (eq (plist-get state :conversation) conversation))
+        (when (and (chirp-dm-conversation--decryption-needed-p state)
+                   (null (plist-get state :decrypt-generation)))
+          (chirp-dm-conversation--decrypt-view view t))
+        t))))
+
+(defun chirp-dm-conversation-refresh-live-view (view)
+  "Start a fallback live refresh for conversation VIEW when it is idle.
+
+Return non-nil when the refresh was accepted."
+  (when (and (appkit-view-live-p view)
+             (eq (plist-get (appkit-view-state view) :type) 'dm-conversation)
+             (with-current-buffer (appkit-view-buffer view)
+               (not (appkit-chat-history-loading-p))))
+    (chirp-dm-conversation--request view 'refresh)
+    t))
 
 ;;; Conversation
 
