@@ -105,14 +105,22 @@
               (chirp-dm-test--struct)))))
          (event
           (chirp-dm-test--struct
-           (chirp-dm-test--field 11 1
-                                 (chirp-dm-test--text sequence))
-           (chirp-dm-test--field 11 2
-                                 (chirp-dm-test--text message-id))
-           (chirp-dm-test--field 11 3
-                                 (chirp-dm-test--text sender-id))
-           (chirp-dm-test--field 11 4
-                                 (chirp-dm-test--text conversation-id))
+           (if sequence
+               (chirp-dm-test--field 11 1
+                                     (chirp-dm-test--text sequence))
+             "")
+           (if message-id
+               (chirp-dm-test--field 11 2
+                                     (chirp-dm-test--text message-id))
+             "")
+           (if sender-id
+               (chirp-dm-test--field 11 3
+                                     (chirp-dm-test--text sender-id))
+             "")
+           (if conversation-id
+               (chirp-dm-test--field 11 4
+                                     (chirp-dm-test--text conversation-id))
+             "")
            (chirp-dm-test--field 11 6
                                  (chirp-dm-test--text "1700000000000"))
            (chirp-dm-test--field 12 7 detail)

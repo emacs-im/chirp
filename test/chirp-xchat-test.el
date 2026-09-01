@@ -655,6 +655,21 @@
          'instruction))
     (should-error (chirp-xchat-decode-live-frame "multibyte-λ"))))
 
+(ert-deftest chirp-xchat-live-frame-ignores-transient-typing-activity ()
+  "Identity-free typing frames should not enter persistent conversation state."
+  (let* ((encoded
+          (chirp-dm-test--event
+           :sender-id "42" :conversation-id "conversation-1"
+           :detail-field 6))
+         (frame
+          (concat (unibyte-string 12 0 1)
+                  (base64-decode-string encoded)
+                  (unibyte-string 0))))
+    (should-error (chirp-xchat-decode-event encoded))
+    (should
+     (eq (plist-get (chirp-xchat-decode-live-frame frame) :kind)
+         'transient))))
+
 (ert-deftest chirp-backend-xchat-live-token-uses-fixed-write-operation ()
   "Live token acquisition should use the fixed mutation and strict adapter."
   (let (operation variables owner token)

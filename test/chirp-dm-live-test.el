@@ -90,6 +90,69 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-dm-live-decrypts-only-new-encrypted-events ()
+  "A live decrypt should not submit already verified ciphertext again."
+  (let ((chirp--app nil)
+        buffer decrypted-inputs)
+    (unwind-protect
+        (let* ((old
+                (chirp-dm-test--normalized-event
+                 "20" "20" "old verified"))
+               (_old-state
+                (setf (plist-get old :encoded-event) "encoded-old"
+                      (plist-get old :decrypted-p) t))
+               (conversation
+                (chirp-dm-test--normalized-conversation old))
+               (live
+                (chirp-dm-test--normalized-event
+                 "31" "31" "[Encrypted message unavailable]"))
+               (_live-state
+                (setf (plist-get live :message-id) "message-31"
+                      (plist-get live :encoded-event) "encoded-new"
+                      (plist-get live :encrypted-p) t)))
+          (setf (plist-get conversation :has-more) nil
+                (plist-get conversation :older-cursor) nil)
+          (cl-letf
+              (((symbol-function 'chirp-backend-dm-signing-keys)
+                (lambda (_user-ids callback &rest _options)
+                  (funcall callback [] nil)
+                  nil))
+               ((symbol-function 'chirp-xchat-native-decrypt-events)
+                (lambda (conversation-id events _signing-keys)
+                  (should (equal conversation-id "conversation-1"))
+                  (push events decrypted-inputs)
+                  '((:sequence-id "31"
+                     :message-id "message-31"
+                     :conversation-id "conversation-1"
+                     :content-kind text
+                     :text "new verified"
+                     :attachments nil
+                     :reply-p nil
+                     :reply-text nil
+                     :reply-attachment-count 0)))))
+            (setq buffer (chirp-dm-conversation-open conversation))
+            (let ((service
+                   (chirp-dm-live--service-create
+                    :app (chirp-app)
+                    :pending-conversations
+                    (make-hash-table :test #'equal))))
+              (chirp-dm-live--accept-event service live))
+            (should (equal decrypted-inputs '(("encoded-new"))))
+            (should
+             (equal
+              (mapcar
+               (lambda (event) (plist-get event :text))
+               (plist-get
+                (plist-get
+                 (appkit-view-state
+                  (with-current-buffer buffer (appkit-current-view)))
+                 :conversation)
+                :events))
+              '("old verified" "new verified")))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-dm-live-event-promotes-its-canonical-inbox-row ()
   "A live event should move its existing canonical conversation to recent."
   (let ((chirp--app nil)

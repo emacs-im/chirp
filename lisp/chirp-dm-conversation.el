@@ -145,21 +145,39 @@
 
 ;;; Decryption and Recovery
 
+(defun chirp-dm-conversation--native-key-epoch ()
+  "Return the current native session epoch used for key ingestion."
+  (or (chirp--session-xchat-native-epoch (chirp--session))
+      'test-native-session))
+
+(defun chirp-dm-conversation--pending-key-event-p (event epoch)
+  "Return non-nil when key EVENT has not been ingested for EPOCH."
+  (not (eql (plist-get event :native-key-epoch) epoch)))
+
 (defun chirp-dm-conversation--decrypt-input (state)
   "Return encoded events and signing-key user IDs from conversation STATE."
   (let* ((conversation (chirp-dm-conversation--conversation state))
          (events (plist-get conversation :events))
          (recovery-events (plist-get state :recovery-key-events))
+         (epoch (chirp-dm-conversation--native-key-epoch))
          (encoded
           (delete-dups
            (delq nil
                  (append
-                  (mapcar (lambda (event)
-                            (plist-get event :encoded-event))
-                          recovery-events)
-                  (mapcar (lambda (event)
-                            (plist-get event :encoded-event))
-                          events)))))
+                  (cl-loop
+                   for event in recovery-events
+                   when
+                   (chirp-dm-conversation--pending-key-event-p event epoch)
+                   collect (plist-get event :encoded-event))
+                  (cl-loop
+                   for event in events
+                   when (or (plist-get event :encrypted-p)
+                            (and
+                             (eq (plist-get event :kind)
+                                 'conversation-key-change)
+                             (chirp-dm-conversation--pending-key-event-p
+                              event epoch)))
+                   collect (plist-get event :encoded-event))))))
          (user-ids
           (delete-dups
            (delq nil
@@ -179,9 +197,20 @@
            user-ids))))
 
 (defun chirp-dm-conversation--decryption-needed-p (state)
-  "Return non-nil when conversation STATE has encrypted messages."
-  (cl-some (lambda (event) (plist-get event :encrypted-p))
-           (chirp-dm-conversation--events state)))
+  "Return non-nil when conversation STATE has pending ciphertext or keys."
+  (let ((epoch (chirp-dm-conversation--native-key-epoch)))
+    (or
+     (cl-some
+      (lambda (event)
+        (or (plist-get event :encrypted-p)
+            (and
+             (eq (plist-get event :kind) 'conversation-key-change)
+             (chirp-dm-conversation--pending-key-event-p event epoch))))
+      (chirp-dm-conversation--events state))
+     (cl-some
+      (lambda (event)
+        (chirp-dm-conversation--pending-key-event-p event epoch))
+      (plist-get state :recovery-key-events)))))
 
 (defun chirp-dm-conversation--decode-plain-text (text)
   "Decode plain TEXT into an immutable Appkit semantic document."
@@ -263,6 +292,28 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
       (plist-get conversation :events)))
     updated))
 
+(defun chirp-dm-conversation--mark-key-events-processed
+    (state encoded epoch)
+  "Mark key events from STATE present in ENCODED as ingested for EPOCH."
+  (setf
+   (plist-get state :recovery-key-events)
+   (mapcar
+    (lambda (event)
+      (if (member (plist-get event :encoded-event) encoded)
+          (plist-put event :native-key-epoch epoch)
+        event))
+    (plist-get state :recovery-key-events)))
+  (let ((conversation (chirp-dm-conversation--conversation state)))
+    (chirp-dm-state-set-events
+     conversation
+     (mapcar
+      (lambda (event)
+        (if (and (eq (plist-get event :kind) 'conversation-key-change)
+                 (member (plist-get event :encoded-event) encoded))
+            (plist-put event :native-key-epoch epoch)
+          event))
+      (plist-get conversation :events)))))
+
 (defun chirp-dm-conversation--settle-decrypt-error (view state generation message)
   "Settle decryption GENERATION in VIEW and STATE with error MESSAGE."
   (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
@@ -285,14 +336,16 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
           (setf (plist-get state :decrypt-generation) nil)
           (remhash chirp-dm-conversation--decrypt-request-key
                    (appkit-view-request-table view))
+          (chirp-dm-conversation--mark-key-events-processed
+           state encoded (chirp-dm-conversation--native-key-epoch))
           (let ((updated
                  (chirp-dm-conversation--apply-verified-messages
                   state messages)))
             (when (> updated 0)
               (chirp-dm-state-publish
-               (chirp-dm-conversation--conversation state)))
-            (message "Decrypted %d verified XChat message%s"
-                     updated (if (= updated 1) "" "s")))
+               (chirp-dm-conversation--conversation state))
+              (message "Decrypted %d verified XChat message%s"
+                       updated (if (= updated 1) "" "s"))))
           (let ((remaining
                  (plist-get
                   (chirp-dm-conversation--decrypt-input state) :events)))

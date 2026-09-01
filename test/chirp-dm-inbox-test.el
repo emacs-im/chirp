@@ -188,7 +188,8 @@
                        (setq callbacks (append callbacks (list callback))
                              options (append options (list request-options)))
                        (list 'request (length callbacks)))))
-            (setf (chirp--session-xchat-user-id (chirp--session)) "42")
+            (setf (chirp--session-xchat-user (chirp--session)) '(:id "42")
+                  (chirp--session-xchat-user-id (chirp--session)) "42")
             (setq buffer (chirp-direct-messages))
             (let* ((view (with-current-buffer buffer (appkit-current-view)))
                    (first

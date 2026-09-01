@@ -155,6 +155,7 @@ commands still work, and displays alt text when the backend provides it."
   xchat-native-session
   xchat-native-epoch
   xchat-recovery
+  xchat-user
   xchat-user-id)
 
 (defun chirp--shutdown-app (app)
