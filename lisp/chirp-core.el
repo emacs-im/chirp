@@ -1023,11 +1023,6 @@ current line metrics."
                (t
                 (throw 'missing nil))))))))
 
-(defun chirp-coalesce (&rest values)
-  "Return the first non-nil element in VALUES."
-  (cl-loop for value in values
-           when value
-           return value))
 
 (defun chirp-boolean-value (value)
   "Normalize VALUE into a Lisp boolean."
@@ -1909,9 +1904,9 @@ Return non-nil when BUFFER currently projects a primary feed."
   (let* ((tweet (chirp--tweet-result object))
          (legacy (chirp-get tweet "legacy"))
          (control (or (chirp-get legacy "conversation_control"
-                                   "conversationControl")
+                                 "conversationControl")
                       (chirp-get tweet "conversation_control"
-                                "conversationControl")))
+                                 "conversationControl")))
          (mode (and (chirp-object-p control)
                     (chirp-first-nonblank
                      (chirp-get control "mode" "type")))))
@@ -1920,7 +1915,7 @@ Return non-nil when BUFFER currently projects a primary feed."
 (defun chirp--tweet-reply-limited-p (object)
   "Return non-nil when OBJECT explicitly limits the viewer's reply action."
   (let ((actions (or (chirp-get-in object
-                                  '("limitedActionResults" "limited_actions"))
+                                   '("limitedActionResults" "limited_actions"))
                      (chirp-get-in object
                                    '("limited_action_results" "limited_actions")))))
     (or (and (listp actions)
@@ -1980,16 +1975,15 @@ Return non-nil when BUFFER currently projects a primary feed."
                 (chirp-get-in tweet '("note_tweet" "note_tweet_results"
                                       "result" "text"))
                 (chirp-get-in tweet '("note_tweet" "text"))))
-         (stats (chirp-coalesce
-                 (chirp-get tweet "favorite_count" "retweet_count"
-                            "reply_count" "quote_count" "bookmark_count"
-                            "view_count")
-                 (and metrics
-                      (chirp-get metrics "likes" "retweets" "replies"
-                                 "quotes" "bookmarks" "views"))
-                 (and legacy
-                      (chirp-get legacy "favorite_count" "retweet_count"
-                                 "reply_count" "quote_count")))))
+         (stats (or (chirp-get tweet "favorite_count" "retweet_count"
+                               "reply_count" "quote_count" "bookmark_count"
+                               "view_count")
+                    (and metrics
+                         (chirp-get metrics "likes" "retweets" "replies"
+                                    "quotes" "bookmarks" "views"))
+                    (and legacy
+                         (chirp-get legacy "favorite_count" "retweet_count"
+                                    "reply_count" "quote_count")))))
     (and (chirp-object-p tweet)
          id
          (or text stats (chirp-get tweet "conversationId" "conversation_id"))
@@ -2056,23 +2050,20 @@ Return non-nil when BUFFER currently projects a primary feed."
                 (chirp-get user "bio")
                 (chirp-get-in user '("profile_bio" "description"))
                 (chirp-get legacy "description"))))
-         (followers (chirp-coalesce
-                     (chirp-get user "followers_count")
-                     (chirp-get user "followers")
-                     (chirp-get-in user '("relationship_counts" "followers"))
-                     (chirp-get legacy "followers_count")))
-         (following (chirp-coalesce
-                     (chirp-get user "friends_count")
-                     (chirp-get user "following_count")
-                     (chirp-get user "following")
-                     (chirp-get-in user '("relationship_counts" "following"))
-                     (chirp-get legacy "friends_count")))
-         (posts (chirp-coalesce
-                 (chirp-get user "statuses_count")
-                 (chirp-get user "tweets_count")
-                 (chirp-get user "tweets")
-                 (chirp-get-in user '("tweet_counts" "tweets"))
-                 (chirp-get legacy "statuses_count")))
+         (followers (or (chirp-get user "followers_count")
+                        (chirp-get user "followers")
+                        (chirp-get-in user '("relationship_counts" "followers"))
+                        (chirp-get legacy "followers_count")))
+         (following (or (chirp-get user "friends_count")
+                        (chirp-get user "following_count")
+                        (chirp-get user "following")
+                        (chirp-get-in user '("relationship_counts" "following"))
+                        (chirp-get legacy "friends_count")))
+         (posts (or (chirp-get user "statuses_count")
+                    (chirp-get user "tweets_count")
+                    (chirp-get user "tweets")
+                    (chirp-get-in user '("tweet_counts" "tweets"))
+                    (chirp-get legacy "statuses_count")))
          (joined (chirp-first-nonblank
                   (chirp-get user "createdAtLocal")
                   (chirp-get user "createdAtISO")
@@ -2087,21 +2078,17 @@ Return non-nil when BUFFER currently projects a primary feed."
                       (chirp-get-in user '("avatar" "image_url"))
                       (chirp-get legacy "profile_image_url_https" "profile_image_url")))
          (viewer-following-p (chirp-boolean-value
-                              (chirp-coalesce
-                               (chirp-get user "viewerFollowing" "viewer_following")
-                               (chirp-get-in user '("relationship_perspectives" "following")))))
+                              (or (chirp-get user "viewerFollowing" "viewer_following")
+                                  (chirp-get-in user '("relationship_perspectives" "following")))))
          (viewer-followed-by-p (chirp-boolean-value
-                                (chirp-coalesce
-                                 (chirp-get user "viewerFollowedBy" "viewer_followed_by")
-                                 (chirp-get-in user '("relationship_perspectives" "followed_by")))))
+                                (or (chirp-get user "viewerFollowedBy" "viewer_followed_by")
+                                    (chirp-get-in user '("relationship_perspectives" "followed_by")))))
          (viewer-blocking-p (chirp-boolean-value
-                             (chirp-coalesce
-                              (chirp-get user "viewerBlocking" "viewer_blocking")
-                              (chirp-get-in user '("relationship_perspectives" "blocking")))))
+                             (or (chirp-get user "viewerBlocking" "viewer_blocking")
+                                 (chirp-get-in user '("relationship_perspectives" "blocking")))))
          (viewer-muting-p (chirp-boolean-value
-                           (chirp-coalesce
-                            (chirp-get user "viewerMuting" "viewer_muting")
-                            (chirp-get-in user '("relationship_perspectives" "muting"))))))
+                           (or (chirp-get user "viewerMuting" "viewer_muting")
+                               (chirp-get-in user '("relationship_perspectives" "muting"))))))
     (when (or handle id name)
       (list :kind 'user
             :id id
@@ -2297,17 +2284,14 @@ over the card's `t.co` permalink."
                       (chirp-get-in object '("thumbnail" "url"))
                       (chirp-get-in object '("poster" "url"))))
         (variants (chirp-normalize-media-variants
-                   (chirp-coalesce
-                    (chirp-get object "variants")
-                    (chirp-get-in object '("video_info" "variants")))))
-        (width (chirp-coalesce
-                (chirp-get object "width")
-                (chirp-get-in object '("original_info" "width"))
-                (chirp-get-in object '("sizes" "large" "w"))))
-        (height (chirp-coalesce
-                 (chirp-get object "height")
-                 (chirp-get-in object '("original_info" "height"))
-                 (chirp-get-in object '("sizes" "large" "h"))))
+                   (or (chirp-get object "variants")
+                       (chirp-get-in object '("video_info" "variants")))))
+        (width (or (chirp-get object "width")
+                   (chirp-get-in object '("original_info" "width"))
+                   (chirp-get-in object '("sizes" "large" "w"))))
+        (height (or (chirp-get object "height")
+                    (chirp-get-in object '("original_info" "height"))
+                    (chirp-get-in object '("sizes" "large" "h"))))
         (alt (chirp-first-nonblank
               (chirp-get object "altText" "alt_text" "ext_alt_text" "description"))))
     (when (and type url)
@@ -2642,28 +2626,24 @@ over the card's `t.co` permalink."
            (plist-get retweeter :name)
            retweeted-by))
          (retweeted-p (chirp-boolean-value
-                       (chirp-coalesce
-                        (chirp-get object "retweeted" "isRetweeted")
-                        (chirp-get-in object '("viewer" "retweeted"))
-                        (chirp-get legacy "retweeted")
-                        (chirp-get wrapper-legacy "retweeted"))))
+                       (or (chirp-get object "retweeted" "isRetweeted")
+                           (chirp-get-in object '("viewer" "retweeted"))
+                           (chirp-get legacy "retweeted")
+                           (chirp-get wrapper-legacy "retweeted"))))
          (liked-p (chirp-boolean-value
-                   (chirp-coalesce
-                    (chirp-get object "liked" "favorited" "isLiked" "isFavorited")
-                    (chirp-get-in object '("viewer" "liked"))
-                    (chirp-get-in object '("viewer" "favorited"))
-                    (chirp-get legacy "liked" "favorited"))))
+                   (or (chirp-get object "liked" "favorited" "isLiked" "isFavorited")
+                       (chirp-get-in object '("viewer" "liked"))
+                       (chirp-get-in object '("viewer" "favorited"))
+                       (chirp-get legacy "liked" "favorited"))))
          (bookmarked-p (chirp-boolean-value
-                        (chirp-coalesce
-                         (chirp-get object "bookmarked" "isBookmarked")
-                         (chirp-get-in object '("viewer" "bookmarked"))
-                         (chirp-get legacy "bookmarked"))))
+                        (or (chirp-get object "bookmarked" "isBookmarked")
+                            (chirp-get-in object '("viewer" "bookmarked"))
+                            (chirp-get legacy "bookmarked"))))
          (promoted-p (chirp-boolean-value
-                      (chirp-coalesce
-                       (chirp-get wrapper "isPromoted" "is_promoted" "promoted")
-                       (chirp-get object "isPromoted" "is_promoted" "promoted")
-                       (chirp-get-in wrapper '("itemContent" "promotedMetadata"))
-                       (chirp-get wrapper "promotedMetadata"))))
+                      (or (chirp-get wrapper "isPromoted" "is_promoted" "promoted")
+                          (chirp-get object "isPromoted" "is_promoted" "promoted")
+                          (chirp-get-in wrapper '("itemContent" "promotedMetadata"))
+                          (chirp-get wrapper "promotedMetadata"))))
          (reply-control-mode
           (chirp--tweet-reply-control-mode object))
          (reply-limited-p
