@@ -1063,7 +1063,12 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
           (when (eq (window-buffer (selected-window))
                     (current-buffer))
             (set-window-hscroll (selected-window) 0))
-          (message "Media %d of %d; RET opens it" (1+ index) count))
+          (message
+           "Media %d of %d; %s"
+           (1+ index) count
+           (if (chirp-media-video-like-p (nth index media-list))
+               "RET/SPC plays it; m toggles audio"
+             "RET opens it")))
       (user-error "Unable to reveal media item %d" (1+ index)))))
 
 (defun chirp-render--media-track-open (state)
@@ -1078,6 +1083,14 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
         (aset state 12 nil))
       (chirp-media-open
        (aref state 2) (aref state 0) (aref state 3)))))
+
+(defun chirp-render--media-track-toggle-muted (state)
+  "Toggle the desired audio mute state for media track STATE."
+  (let ((muted (not (aref state 13))))
+    (aset state 13 muted)
+    (when-let* ((inline (aref state 9)))
+      (video-inline-set-muted inline muted))
+    (message "Video audio %s" (if muted "muted" "unmuted"))))
 
 (defun chirp-render--media-track-hotspot-map
     (position media-list image height gap widths fit)
@@ -1103,6 +1116,7 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
            nil
            image
            nil
+           nil
            nil)))
     (dolist (key '([right] [tab]))
       (define-key
@@ -1116,12 +1130,17 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
        (lambda ()
          (interactive)
          (chirp-render--media-track-select state -1))))
-    (dolist (key (list (kbd "RET") [return]))
+    (dolist (key (list (kbd "RET") [return] (kbd "SPC")))
       (define-key
        map key
        (lambda ()
          (interactive)
          (chirp-render--media-track-open state))))
+    (define-key
+     map (kbd "m")
+     (lambda ()
+       (interactive)
+       (chirp-render--media-track-toggle-muted state)))
     (cl-loop for _media in media-list
              for index from 0
              for id = (intern (format "chirp-media-%d" index))
@@ -1250,7 +1269,7 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                source target-width (aref state 6)
                :poster poster
                :fit (or (aref state 8) 'contain)
-               :muted t
+               :muted (aref state 13)
                :buffer buffer
                :canvas scene
                :canvas-width scene-width
