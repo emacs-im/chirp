@@ -786,7 +786,8 @@
                     ((symbol-function
                       'appkit-media-one-line-preview-image-from-file)
                      (lambda (_path) 'image))
-                    ((symbol-function 'appkit-media-image-display-string)
+                    ((symbol-function
+                      'appkit-media-one-line-image-display-string)
                      (lambda (_image _fallback) "<preview>")))
             (should
              (string-match-p
