@@ -190,11 +190,12 @@ Edited posts show ~Edited · N versions~; activate it or use ~x H~.
 
 * Media
 
-Images render as gapless row-sliced thumbnails.  ~RET~ on a thumbnail
-opens a Chirp media buffer.  Videos open in ~mpv~ when available.
+Images render as gapless row-sliced previews.  Timelines, retweets, quoted posts, and other compact contexts use X Web's center-cropped ~TweetPhotos~ cover grids: 16:9 groups with the stacked three-item, 2×2 four-item, 2+3 five-item, and 3+3 six-item topologies, separated by 2-pixel gutters.  A thread's focused post instead uses a large horizontal media track: every image keeps its complete natural ratio, the items share a preferred height, and Chirp expands the row rather than reproducing Web viewport clipping.  Track items use 8-pixel gutters.  ~RET~ on an image opens a Chirp media buffer.  Videos open in ~mpv~ when available.
 
 #+begin_src emacs-lisp
-(setq chirp-video-player-window-size '(1280 . 720)
+(setq chirp-media-thumbnail-size 256
+      chirp-media-track-height 384
+      chirp-video-player-window-size '(1280 . 720)
       chirp-media-download-directory "~/Downloads/chirp/"
       chirp-media-prefetch-images nil
       chirp-backend-read-cache-ttl 15)

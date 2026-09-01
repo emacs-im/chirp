@@ -53,8 +53,13 @@ Larger values grow the avatar relative to that line."
   :type 'integer
   :group 'chirp)
 
-(defcustom chirp-media-thumbnail-size 128
-  "Maximum pixel size for timeline and thread thumbnails."
+(defcustom chirp-media-thumbnail-size 256
+  "Preferred maximum cell size for timeline media previews."
+  :type 'integer
+  :group 'chirp)
+
+(defcustom chirp-media-track-height 384
+  "Maximum pixel height for natural-ratio media in focused thread tracks."
   :type 'integer
   :group 'chirp)
 
@@ -1455,9 +1460,35 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
      file
      (or max-width chirp-media-thumbnail-size)
      (or max-height chirp-media-thumbnail-size))))
+(defun chirp-media--preview-image-from-file
+    (file crop-spec max-width max-height)
+  "Return a preview for FILE within MAX-WIDTH and MAX-HEIGHT.
 
-(defun chirp-media-thumbnail-image (media)
-  "Return a thumbnail descriptor for MEDIA."
+When CROP-SPEC is non-nil, center-crop to that fixed box instead."
+  (let* ((structuredp (and (listp crop-spec)
+                           (keywordp (car crop-spec))))
+         (width (if structuredp
+                    (plist-get crop-spec :width)
+                  (car-safe crop-spec)))
+         (height (if structuredp
+                     (plist-get crop-spec :height)
+                   (cdr-safe crop-spec)))
+         (insets (and structuredp (plist-get crop-spec :insets))))
+    (or (and (numberp width)
+             (numberp height)
+             (if insets
+                 (appkit-media-cropped-preview-image-from-file
+                  file width height insets)
+               (appkit-media-cropped-preview-image-from-file
+                file width height)))
+        (appkit-media-preview-image-from-file
+         file max-width max-height))))
+
+(defun chirp-media--preview-image
+    (media crop-spec max-width max-height)
+  "Return a MEDIA preview using CROP-SPEC or natural-ratio bounds.
+
+MAX-WIDTH and MAX-HEIGHT bound the uncropped result."
   (cond
    ((string= (plist-get media :type) "photo")
     (when-let* ((file (if chirp-media-render-from-cache-only
@@ -1467,23 +1498,42 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
                         (chirp-media-local-file (plist-get media :url)
                                                 "media"
                                                 "jpg"))))
-      (appkit-media-preview-image-from-file
-       file chirp-media-thumbnail-size chirp-media-thumbnail-size)))
+      (chirp-media--preview-image-from-file
+       file crop-spec max-width max-height)))
    ((chirp-media-video-like-p media)
     (when-let* ((file (if chirp-media-render-from-cache-only
-                          (or (and-let* ((preview-url (plist-get media :preview-url)))
+                          (or (and-let* ((preview-url
+                                         (plist-get media :preview-url)))
                                 (chirp-media-cached-file preview-url
                                                          "video-thumbnails"
                                                          "jpg"))
-                              (let ((thumbnail-file (chirp-media--video-thumbnail-file media)))
+                              (let ((thumbnail-file
+                                     (chirp-media--video-thumbnail-file media)))
                                 (and (file-exists-p thumbnail-file)
                                      thumbnail-file)))
                         (chirp-media-video-thumbnail-file media)))
-                (image (appkit-media-preview-image-from-file
-                        file chirp-media-thumbnail-size
-                        chirp-media-thumbnail-size)))
+                (image
+                 (chirp-media--preview-image-from-file
+                  file crop-spec max-width max-height)))
       (or (appkit-media-video-preview-display-image image 'chirp)
           image)))))
+
+(defun chirp-media-thumbnail-image (media &optional crop-spec)
+  "Return a timeline thumbnail descriptor for MEDIA.
+
+CROP-SPEC may be a pixel width-height pair or a plist containing `:width',
+`:height', and optional `:insets'.  It fills that fixed tile without
+distorting the source aspect ratio."
+  (chirp-media--preview-image
+   media crop-spec
+   chirp-media-thumbnail-size chirp-media-thumbnail-size))
+
+(defun chirp-media-track-image (media)
+  "Return a large natural-ratio track image for focused MEDIA."
+  (chirp-media--preview-image
+   media nil
+   (* 4 chirp-media-track-height)
+   chirp-media-track-height))
 
 (defun chirp-media-view-image (media)
   "Return a large image descriptor for MEDIA."

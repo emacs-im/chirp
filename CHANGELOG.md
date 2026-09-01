@@ -57,6 +57,7 @@ history remains available in Git.
 ### Fixed
 
 - The actions transient now routes timeline entries through Chirp's interactive public commands, so opening the menu no longer fails while validating non-command timeline functions.
+- Media layout planning now lives in `chirp-media-layout.el`. Timelines, retweets, and quoted posts retain X Web's complete one-to-six-item center-cropped `TweetPhotos` cover grids, now using larger 256-pixel cells. A thread's focused post uses a separate 384-pixel-high horizontal track with natural image ratios, no crop or viewport clipping, and 8-pixel gutters.
 
 - Browser-session login now tracks the returned request handle, rejects concurrent captures, and cancels an active capture when `chirp-forget-browser-session` runs.
 - Profile timelines now preserve and label each X timeline occurrence, including a pinned row repeated inside a conversation module, while using the server entry identity to keep every Appkit projection row stable and independently refreshable.
