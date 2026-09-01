@@ -157,7 +157,7 @@
               (setq buffer (chirp-dm-conversation-open conversation))
               (let* ((view (with-current-buffer buffer (appkit-current-view)))
                      (state (appkit-view-state view))
-                     (decrypted (car (plist-get state :events))))
+                     (decrypted (car (chirp-dm-conversation--events state))))
                 (should (eq owner view))
                 (should (equal (plist-get decrypted :text)
                                "verified plaintext"))
@@ -226,7 +226,7 @@
                 (should (equal (nreverse calls) '(history signing decrypt)))
                 (should (cl-every (lambda (owner) (eq owner view)) owners))
                 (should
-                 (equal (plist-get (car (last (plist-get state :events))) :text)
+                 (equal (plist-get (car (last (chirp-dm-conversation--events state))) :text)
                         "verified plaintext"))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
@@ -289,6 +289,68 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-dm-fresh-views-share-canonical-conversation-facts ()
+  "Refreshing one fresh view should update every view without sharing drafts."
+  (let ((chirp--app nil)
+        buffers callback request)
+    (unwind-protect
+        (save-window-excursion
+          (setq request (generate-new-buffer " *chirp-dm-shared-refresh*"))
+          (push request buffers)
+          (let* ((old
+                  (chirp-dm-test--normalized-event "20" "20" "old"))
+                 (fresh
+                  (chirp-dm-test--normalized-event "30" "30" "fresh"))
+                 (conversation
+                  (chirp-dm-test--normalized-conversation old))
+                 first second first-view second-view first-state second-state)
+            (cl-letf
+                (((symbol-function 'chirp-backend-dm-conversation-data)
+                  (lambda (_conversation-id success &rest _options)
+                    (setq callback success)
+                    request)))
+              (setq first (chirp-dm-conversation-open conversation)
+                    second (chirp-dm-conversation-open conversation)
+                    buffers (append (list first second) buffers)
+                    first-view
+                    (with-current-buffer first (appkit-current-view))
+                    second-view
+                    (with-current-buffer second (appkit-current-view))
+                    first-state (appkit-view-state first-view)
+                    second-state (appkit-view-state second-view))
+              (should
+               (eq (plist-get first-state :conversation)
+                   (plist-get second-state :conversation)))
+              (with-current-buffer first
+                (goto-char (point-max))
+                (insert "first draft"))
+              (with-current-buffer second
+                (goto-char (point-max))
+                (insert "second draft"))
+              (with-current-buffer first
+                (chirp-dm-refresh-conversation))
+              (funcall callback
+                       (chirp-dm-test--normalized-conversation old fresh)
+                       nil)
+              (appkit-sync-invalidations first-view)
+              (appkit-sync-invalidations second-view)
+              (should
+               (equal
+                (mapcar
+                 (lambda (event) (plist-get event :id))
+                 (chirp-dm-conversation--events second-state))
+                '("20" "30")))
+              (with-current-buffer first
+                (should (equal (appkit-chatbuf-input-string) "first draft"))
+                (should (appkit-chat-timeline-node "30")))
+              (with-current-buffer second
+                (should (equal (appkit-chatbuf-input-string) "second draft"))
+                (should (appkit-chat-timeline-node "30"))))))
+      (chirp-stop)
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 
 
 (ert-deftest chirp-dm-send-clears-only-after-ack-and-canonical-refresh ()
@@ -329,7 +391,7 @@
                   (should-error (chirp-dm-submit) :type 'user-error))
                 (should (eq send-owner view))
                 (should (equal sent-text "hello"))
-                (should (= (length (plist-get state :events)) 1))
+                (should (= (length (chirp-dm-conversation--events state)) 1))
                 (funcall send-success '(:message-id "message-21") nil)
                 (should refresh-success)
                 (with-current-buffer buffer
@@ -343,15 +405,15 @@
                         (chirp-dm-test--normalized-conversation sent-event)))
                   (funcall refresh-success refreshed nil)
                   (should bridge-success)
-                  (should (= (length (plist-get state :events)) 1))
+                  (should (= (length (chirp-dm-conversation--events state)) 1))
                   (funcall bridge-success (list first-event sent-event)
                            '(("pagination" . (("complete" . t)))))
                   (with-current-buffer buffer
                     (appkit-sync-invalidations view)
                     (should (appkit-chat-timeline-node "20"))
                     (should (appkit-chat-timeline-node "21")))
-                  (should (= (length (plist-get state :events)) 2))
-                  (should (= (cl-count "21" (plist-get state :events)
+                  (should (= (length (chirp-dm-conversation--events state)) 2))
+                  (should (= (cl-count "21" (chirp-dm-conversation--events state)
                                        :key (lambda (event)
                                               (plist-get event :id))
                                        :test #'equal)
@@ -393,7 +455,7 @@
                 (should (string-match-p "Unable to send message"
                                         (buffer-string))))
               (should-not (plist-get state :send-generation))
-              (should (= (length (plist-get state :events)) 1)))))
+              (should (= (length (chirp-dm-conversation--events state)) 1)))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -510,7 +572,8 @@
                     (should (equal
                              (mapcar
                               (lambda (event) (plist-get event :id))
-                              (plist-get (appkit-view-state view) :events))
+                              (chirp-dm-conversation--events
+                               (appkit-view-state view)))
                              '("10" "20")))
                     (should (equal
                              (plist-get (appkit-view-state view)
@@ -576,7 +639,7 @@
                                '((:sequence-id "30" :key-version "0"))))
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("20")))
                 (with-current-buffer buffer
                   (should (eq (appkit-chat-history-loading) 'refresh))
@@ -591,13 +654,13 @@
                                  (:sequence-id "25" :key-version "0"))))
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("20")))
                 (funcall bridge-callback (list oldest current intermediate)
                          '(("pagination" . (("complete" . t)))))
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("10" "20" "25" "30")))
                 (with-current-buffer buffer
                   (should-not (appkit-chat-history-loading-p))
@@ -662,7 +725,7 @@
                                  (:sequence-id "25" :key-version "0"))))
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("20")))
                 (should (eq (plist-get (plist-get state :status) :phase)
                             'error))
@@ -708,7 +771,8 @@
               (let ((view (with-current-buffer buffer (appkit-current-view))))
                 (should (equal (mapcar
                                 (lambda (event) (plist-get event :id))
-                                (plist-get (appkit-view-state view) :events))
+                                (chirp-dm-conversation--events
+                                 (appkit-view-state view)))
                                '("20")))
                 (funcall
                  refresh-callback
@@ -724,7 +788,8 @@
                  nil)
                 (should (equal (mapcar
                                 (lambda (event) (plist-get event :id))
-                                (plist-get (appkit-view-state view) :events))
+                                (chirp-dm-conversation--events
+                                 (appkit-view-state view)))
                                '("20" "30")))
                 (appkit-sync-invalidations view)
                 (with-current-buffer buffer

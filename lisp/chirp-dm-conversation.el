@@ -26,6 +26,7 @@
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-dm-render)
+(require 'chirp-dm-state)
 (require 'chirp-x)
 (require 'chirp-xchat)
 
@@ -74,14 +75,31 @@
           (plist-get conversation :title))))
     (if (string-empty-p title) fallback title)))
 
+(defun chirp-dm-conversation--conversation (state)
+  "Return canonical conversation referenced by view STATE."
+  (let ((conversation (plist-get state :conversation)))
+    (unless (and (listp conversation)
+                 (stringp (plist-get conversation :id)))
+      (error "Invalid Chirp canonical direct-message conversation"))
+    conversation))
+
+(defun chirp-dm-conversation--id (state)
+  "Return canonical conversation identity from view STATE."
+  (plist-get (chirp-dm-conversation--conversation state) :id))
+
+(defun chirp-dm-conversation--events (state)
+  "Return canonical ordered events from view STATE."
+  (plist-get (chirp-dm-conversation--conversation state) :events))
+
 (defun chirp-dm-conversation--state (view)
   "Return VIEW's validated XChat conversation state."
   (let ((state (appkit-view-state view)))
     (unless (and (listp state)
                  (eq (plist-get state :type) 'dm-conversation)
                  (plist-get state :instance)
-                 (stringp (plist-get state :conversation-id)))
+                 (listp (plist-get state :conversation)))
       (error "Invalid Chirp direct-message conversation state"))
+    (chirp-dm-conversation--conversation state)
     state))
 
 (defun chirp-dm-conversation--current-view ()
@@ -109,12 +127,6 @@
           (push event additions))))
     (append current (nreverse additions))))
 
-(defun chirp-dm-conversation--merge-events (left right)
-  "Merge ordered normalized event lists LEFT and RIGHT by sequence ID."
-  (sort (chirp-dm-conversation--append-unique-events left right)
-        (lambda (left-event right-event)
-          (< (string-to-number (plist-get left-event :id))
-             (string-to-number (plist-get right-event :id))))))
 
 (defun chirp-dm-conversation--events-overlap-p (left right)
   "Return non-nil when event lists LEFT and RIGHT share an identity."
@@ -138,7 +150,8 @@
 
 (defun chirp-dm-conversation--decrypt-input (state)
   "Return encoded events and signing-key user IDs from conversation STATE."
-  (let* ((events (plist-get state :events))
+  (let* ((conversation (chirp-dm-conversation--conversation state))
+         (events (plist-get conversation :events))
          (recovery-events (plist-get state :recovery-key-events))
          (encoded
           (delete-dups
@@ -156,7 +169,7 @@
                  (append
                   (mapcar (lambda (participant)
                             (plist-get participant :id))
-                          (plist-get state :participants))
+                          (plist-get conversation :participants))
                   (mapcar (lambda (event)
                             (plist-get event :sender-id))
                           (append recovery-events events)))))))
@@ -171,7 +184,7 @@
 (defun chirp-dm-conversation--decryption-needed-p (state)
   "Return non-nil when conversation STATE has encrypted messages."
   (cl-some (lambda (event) (plist-get event :encrypted-p))
-           (plist-get state :events)))
+           (chirp-dm-conversation--events state)))
 
 (defun chirp-dm-conversation--decode-plain-text (text)
   "Decode plain TEXT into an immutable Appkit semantic document."
@@ -194,17 +207,18 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
 
 (defun chirp-dm-conversation--apply-verified-messages (state messages)
   "Apply decoded verified MESSAGES to canonical conversation STATE."
-  (let ((conversation-id (plist-get state :conversation-id))
-        (by-id (make-hash-table :test #'equal))
-        (updated 0))
+  (let* ((conversation (chirp-dm-conversation--conversation state))
+         (conversation-id (plist-get conversation :id))
+         (by-id (make-hash-table :test #'equal))
+         (updated 0))
     (dolist (message messages)
       (when (equal (plist-get message :conversation-id) conversation-id)
         (dolist (id (list (plist-get message :sequence-id)
                           (plist-get message :message-id)))
           (when id
             (puthash id message by-id)))))
-    (setf
-     (plist-get state :events)
+    (chirp-dm-state-set-events
+     conversation
      (mapcar
       (lambda (event)
         (if-let* ((message
@@ -247,7 +261,7 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
               (cl-incf updated)
               copy)
           event))
-      (plist-get state :events)))
+      (plist-get conversation :events)))
     updated))
 
 (defun chirp-dm-conversation--settle-decrypt-error (view state generation message)
@@ -275,7 +289,8 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
                  (chirp-dm-conversation--apply-verified-messages
                   state messages)))
             (when (> updated 0)
-              (appkit-request-sync view :part 'timeline :position t))
+              (chirp-dm-state-publish
+               (chirp-dm-conversation--conversation state)))
             (message "Decrypted %d verified XChat message%s"
                      updated (if (= updated 1) "" "s"))))
       (error
@@ -297,7 +312,7 @@ view has no conversation-key event."
              (lambda (event)
                (eq (plist-get event :kind) 'conversation-key-change))
              (append (plist-get state :recovery-key-events)
-                     (plist-get state :events))))
+                     (chirp-dm-conversation--events state))))
            (generation (cons 'decrypt nil))
            callback-ran-p request)
       (cond
@@ -343,22 +358,20 @@ view has no conversation-key event."
 ;;; Conversation
 
 (defun chirp-dm-conversation--make-state (instance conversation)
-  "Return canonical state for INSTANCE and normalized CONVERSATION."
-  (list :type 'dm-conversation
-        :instance instance
-        :conversation-id (plist-get conversation :id)
-        :title (plist-get conversation :title)
-        :participants (copy-tree (plist-get conversation :participants))
-        :events (copy-tree (plist-get conversation :events))
-        :recovery-key-events nil
-        :older-cursor (copy-tree (plist-get conversation :older-cursor))
-        :older-available-p (plist-get conversation :has-more)
-        :older-stalled-p nil
-        :status (list :phase 'idle :message nil)
-        :decrypt-generation nil
-        :send-generation nil
-        :send-error nil
-        :composer-reset-p nil))
+  "Return view state for INSTANCE and normalized CONVERSATION."
+  (let ((canonical (chirp-dm-state-acquire conversation)))
+    (list :type 'dm-conversation
+          :instance instance
+          :conversation canonical
+          :recovery-key-events nil
+          :older-cursor (copy-tree (plist-get canonical :older-cursor))
+          :older-available-p (plist-get canonical :has-more)
+          :older-stalled-p nil
+          :status (list :phase 'idle :message nil)
+          :decrypt-generation nil
+          :send-generation nil
+          :send-error nil
+          :composer-reset-p nil)))
 
 ;;;; Rendering
 
@@ -390,15 +403,18 @@ view has no conversation-key event."
 (defun chirp-dm-conversation--sync (view invalidations)
   "Synchronize conversation VIEW for pending INVALIDATIONS."
   (let* ((state (chirp-dm-conversation--state view))
-         (title (chirp-dm-conversation--one-line (plist-get state :title)))
+         (conversation (chirp-dm-conversation--conversation state))
+         (title
+          (chirp-dm-conversation--one-line
+           (plist-get conversation :title)))
          (slice
           (appkit-chat-history-window-slice
-           (plist-get state :events)
+           (plist-get conversation :events)
            (lambda (event) (plist-get event :id))))
          (rows
           (and (plist-get slice :valid-p)
                (chirp-dm-render-project-events
-                view state (plist-get slice :entries))))
+                view conversation (plist-get slice :entries))))
          (force-keys
           (and (memq 'geometry
                      (appkit-invalidations-parts invalidations))
@@ -416,7 +432,7 @@ view has no conversation-key event."
         :changed-resources
         (appkit-invalidations-resource-keys invalidations))
        (appkit-chat-timeline-set-frame
-        (chirp-dm-render-header state)
+        (chirp-dm-render-header conversation)
         (chirp-dm-render-footer state)
         :bind-input-function (lambda () (chirp-dm-conversation--bind-composer state))
         :composer-visible-p t)
@@ -424,7 +440,7 @@ view has no conversation-key event."
 
 (defun chirp-dm-conversation--establish-window (state)
   "Establish Appkit's exact history window from conversation STATE."
-  (let ((events (plist-get state :events)))
+  (let ((events (chirp-dm-conversation--events state)))
     (if events
         (progn
           (appkit-chat-history-window-set
@@ -482,10 +498,11 @@ view has no conversation-key event."
     (view state generation events envelope)
   "Settle older GENERATION in VIEW and STATE with EVENTS and ENVELOPE."
   (when (chirp-dm-conversation--owner-current-p view state generation)
-    (let* ((current (plist-get state :events))
+    (let* ((conversation (chirp-dm-conversation--conversation state))
+           (current (plist-get conversation :events))
            (old-first (and current (plist-get (car current) :id)))
            (old-cursor (plist-get state :older-cursor))
-           (merged (chirp-dm-conversation--merge-events current events))
+           (merged (chirp-dm-state-merge-events current events))
            (new-first (and merged (plist-get (car merged) :id)))
            (next-cursor (chirp-backend-envelope-next-cursor envelope))
            (recovery-key-events
@@ -498,25 +515,29 @@ view has no conversation-key event."
                                 (not (equal old-cursor next-cursor)))))
            (status (chirp-dm-conversation--status state)))
       (chirp-dm-conversation--finish-request view generation)
-      (setf (plist-get state :events) merged
-            (plist-get state :recovery-key-events)
+      (chirp-dm-state-set-events conversation merged)
+      (setf (plist-get state :recovery-key-events)
             (chirp-dm-conversation--append-unique-events
              (plist-get state :recovery-key-events)
              recovery-key-events)
             (plist-get status :phase) 'idle
             (plist-get status :message) nil)
       (when next-cursor
-        (setf (plist-get state :older-cursor) next-cursor))
+        (setf (plist-get state :older-cursor) next-cursor
+              (plist-get conversation :older-cursor)
+              (copy-tree next-cursor)
+              (plist-get conversation :has-more) t))
       (when (and new-first (not (equal old-first new-first)))
         (with-current-buffer (appkit-view-buffer view)
           (appkit-chat-history-window-set new-first nil)))
       (with-current-buffer (appkit-view-buffer view)
         (when complete
+          (setf (plist-get conversation :older-cursor) nil
+                (plist-get conversation :has-more) nil)
           (appkit-chat-history-older-loaded-set t)))
       (setf (plist-get state :older-stalled-p)
             (and (not complete) (not progressed)))
-      (appkit-request-sync
-       view :structure t :parts '(frame timeline) :position t)
+      (chirp-dm-state-publish conversation)
       (when (chirp-dm-conversation--decryption-needed-p state)
         (chirp-dm-conversation--decrypt-view view t)))))
 
@@ -531,20 +552,20 @@ history pages used to prove continuity.  HISTORY-FIRST-KEY and HISTORY-CURSOR
 describe that bridge's older edge.  OLDER-COMPLETE-P means those pages also
 reached the oldest remote edge."
   (when (chirp-dm-conversation--owner-current-p view state generation)
-    (let* ((current (plist-get state :events))
+    (let* ((canonical (chirp-dm-conversation--conversation state))
+           (current (plist-get canonical :events))
            (merged
-            (chirp-dm-conversation--merge-events
+            (chirp-dm-state-merge-events
              current (plist-get conversation :events)))
            (first (and merged (plist-get (car merged) :id)))
            (status (chirp-dm-conversation--status state)))
       (chirp-dm-conversation--finish-request view generation)
-      (setf (plist-get state :events) merged
-            (plist-get state :title)
+      (setf (plist-get conversation :title)
             (chirp-dm-conversation--title
-             conversation (plist-get state :title))
-            (plist-get state :participants)
-            (copy-tree (plist-get conversation :participants))
-            (plist-get state :recovery-key-events)
+             conversation (plist-get canonical :title)))
+      (chirp-dm-state-merge-snapshot
+       canonical conversation :events merged)
+      (setf (plist-get state :recovery-key-events)
             (chirp-dm-conversation--append-unique-events
              (plist-get state :recovery-key-events)
              recovery-key-events)
@@ -554,14 +575,18 @@ reached the oldest remote edge."
        (older-complete-p
         (setf (plist-get state :older-cursor) nil
               (plist-get state :older-available-p) nil
-              (plist-get state :older-stalled-p) nil)
+              (plist-get state :older-stalled-p) nil
+              (plist-get canonical :older-cursor) nil
+              (plist-get canonical :has-more) nil)
         (with-current-buffer (appkit-view-buffer view)
           (appkit-chat-history-window-set first nil)
           (appkit-chat-history-older-loaded-set t)))
        ((and history-first-key (equal first history-first-key))
         (setf (plist-get state :older-cursor) (copy-tree history-cursor)
               (plist-get state :older-available-p) (and history-cursor t)
-              (plist-get state :older-stalled-p) nil)
+              (plist-get state :older-stalled-p) nil
+              (plist-get canonical :older-cursor) (copy-tree history-cursor)
+              (plist-get canonical :has-more) (and history-cursor t))
         (with-current-buffer (appkit-view-buffer view)
           (appkit-chat-history-window-set first nil)
           (appkit-chat-history-older-loaded-set (null history-cursor))))
@@ -576,8 +601,7 @@ reached the oldest remote edge."
             (appkit-chat-history-window-set first nil))
           (appkit-chat-history-older-loaded-set
            (not (plist-get conversation :has-more))))))
-      (appkit-request-sync
-       view :structure t :parts '(frame timeline) :position t)
+      (chirp-dm-state-publish canonical)
       (when (chirp-dm-conversation--decryption-needed-p state)
         (chirp-dm-conversation--decrypt-view view)))))
 
@@ -609,7 +633,7 @@ REMAINING bounds the automatic page count."
   (let (callback-ran-p request)
     (setq request
           (chirp-backend-dm-history
-           (plist-get state :conversation-id)
+           (chirp-dm-conversation--id state)
            cursor
            (lambda (events envelope)
              (setq callback-ran-p t)
@@ -619,8 +643,7 @@ REMAINING bounds the automatic page count."
                     view state generation)
                (let* ((bridged (copy-sequence conversation))
                       (bridged-events
-                       (chirp-dm-conversation--merge-events
-                        (plist-get conversation :events) events))
+                       (chirp-dm-state-merge-events (plist-get conversation :events) events))
                       (key-events
                        (chirp-dm-conversation--append-unique-events
                         recovery-key-events
@@ -634,7 +657,7 @@ REMAINING bounds the automatic page count."
                  (setf (plist-get bridged :events) bridged-events)
                  (cond
                   ((chirp-dm-conversation--events-overlap-p
-                    (plist-get state :events) bridged-events)
+                    (chirp-dm-conversation--events state) bridged-events)
                    (chirp-dm-conversation--settle-refresh-success
                     view state generation bridged
                     :recovery-key-events key-events
@@ -684,7 +707,7 @@ REMAINING bounds the automatic page count."
 
 Disjoint focused fragments are bridged through older history before merging."
   (when (chirp-dm-conversation--owner-current-p view state generation)
-    (let ((current (plist-get state :events))
+    (let ((current (chirp-dm-conversation--events state))
           (refreshed (plist-get conversation :events)))
       (if (and current refreshed
                (not (chirp-dm-conversation--events-overlap-p current refreshed)))
@@ -714,7 +737,7 @@ Disjoint focused fragments are bridged through older history before merging."
           (pcase phase
             ('older
              (chirp-backend-dm-history
-              (plist-get state :conversation-id)
+              (chirp-dm-conversation--id state)
               (plist-get state :older-cursor)
               (lambda (events envelope)
                 (setq callback-ran-p t)
@@ -733,7 +756,7 @@ Disjoint focused fragments are bridged through older history before merging."
               :owner view))
             ('refresh
              (chirp-backend-dm-conversation-data
-              (plist-get state :conversation-id)
+              (chirp-dm-conversation--id state)
               (lambda (conversation _envelope)
                 (setq callback-ran-p t)
                 (chirp-dm-conversation--retire-transport
@@ -822,7 +845,7 @@ Disjoint focused fragments are bridged through older history before merging."
         (condition-case err
             (setq request
                   (chirp-backend-dm-send-text
-                   (plist-get state :conversation-id) text
+                   (chirp-dm-conversation--id state) text
                    (lambda (_event _envelope)
                      (setq callback-ran-p t)
                      (chirp-dm-conversation--settle-send-success

@@ -149,6 +149,7 @@ commands still work, and displays alt text when the backend provides it."
   backend-read-cache
   backend-pending-reads
   primary-feed-states
+  dm-conversations
   media-runtime
   xchat-native-session
   xchat-native-epoch
@@ -180,6 +181,7 @@ commands still work, and displays alt text when the backend provides it."
    :quoted-tweet-pending (make-hash-table :test #'equal)
    :backend-read-cache (make-hash-table :test #'equal)
    :backend-pending-reads (make-hash-table :test #'equal)
+   :dm-conversations (make-hash-table :test #'equal)
    :primary-feed-states (make-hash-table :test #'eq)))
 
 (defun chirp-app ()

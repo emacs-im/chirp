@@ -20,6 +20,7 @@
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-media)
+(require 'chirp-dm-state)
 (require 'chirp-dm-conversation)
 (require 'chirp-time)
 (require 'chirp-x)
@@ -370,19 +371,23 @@ VIEW and STATE identify the inbox whose request is completing."
   (when (chirp-view-state-token-current-p view state generation)
     (let* ((page (plist-get state :page))
            (status (chirp-dm-inbox--status state))
+           (canonical
+            (mapcar #'chirp-dm-state-acquire conversations))
            (next-cursor (chirp-backend-envelope-next-cursor envelope)))
       (setf (plist-get state :items)
             (if (eq phase 'older)
                 (chirp-dm-inbox--append-unique
-                 (plist-get state :items) conversations
+                 (plist-get state :items) canonical
                  (lambda (item) (plist-get item :id)))
-              conversations)
+              canonical)
             (plist-get page :next-cursor) next-cursor
             (plist-get page :exhausted-p) (not next-cursor)
             (plist-get status :phase) 'idle
             (plist-get status :message) nil
             (plist-get state :generation) nil)
-      (appkit-request-sync view :structure t :part 'entries :position t))))
+      (appkit-request-sync view :structure t :part 'entries :position t)
+      (dolist (conversation canonical)
+        (chirp-dm-state-publish conversation)))))
 
 (defun chirp-dm-inbox--settle-error (view state generation message)
   "Settle inbox GENERATION in VIEW and STATE with error MESSAGE."

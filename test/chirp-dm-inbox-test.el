@@ -254,7 +254,7 @@
                 (should bridge)
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("20")))
                 (funcall bridge (list old-event new-event)
                          '(("pagination" . (("complete" . t)))))
@@ -264,13 +264,71 @@
                   (should (appkit-chat-timeline-node "30")))
                 (should (equal
                          (mapcar (lambda (event) (plist-get event :id))
-                                 (plist-get state :events))
+                                 (chirp-dm-conversation--events state))
                          '("20" "30")))))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p request)
         (kill-buffer request)))))
+
+(ert-deftest chirp-dm-conversation-refresh-updates-open-inbox ()
+  "Canonical conversation changes should update an existing inbox row."
+  (let ((chirp--app nil)
+        buffers inbox-callback refresh-callback)
+    (unwind-protect
+        (save-window-excursion
+          (let ((inbox-request
+                 (generate-new-buffer " *chirp-dm-canonical-inbox*"))
+                (refresh-request
+                 (generate-new-buffer " *chirp-dm-canonical-refresh*")))
+            (setq buffers (list inbox-request refresh-request))
+            (cl-letf
+                (((symbol-function 'chirp-backend-dm-inbox)
+                  (lambda (callback &rest _options)
+                    (setq inbox-callback callback)
+                    inbox-request))
+                 ((symbol-function 'chirp-backend-dm-conversation-data)
+                  (lambda (_conversation-id callback &rest _options)
+                    (setq refresh-callback callback)
+                    refresh-request)))
+              (let* ((old
+                      (chirp-dm-test--normalized-event
+                       "20" "20" "old preview"))
+                     (fresh
+                      (chirp-dm-test--normalized-event
+                       "30" "30" "new preview"))
+                     (inbox-buffer (chirp-dm-inbox-open))
+                     (inbox-view
+                      (with-current-buffer inbox-buffer
+                        (appkit-current-view))))
+                (push inbox-buffer buffers)
+                (funcall inbox-callback
+                         (list
+                          (chirp-dm-test--normalized-conversation old))
+                         nil)
+                (let* ((conversation
+                        (car
+                         (plist-get
+                          (appkit-view-state inbox-view) :items)))
+                       (conversation-buffer
+                        (chirp-dm-conversation-open
+                         conversation :refresh-p t)))
+                  (push conversation-buffer buffers)
+                  (funcall refresh-callback
+                           (chirp-dm-test--normalized-conversation
+                            old fresh)
+                           nil)
+                  (appkit-sync-invalidations inbox-view)
+                  (should (equal (plist-get conversation :preview)
+                                 "new preview"))
+                  (with-current-buffer inbox-buffer
+                    (goto-char (point-min))
+                    (should (search-forward "new preview" nil t))))))))
+      (chirp-stop)
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (provide 'chirp-dm-inbox-test)
 

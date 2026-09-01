@@ -438,13 +438,15 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
              (string< left right))))
    (t (string< left right))))
 
+(defun chirp-xchat-event-before-p (left right)
+  "Return non-nil when normalized XChat event LEFT precedes RIGHT."
+  (chirp-xchat--numeric-string-less-p
+   (plist-get left :sequence-id)
+   (plist-get right :sequence-id)))
+
 (defun chirp-xchat--sort-events (events)
   "Return XChat EVENTS ordered from oldest to newest."
-  (sort (copy-sequence events)
-        (lambda (left right)
-          (chirp-xchat--numeric-string-less-p
-           (plist-get left :sequence-id)
-           (plist-get right :sequence-id)))))
+  (sort (copy-sequence events) #'chirp-xchat-event-before-p))
 
 (defun chirp-xchat--validate-encoded-events (encoded-events max-events)
   "Validate ENCODED-EVENTS against MAX-EVENTS and the page byte budget."
@@ -493,7 +495,7 @@ When EXPECTED-TYPE is non-nil, reject a field carrying another Thrift type."
                (chirp-first-nonblank
                 (chirp-get-in result '("avatar" "image_url")))))))
 
-(defun chirp-xchat--event-label (event)
+(defun chirp-xchat-event-label (event)
   "Return a one-line preview label for normalized XChat EVENT."
   (let ((text (plist-get event :text))
         (kind (plist-get event :kind)))
@@ -637,7 +639,7 @@ REQUIRE-DELETION-FLAG-P rejects responses that omit the deletion flag."
                 :participants participants
                 :events events
                 :latest-event latest
-                :preview (and latest (chirp-xchat--event-label latest))
+                :preview (and latest (chirp-xchat-event-label latest))
                 :updated-at-msec
                 (and latest (plist-get latest :created-at-msec))
                 :muted-p (and (chirp-get detail "is_muted") t)
