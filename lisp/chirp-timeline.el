@@ -561,12 +561,10 @@ REFRESH retries the request after failure."
 
 (defun chirp-timeline-open-home ()
   "Open Chirp's unique Appkit-owned home timeline."
-  (interactive)
   (chirp-timeline--open-primary 'home))
 
 (defun chirp-timeline-open-following ()
   "Open Chirp's unique Appkit-owned following timeline."
-  (interactive)
   (chirp-timeline--open-primary 'following))
 
 (defun chirp-timeline--load-more-primary (view)
@@ -598,9 +596,8 @@ REFRESH retries the request after failure."
 
 ;;; Collection Commands
 
-(defun chirp-timeline-open-bookmarks (&optional _buffer)
+(defun chirp-timeline-open-bookmarks ()
   "Open bookmarks."
-  (interactive)
   (let ((refresh (lambda () (chirp-timeline-open-bookmarks))))
     (chirp-timeline--fetch-collection
      (chirp-timeline--ensure-collection 'bookmarks "Bookmarks" refresh)
@@ -616,11 +613,10 @@ REFRESH retries the request after failure."
      (lambda (success errback)
        (chirp-backend-likes handle success errback)))))
 
-(defun chirp-timeline-open-likes (&optional handle _buffer)
+(defun chirp-timeline-open-likes (&optional handle)
   "Open liked tweets for HANDLE.
 
 When HANDLE is nil, resolve the currently authenticated account first."
-  (interactive)
   (let ((clean-handle
          (and handle
               (string-remove-prefix "@" (string-trim (format "%s" handle))))))
@@ -644,11 +640,10 @@ When HANDLE is nil, resolve the currently authenticated account first."
              (chirp-show-error buffer title refresh message))))
         buffer))))
 
-(defun chirp-timeline-open-list (&optional list-id _buffer)
+(defun chirp-timeline-open-list (&optional list-id)
   "Open the timeline for LIST-ID.
 
 When LIST-ID is nil, prompt from the authenticated account's lists."
-  (interactive)
   (if (null list-id)
       (let* ((buffer (chirp-buffer))
              (token (chirp-begin-request buffer)))
@@ -681,9 +676,8 @@ When LIST-ID is nil, prompt from the authenticated account's lists."
 
 ;;; Search Commands
 
-(defun chirp-timeline-open-search (query &optional _buffer)
+(defun chirp-timeline-open-search (query)
   "Open search results for QUERY."
-  (interactive "sSearch X: ")
   (let* ((title (format "Search: %s" query))
          (refresh (lambda () (chirp-timeline-open-search query))))
     (chirp-timeline--fetch-collection

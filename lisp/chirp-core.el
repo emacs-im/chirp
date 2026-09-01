@@ -29,7 +29,7 @@
 
 (declare-function chirp-backend-tweet "chirp-backend"
                   (tweet-id callback &optional errback))
-(declare-function chirp-profile-open "chirp-profile" (handle &optional buffer))
+(declare-function chirp-profile-open "chirp-profile" (handle &optional mode))
 (declare-function chirp-thread-open "chirp-thread" (tweet-id))
 (declare-function chirp-thread-open-tweet "chirp-thread" (tweet))
 (declare-function chirp-thread-add-spam-rule "chirp-thread" (&optional authorp))

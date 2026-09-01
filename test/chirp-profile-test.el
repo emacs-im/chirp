@@ -245,7 +245,7 @@
                   ((symbol-function 'chirp-media-prefetch-user) #'ignore)
                   ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                   ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
-          (setq buffer (chirp-profile-open "alice" nil 'replies))
+          (setq buffer (chirp-profile-open "alice" 'replies))
           (funcall user-callback
                    '(:kind user :handle "alice" :name "Alice" :bio ""
                      :posts 12 :following 3 :followers 4)
@@ -386,7 +386,7 @@
                (lambda (callback &optional _errback)
                  (funcall callback '(:kind user :handle "alice") nil)))
               ((symbol-function 'chirp-profile-open)
-               (lambda (handle &optional _buffer _mode)
+               (lambda (handle &optional _mode)
                  (setq opened-handle handle))))
       (chirp-me)
       (should (equal opened-handle "alice")))))
