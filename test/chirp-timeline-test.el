@@ -648,13 +648,13 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-normalize-tweet-keeps-session-overrides-explicit ()
-  "Payload normalization should stay pure until state overrides are applied."
+(ert-deftest chirp-tweet-from-x-keeps-session-overrides-explicit ()
+  "X payload conversion should stay pure until state overrides are applied."
   (unwind-protect
       (progn
         (chirp-set-tweet-state-override "1" :liked-p t)
         (let ((tweet
-               (chirp-normalize-tweet
+               (chirp--tweet-from-x
                 '(("id" . "1")
                   ("text" . "hello")
                   ("liked" . chirp-json-false)
@@ -665,11 +665,11 @@
                    :liked-p))))
     (chirp-clear-tweet-state-overrides "1")))
 
-(ert-deftest chirp-collect-top-level-tweets-hides-promoted-posts ()
+(ert-deftest chirp-top-level-tweets-from-x-hide-promoted-posts ()
   "Promoted tweets should be dropped when filtering is enabled."
   (let ((chirp-hide-promoted-posts t))
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
-                           (chirp-collect-top-level-tweets
+                           (chirp--top-level-tweets-from-x
                             (list '(("id" . "1")
                                     ("text" . "normal")
                                     ("author" . (("screenName" . "alice")
@@ -681,7 +681,7 @@
                                                  ("name" . "Brand")))))))
                    '("1")))))
 
-(ert-deftest chirp-collect-top-level-tweets-keeps-retweet-identity ()
+(ert-deftest chirp-top-level-tweets-from-x-keep-retweet-identity ()
   "Self-retweets and their originals should remain distinct timeline entries."
   (let* ((retweeter
           '(("rest_id" . "10")
@@ -701,7 +701,7 @@
             ("legacy" .
              (("full_text" . "RT @bob: Original post")
               ("retweeted_status_result" . (("result" . ,original)))))))
-         (tweets (chirp-collect-top-level-tweets
+         (tweets (chirp--top-level-tweets-from-x
                   (list retweet original))))
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
                            tweets)
@@ -713,11 +713,11 @@
                            (chirp-render-project-tweet-rows tweets))
                    '((tweet "100") (tweet "200"))))))
 
-(ert-deftest chirp-collect-top-level-tweets-can-keep-promoted-posts ()
+(ert-deftest chirp-top-level-tweets-from-x-can-keep-promoted-posts ()
   "Promoted tweets should remain visible when filtering is disabled."
   (let ((chirp-hide-promoted-posts nil))
     (should (equal (mapcar (lambda (tweet) (plist-get tweet :id))
-                           (chirp-collect-top-level-tweets
+                           (chirp--top-level-tweets-from-x
                             (list '(("id" . "1")
                                     ("text" . "normal")
                                     ("author" . (("screenName" . "alice")

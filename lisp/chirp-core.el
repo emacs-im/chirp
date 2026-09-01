@@ -1086,8 +1086,8 @@ current line metrics."
 (defconst chirp--markdown-image-regexp "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
   "Regexp that matches one Markdown image.")
 
-(defun chirp-normalize-url-item (value)
-  "Normalize one URL VALUE into an expanded string, or nil."
+(defun chirp--url-from-x (value)
+  "Return one expanded URL decoded from X VALUE, or nil."
   (cond
    ((stringp value)
     (let ((text (string-trim value)))
@@ -1103,21 +1103,21 @@ current line metrics."
                 "shortUrl")))
    (t nil)))
 
-(defun chirp-normalize-url-list (&rest values)
-  "Normalize URL VALUES into a de-duplicated list of expanded strings."
+(defun chirp--urls-from-x (&rest values)
+  "Return distinct expanded URLs decoded from X VALUES."
   (let ((seen (make-hash-table :test #'equal))
         items)
     (dolist (value values (nreverse items))
       (when (listp value)
         (dolist (item value)
-          (when-let* ((url (chirp-normalize-url-item item)))
+          (when-let* ((url (chirp--url-from-x item)))
             (unless (gethash url seen)
               (puthash url t seen)
               (push url items))))))))
 
 (defun chirp-extract-tweet-urls (object &optional legacy)
   "Extract expanded URLs for tweet OBJECT and optional LEGACY payload."
-  (chirp-normalize-url-list
+  (chirp--urls-from-x
    (chirp-get object "urls")
    (chirp-get-in object '("note_tweet" "note_tweet_results" "result" "entity_set" "urls"))
    (chirp-get-in object '("note_tweet" "entity_set" "urls"))
@@ -1136,8 +1136,8 @@ current line metrics."
             (vector (chirp-get value "from_index")
                     (chirp-get value "to_index"))))))
 
-(defun chirp-normalize-mention (value)
-  "Normalize one mention VALUE into a handle plist, or nil."
+(defun chirp--mention-from-x (value)
+  "Return one Chirp mention decoded from X VALUE, or nil."
   (cond
    ((stringp value)
     (let ((handle (string-remove-prefix "@" (string-trim value))))
@@ -1156,8 +1156,8 @@ current line metrics."
                       handle))))
    (t nil)))
 
-(defun chirp-normalize-hashtag (value)
-  "Normalize one hashtag VALUE into its tag text, or nil."
+(defun chirp--hashtag-from-x (value)
+  "Return one hashtag decoded from X VALUE, or nil."
   (let ((tag
          (cond
           ((stringp value)
@@ -1170,28 +1170,28 @@ current line metrics."
          (not (string-empty-p tag))
          (string-remove-prefix "#" (string-remove-prefix "$" tag)))))
 
-(defun chirp--normalize-text-entity (kind value)
-  "Normalize one X text entity VALUE of KIND.
+(defun chirp--text-entity-from-x (kind value)
+  "Return one Chirp text entity decoded from X VALUE of KIND.
 
 KIND is `mention', `hashtag', `cashtag', `url', `media', or `timestamp'.
 Indices are Unicode code-point offsets into the tweet text."
   (when-let* ((indices (chirp--entity-indices value)))
     (pcase kind
       ('mention
-       (when-let* ((mention (chirp-normalize-mention value)))
+       (when-let* ((mention (chirp--mention-from-x value)))
          (append mention
                  (list :kind 'mention
                        :start (car indices)
                        :end (cdr indices)))))
       ((or 'hashtag 'cashtag)
-       (when-let* ((tag (chirp-normalize-hashtag value)))
+       (when-let* ((tag (chirp--hashtag-from-x value)))
          (list :kind kind
                :tag tag
                :start (car indices)
                :end (cdr indices))))
       ((or 'url 'media)
        (list :kind kind
-             :url (chirp-normalize-url-item value)
+             :url (chirp--url-from-x value)
              :display (chirp-first-nonblank
                        (chirp-get value "display_url" "displayUrl")
                        (chirp-get value "display"))
@@ -1208,7 +1208,7 @@ Indices are Unicode code-point offsets into the tweet text."
   "Return normalized KIND entities from ENTITIES field FIELD."
   (let (items)
     (dolist (item (chirp-get entities field) (nreverse items))
-      (when-let* ((entity (chirp--normalize-text-entity kind item)))
+      (when-let* ((entity (chirp--text-entity-from-x kind item)))
         (push entity items)))))
 
 (defun chirp-extract-text-entities (entities)
@@ -1614,14 +1614,14 @@ When MAX-COUNT is non-nil, return at most that many images."
   (make-symbol "chirp-quoted-tweet-fetch-failed")
   "Sentinel value used when quoted tweet enrichment fails.")
 
-(defun chirp-normalize-quoted-tweet (value)
-  "Normalize VALUE into a quoted-tweet plist, or nil."
+(defun chirp--quoted-tweet-from-x (value)
+  "Return a quoted tweet decoded from X VALUE, or nil."
   (when-let* ((quoted
                (and (chirp-object-p value)
                     (or (chirp-get value "quotedTweet" "quoted_tweet")
                         (chirp-get-in
                          value '("quoted_status_result" "result"))))))
-    (chirp-normalize-tweet quoted)))
+    (chirp--tweet-from-x quoted)))
 
 (defun chirp-quoted-tweet-enriched-p (tweet)
   "Return non-nil when quoted TWEET already carries full fetched detail."
@@ -2012,7 +2012,7 @@ Return non-nil when BUFFER currently projects a primary feed."
 
 ;;;; Users
 
-(defun chirp-extract-user-object (object)
+(defun chirp--extract-user-object (object)
   "Extract the most relevant user object from OBJECT."
   (let ((direct (or (chirp-get object "user" "author")
                     (chirp-get-in object '("core" "user_results" "result"))
@@ -2024,9 +2024,9 @@ Return non-nil when BUFFER currently projects a primary feed."
      ((chirp-user-like-p direct) direct)
      (t (chirp-find-first-object object #'chirp-user-like-p)))))
 
-(defun chirp-normalize-user (object)
-  "Normalize OBJECT into a user plist."
-  (let* ((user (chirp-extract-user-object object))
+(defun chirp--user-from-x (object)
+  "Return a Chirp user decoded from X OBJECT, or nil."
+  (let* ((user (chirp--extract-user-object object))
          (legacy (chirp-get user "legacy"))
          (handle (chirp-first-nonblank
                   (chirp-get user "screen_name")
@@ -2111,19 +2111,14 @@ Return non-nil when BUFFER currently projects a primary feed."
 
 ;;;; Media
 
-(defun chirp-normalize-media-variant (object)
-  "Normalize media variant OBJECT into a plist."
+(defun chirp--media-variant-from-x (object)
+  "Return one media variant decoded from X OBJECT."
   (let ((url (chirp-first-nonblank (chirp-get object "url")))
         (bitrate (chirp-get object "bitrate")))
     (when url
       (list :url url
             :bitrate bitrate))))
 
-(defun chirp-normalize-media-variants (value)
-  "Normalize media variant VALUE into a list of plists."
-  (if (listp value)
-      (delq nil (mapcar #'chirp-normalize-media-variant value))
-    nil))
 
 ;;;; Link Cards
 
@@ -2216,8 +2211,8 @@ Return non-nil when BUFFER currently projects a primary feed."
              "\\`https?://\\(?:x\\.com\\|twitter\\.com\\|t\\.co\\)/"
              url))))
 
-(defun chirp-normalize-link-card (object &optional urls)
-  "Normalize OBJECT's website card into a plist, or nil.
+(defun chirp--link-card-from-x (object &optional urls)
+  "Return OBJECT's X website card as a Chirp plist, or nil.
 
 URLS are already-expanded tweet URLs used to prefer a real destination
 over the card's `t.co` permalink."
@@ -2247,8 +2242,8 @@ over the card's `t.co` permalink."
               :image-url image-url
               :domain domain)))))
 
-(defun chirp--normalize-unified-card-media (object)
-  "Normalize video media embedded in OBJECT's bounded unified card."
+(defun chirp--unified-card-media-from-x (object)
+  "Return video media decoded from OBJECT's bounded X unified card."
   (when-let* ((encoded (chirp--card-binding-raw-string
                         (chirp--tweet-card-bindings object)
                         "unified_card"))
@@ -2265,12 +2260,12 @@ over the card's `t.co` permalink."
                 (lambda (media)
                   (member (plist-get media :type)
                           '("video" "animated_gif")))
-                (chirp-normalize-media-list (mapcar #'cdr entities)))))
+                (chirp--media-list-from-x (mapcar #'cdr entities)))))
       (json-parse-error nil))))
 
-(defun chirp-normalize-media-item (object)
-  "Normalize media OBJECT into a plist."
-  (let ((type (chirp-first-nonblank (chirp-get object "type")))
+(defun chirp--media-item-from-x (object)
+  "Return one Chirp media item decoded from X OBJECT."
+  (let* ((type (chirp-first-nonblank (chirp-get object "type")))
         (url (chirp-first-nonblank
               (chirp-get object "media_url_https" "media_url" "url")))
         (preview-url (chirp-first-nonblank
@@ -2283,9 +2278,13 @@ over the card's `t.co` permalink."
                       (chirp-get-in object '("preview" "url"))
                       (chirp-get-in object '("thumbnail" "url"))
                       (chirp-get-in object '("poster" "url"))))
-        (variants (chirp-normalize-media-variants
-                   (or (chirp-get object "variants")
-                       (chirp-get-in object '("video_info" "variants")))))
+        (raw-variants
+         (or (chirp-get object "variants")
+             (chirp-get-in object '("video_info" "variants"))))
+        (variants
+         (and (listp raw-variants)
+              (delq nil
+                    (mapcar #'chirp--media-variant-from-x raw-variants))))
         (width (or (chirp-get object "width")
                    (chirp-get-in object '("original_info" "width"))
                    (chirp-get-in object '("sizes" "large" "w"))))
@@ -2303,10 +2302,10 @@ over the card's `t.co` permalink."
             :height height
             :alt alt))))
 
-(defun chirp-normalize-media-list (value)
-  "Normalize media VALUE into a list of plists."
+(defun chirp--media-list-from-x (value)
+  "Return Chirp media items decoded from X VALUE."
   (if (listp value)
-      (delq nil (mapcar #'chirp-normalize-media-item value))
+      (delq nil (mapcar #'chirp--media-item-from-x value))
     nil))
 
 ;;;; Articles
@@ -2485,8 +2484,8 @@ over the card's `t.co` permalink."
 
 ;;;; Tweets
 
-(defun chirp-normalize-tweet (object)
-  "Normalize OBJECT into a tweet plist."
+(defun chirp--tweet-from-x (object)
+  "Return a Chirp tweet decoded from X OBJECT, or nil."
   (let* ((result object)
          (wrapper (chirp--tweet-result result))
          (wrapper-legacy (chirp-get wrapper "legacy"))
@@ -2501,13 +2500,13 @@ over the card's `t.co` permalink."
                 (chirp-get wrapper "rest_id" "id_str" "id")
                 (chirp-get wrapper-legacy "id_str"))))
          (retweeter (and retweet
-                         (chirp-normalize-user
-                          (chirp-extract-user-object wrapper))))
+                         (chirp--user-from-x
+                          (chirp--extract-user-object wrapper))))
          (object (if retweet-p retweet wrapper))
          (legacy (chirp-get object "legacy"))
          (metrics (chirp-get object "metrics"))
-         (author (chirp-extract-user-object object))
-         (author-user (chirp-normalize-user author))
+         (author (chirp--extract-user-object object))
+         (author-user (chirp--user-from-x author))
          (author-handle (plist-get author-user :handle))
          (id (chirp-first-nonblank
               (chirp-get object "rest_id" "id_str" "id")
@@ -2552,7 +2551,7 @@ over the card's `t.co` permalink."
            (car visible-range)
            (cdr visible-range)))
          (full-text (chirp-clean-text raw-source))
-         (quoted-tweet (chirp-normalize-quoted-tweet object))
+         (quoted-tweet (chirp--quoted-tweet-from-x object))
          (timeline-context
           (pcase (or (chirp-get wrapper "timelineContext" "timeline_context")
                      (chirp-get object "timelineContext" "timeline_context"))
@@ -2560,12 +2559,12 @@ over the card's `t.co` permalink."
             (_ nil)))
          (all-urls (chirp-extract-tweet-urls object legacy))
          (media
-          (or (chirp-normalize-media-list
+          (or (chirp--media-list-from-x
                (or (chirp-get object "media")
                    (chirp-get-in object '("extended_entities" "media"))
                    (chirp-get-in legacy '("extended_entities" "media"))
                    (chirp-get-in legacy '("entities" "media"))))
-              (chirp--normalize-unified-card-media object)))
+              (chirp--unified-card-media-from-x object)))
          (url-context (list :tweet tweet-identity
                             :quoted-tweet quoted-tweet
                             :media media))
@@ -2602,7 +2601,7 @@ over the card's `t.co` permalink."
                         (plist-get entity :tag)))
                  text-entities)))
          (urls (chirp--filter-display-urls all-urls url-context))
-         (link-card (chirp-normalize-link-card object urls))
+         (link-card (chirp--link-card-from-x object urls))
          (article-result
           (chirp-get-in object '("article" "article_results" "result")))
          (article-title (chirp-first-nonblank
@@ -2729,13 +2728,13 @@ over the card's `t.co` permalink."
   (or (not chirp-hide-promoted-posts)
       (not (plist-get tweet :promoted-p))))
 
-(defun chirp-collect-top-level-tweets (value)
-  "Collect normalized tweets from the top level of VALUE."
+(defun chirp--top-level-tweets-from-x (value)
+  "Return visible Chirp tweets decoded from top-level X VALUE."
   (cond
    ((chirp-tweet-like-p value)
     (let ((tweet
            (chirp-apply-tweet-state-overrides
-            (chirp-normalize-tweet value))))
+            (chirp--tweet-from-x value))))
       (if (and tweet
                (chirp-tweet-visible-p tweet))
           (list tweet)
@@ -2746,7 +2745,7 @@ over the card's `t.co` permalink."
                     (when (chirp-tweet-like-p item)
                       (let ((tweet
                              (chirp-apply-tweet-state-overrides
-                              (chirp-normalize-tweet item))))
+                              (chirp--tweet-from-x item))))
                         (when (and tweet
                                    (chirp-tweet-visible-p tweet))
                           tweet))))
