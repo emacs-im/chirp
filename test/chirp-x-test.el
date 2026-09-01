@@ -96,7 +96,7 @@
   "Explicit browser capture should import only a private X auth file."
   (let* ((directory (make-temp-file "chirp-x-login-" t))
          (chirp-x-auth-file (expand-file-name "auth.json" directory))
-         (chirp-x--browser-session-process nil)
+         (chirp-x--browser-session-request nil)
          (chirp-x-bearer-token "configured-bearer")
          (auth-token (make-string 31 ?a))
          (ct0 (make-string 47 ?b))
@@ -141,7 +141,7 @@
   (let* ((directory (make-temp-file "chirp-x-login-" t))
          (chirp-x-browser-session-profile-root
           (expand-file-name "browser-session/" directory))
-         (chirp-x--browser-session-process nil)
+         (chirp-x--browser-session-request nil)
          arguments
          capture-file)
     (unwind-protect
@@ -162,7 +162,7 @@
   "A non-X capture should not replace Chirp's existing auth file."
   (let* ((directory (make-temp-file "chirp-x-login-" t))
          (chirp-x-auth-file (expand-file-name "auth.json" directory))
-         (chirp-x--browser-session-process nil)
+         (chirp-x--browser-session-request nil)
          (chirp-x-bearer-token "configured-bearer")
          (old-auth-token (make-string 19 ?a))
          (old-ct0 (make-string 29 ?b))
@@ -203,7 +203,7 @@
 
 (ert-deftest chirp-x-capture-browser-session-retries-confirmed-restart ()
   "Browser-session restart requests should be retried only after confirmation."
-  (let ((chirp-x--browser-session-process nil)
+  (let ((chirp-x--browser-session-request nil)
         (attempts 0)
         capture-files
         second-arguments)
@@ -240,19 +240,48 @@
       (chirp-login)
       (should called))))
 
-(ert-deftest chirp-x-clear-auth-file-removes-private-session ()
-  "Clearing the browser session should delete its auth file and reset Chirp."
+(ert-deftest chirp-login-rejects-a-concurrent-browser-capture ()
+  "The public login command should keep one live browser-session request."
+  (require 'chirp)
+  (let ((chirp-x--browser-session-request nil)
+        (attempts 0)
+        capture-file)
+    (unwind-protect
+        (cl-letf (((symbol-function 'browser-session-capture)
+                   (lambda (&rest arguments)
+                     (setq attempts (1+ attempts)
+                           capture-file (plist-get arguments :output-file))
+                     'capture-request))
+                  ((symbol-function 'browser-session-request-live-p)
+                   (lambda (request) (eq request 'capture-request)))
+                  ((symbol-function 'message) #'ignore))
+          (chirp-login)
+          (should-error (chirp-login) :type 'user-error)
+          (should (= attempts 1)))
+      (when capture-file
+        (chirp-x--delete-browser-session-capture capture-file)))))
+
+(ert-deftest chirp-forget-browser-session-cancels-active-capture ()
+  "The public forget command should cancel capture and remove private auth."
+  (require 'chirp)
   (let* ((directory (make-temp-file "chirp-x-auth-" t))
          (chirp-x-auth-file (expand-file-name "auth.json" directory))
-         (chirp-x--browser-session-process nil)
+         (chirp-x--browser-session-request 'capture-request)
+         cancelled
          stopped)
     (unwind-protect
         (progn
           (chirp-x--write-auth-file (make-string 17 ?a) (make-string 23 ?b))
-          (cl-letf (((symbol-function 'chirp-stop)
+          (cl-letf (((symbol-function 'browser-session-request-live-p)
+                     (lambda (request) (eq request 'capture-request)))
+                    ((symbol-function 'browser-session-cancel)
+                     (lambda (request)
+                       (setq cancelled request)))
+                    ((symbol-function 'chirp-stop)
                      (lambda ()
                        (setq stopped t))))
-            (chirp-x-clear-auth-file))
+            (chirp-forget-browser-session))
+          (should (eq cancelled 'capture-request))
           (should-not (file-exists-p chirp-x-auth-file))
           (should stopped))
       (delete-directory directory t))))

@@ -138,8 +138,8 @@ over dynamically refreshed read IDs and built-in fallbacks."
 
 ;;; Variables
 
-(defvar chirp-x--browser-session-process nil
-  "Current asynchronous browser-session capture process, or nil.")
+(defvar chirp-x--browser-session-request nil
+  "Current asynchronous browser-session capture request, or nil.")
 
 (defvar chirp-x--query-id-cache (make-hash-table :test #'equal)
   "Process cache of dynamically discovered read-operation query IDs.")
@@ -289,8 +289,7 @@ client token, not an account credential."
 
 (defun chirp-x--browser-session-capture-running-p ()
   "Return non-nil while Chirp is capturing a browser session."
-  (and (processp chirp-x--browser-session-process)
-       (process-live-p chirp-x--browser-session-process)))
+  (browser-session-request-live-p chirp-x--browser-session-request))
 
 (defun chirp-x--finish-browser-session-capture (capture-file)
   "Import private browser-session CAPTURE-FILE into Chirp's auth file."
@@ -303,7 +302,7 @@ client token, not an account credential."
             (message "Chirp imported the X browser session"))
         (error
          (message "Chirp could not import the X browser session")))
-    (setq chirp-x--browser-session-process nil)
+    (setq chirp-x--browser-session-request nil)
     (chirp-x--delete-browser-session-capture capture-file)))
 
 (defun chirp-x--browser-session-restart-needed-p (error)
@@ -316,7 +315,7 @@ client token, not an account credential."
 When RESTART-RUNNING is nil, offer one explicit browser restart before giving
 up."
   (chirp-x--delete-browser-session-capture capture-file)
-  (setq chirp-x--browser-session-process nil)
+  (setq chirp-x--browser-session-request nil)
   (if (and (not restart-running)
            (chirp-x--browser-session-restart-needed-p error)
            (yes-or-no-p "Restart the X login browser once to enable capture? "))
@@ -334,7 +333,7 @@ When RESTART-RUNNING is non-nil, permit one supported browser restart."
         settled)
     (message "Opening X login window...")
     (condition-case error
-        (let ((process
+        (let ((request
                (browser-session-capture
                 :url chirp-x--browser-session-url
                 :cookies chirp-x--browser-session-cookie-names
@@ -349,11 +348,11 @@ When RESTART-RUNNING is non-nil, permit one supported browser restart."
                              (chirp-x--finish-browser-session-error
                               capture-file restart-running browser-error)))))
           (unless settled
-            (setq chirp-x--browser-session-process process))
-          process)
+            (setq chirp-x--browser-session-request request))
+          request)
       (error
        (chirp-x--delete-browser-session-capture capture-file)
-       (setq chirp-x--browser-session-process nil)
+       (setq chirp-x--browser-session-request nil)
        (signal (car error) (cdr error))))))
 
 (defun chirp-x-capture-browser-session ()
@@ -367,7 +366,7 @@ When RESTART-RUNNING is non-nil, permit one supported browser restart."
 This does not sign out of X in the browser."
   (interactive)
   (when (chirp-x--browser-session-capture-running-p)
-    (user-error "An X browser-session capture is already running"))
+    (browser-session-cancel chirp-x--browser-session-request))
   (let ((file (expand-file-name chirp-x-auth-file)))
     (when (file-exists-p file)
       (delete-file file)))
