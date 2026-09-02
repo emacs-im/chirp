@@ -1117,7 +1117,8 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
            image
            nil
            nil
-           nil)))
+           nil
+           map)))
     (dolist (key '([right] [tab]))
       (define-key
        map key
@@ -1171,13 +1172,9 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
 (defun chirp-render--media-track-activate-video
     (buffer markers poster canvas)
   "Replace POSTER rows at MARKERS in BUFFER with video CANVAS slices."
-  (let ((slice-count
-         (plist-get (cdr poster) :appkit-media-nslices))
-        (image-map (plist-get (cdr poster) :map)))
-    (when slice-count
-      (plist-put (cdr canvas) :appkit-media-nslices slice-count))
-    (when image-map
-      (plist-put (cdr canvas) :map image-map)))
+  (when-let* ((slice-count
+               (plist-get (cdr poster) :appkit-media-nslices)))
+    (plist-put (cdr canvas) :appkit-media-nslices slice-count))
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((rows (appkit-media-image-slice-rows canvas)))
@@ -1292,6 +1289,7 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                   buffer markers poster canvas)))))
         (aset state 9 inline)
         (aset state 12 index)
+        (video-inline-bind-controls inline (aref state 14))
         (video-inline-play inline)))))
 
 
