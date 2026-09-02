@@ -5,17 +5,12 @@
 
 ;;; Commentary:
 
-;; Own interactive media viewer buffers and their current local resource.
+;; Own reader-style media buffers and their application navigation state.
 ;; Fetching, caching, preview construction, and external playback remain in
-;; chirp-media.el.  This boundary also provides a home for a future in-Emacs
-;; video presentation without coupling it to timeline rendering.
+;; chirp-media.el; video.el owns Canvas viewports and playback transport.
 
 ;;; Code:
 
-(require 'cl-lib)
-(require 'dired)
-(require 'image-mode)
-(require 'appkit-evil)
 (require 'chirp-core)
 (require 'chirp-media)
 
@@ -54,93 +49,6 @@
             (when source-anchor
               (chirp-restore-point-anchor source-anchor)))))))
 
-(defun chirp-media-jump-to-file ()
-  "Open Dired at the local file rendered by the current media viewer."
-  (interactive)
-  (unless (and (stringp chirp--media-file)
-               (file-regular-p chirp--media-file))
-    (user-error "Current media has no local file"))
-  (dired-jump nil chirp--media-file))
-
-(defvar-keymap chirp-media-view-mode-map
-  :doc "Keymap for `chirp-media-view-mode'."
-  :parent special-mode-map
-  "n" #'chirp-media-next
-  "p" #'chirp-media-previous
-  "C-x C-j" #'chirp-media-jump-to-file
-  "D" #'chirp-media-download-at-point
-  "v" #'chirp-media-play
-  "o" #'chirp-media-browse
-  "q" #'chirp-media-quit)
-
-(define-derived-mode chirp-media-view-mode special-mode "Chirp-Media"
-  "Major mode for large media in Chirp."
-  (appkit-evil-normalize-keymaps))
-
-(defvar-keymap chirp-media-image-mode-map
-  :doc "Keymap for `chirp-media-image-mode'."
-  :parent image-mode-map
-  "n" #'chirp-media-next
-  "p" #'chirp-media-previous
-  "C-x C-j" #'chirp-media-jump-to-file
-  "D" #'chirp-media-download-at-point
-  "v" #'chirp-media-play
-  "o" #'chirp-media-browse
-  "q" #'chirp-media-quit)
-
-(define-derived-mode chirp-media-image-mode image-mode "Chirp-Image"
-  "Image mode used for Chirp photo viewing."
-  (setq-local header-line-format nil)
-  (appkit-evil-normalize-keymaps))
-
-(defun chirp-media-view--setup-evil ()
-  "Install optional Evil bindings for Chirp media views."
-  (when appkit-evil-enable-integration
-    (appkit-evil-set-initial-states
-     '(chirp-media-view-mode chirp-media-image-mode) 'normal)
-    (appkit-evil-define-readonly-keys 'chirp-media-view-mode-map)
-    (appkit-evil-define-readonly-keys 'chirp-media-image-mode-map)
-    (appkit-evil-map
-      (:map chirp-media-view-mode-map
-       :nm
-       "g j" #'chirp-media-next
-       "g k" #'chirp-media-previous
-       "g d" #'chirp-media-download-at-point
-       "RET" #'chirp-media-play
-       "g o" #'chirp-media-browse)
-      (:map chirp-media-image-mode-map
-       :nm
-       "g j" #'chirp-media-next
-       "g k" #'chirp-media-previous
-       "g d" #'chirp-media-download-at-point
-       "RET" #'chirp-media-play
-       "g o" #'chirp-media-browse))
-    (appkit-evil-normalize-buffers
-     '(chirp-media-view-mode chirp-media-image-mode))))
-
-(chirp-media-view--setup-evil)
-
-(with-eval-after-load 'evil
-  (chirp-media-view--setup-evil))
-
-(defun chirp-media-browse ()
-  "Browse the current media URL."
-  (interactive)
-  (if-let* ((media (or (chirp-media-at-point)
-                       (nth chirp--media-index chirp--media-list)))
-            (url (plist-get media :url)))
-      (browse-url url)
-    (user-error "No media URL available")))
-
-(defun chirp-media-play (&optional external)
-  "Play the current video or GIF inside Emacs.
-
-With prefix argument EXTERNAL, use the configured external player."
-  (interactive "P")
-  (chirp-media-play-video
-   (or (chirp-media-at-point)
-       (nth chirp--media-index chirp--media-list))
-   external))
 
 (defun chirp-media-view--set-state (media-list index title file)
   "Record MEDIA-LIST, INDEX, TITLE, and rendered FILE in this viewer."
@@ -152,126 +60,103 @@ With prefix argument EXTERNAL, use the configured external player."
   (setq-local chirp--timeline-kind nil)
   (setq-local chirp--refresh-function nil))
 
-(defun chirp-media-view--render-image-buffer (buffer media-list index title)
-  "Render photo MEDIA-LIST at INDEX into BUFFER using `image-mode'."
-  (let* ((media (nth index media-list))
-         (file (chirp-media--photo-file media)))
-    (unless file
-      (user-error "Image preview unavailable"))
-    (if (not (display-images-p))
-        (chirp-media-view--render-buffer buffer media-list index title file)
-      (with-current-buffer buffer
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert-file-contents-literally file))
-        (chirp-media-image-mode)
-        (use-local-map chirp-media-image-mode-map)
-        (chirp-media-view--set-state media-list index title file)
-        (setq-local chirp--rerender-function
-                    (lambda ()
-                      (chirp-media-open media-list index title buffer)))
-        (setq-local header-line-format nil)
-        (goto-char (point-min)))
-      (chirp-display-buffer buffer)
-      (message "%s (%d/%d)" title (1+ index) (length media-list)))))
+(defun chirp-media-view--selection-at-point ()
+  "Return (MEDIA-LIST . INDEX) for point or its containing entry."
+  (if-let* ((media-list (chirp-media-list-at-point)))
+      (cons media-list (or (chirp-media-index-at-point) 0))
+    (let* ((entry (chirp-entry-at-point))
+           (media-list
+            (or (plist-get entry :media)
+                (and (eq (plist-get entry :kind) 'tweet)
+                     (chirp-tweet-article-images entry)))))
+      (and media-list (cons media-list 0)))))
 
-(defun chirp-media-view--render-buffer
-    (buffer media-list index title &optional rendered-file)
-  "Render MEDIA-LIST at INDEX into BUFFER.
+(defun chirp-media-view--dedicated-source (media)
+  "Return (SOURCE . KIND) for dedicated MEDIA viewing."
+  (cond
+   ((chirp-media-video-like-p media)
+    (if-let* ((source (chirp-media-playback-url media)))
+        (cons source 'video)
+      (user-error "Current media has no playable URL")))
+   ((string= (plist-get media :type) "photo")
+    (if-let* ((source (chirp-media--photo-file media)))
+        (cons source 'image)
+      (user-error "Image preview unavailable")))
+   (t
+    (user-error "Unsupported media type"))))
 
-RENDERED-FILE is the local resource represented by the preview, when known."
-  (let* ((media (nth index media-list))
-         (total (length media-list))
-         (file
-          (or rendered-file
-              (and (chirp-media-video-like-p media)
-                   (chirp-media--preview-file media)))))
-    (with-current-buffer buffer
-      (chirp-media-view-mode)
-      (chirp-media-view--set-state media-list index title file)
-      (setq-local chirp--rerender-function
-                  (lambda ()
-                    (chirp-media-open media-list index title buffer)))
-      (setq-local header-line-format nil)
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (format "%s (%d/%d)\n\n" title (1+ index) total))
-        (cond
-         ((string= (plist-get media :type) "photo")
-          (if-let* ((image (chirp-media-view-image media)))
-              (insert-image image (format "[image %d]" (1+ index)))
-            (insert "Image preview unavailable.\n"))
-          (insert "\n\n"))
-         ((chirp-media-video-like-p media)
-          (if-let* ((image (chirp-media--cached-video-preview-image media)))
-              (progn
-                (insert-image image (format "[video %d]" (1+ index)))
-                (insert "\n\n"))
-            (chirp-media-prefetch-media media buffer)
-            (insert "Preview loading...\n\n"))
-          (insert (if (string= (plist-get media :type) "animated_gif")
-                      "Animated GIF media.\n\n"
-                    "Video media.\n\n"))
-          (insert "Press `v` to play externally, `D` to download the original media, or `o` to open the source URL.\n\n"))
-         (t
-          (insert "Unsupported media type.\n\n")))
-        (insert (format "Type: %s\n" (or (plist-get media :type) "unknown")))
-        (when-let* ((width (plist-get media :width))
-                    (height (plist-get media :height)))
-          (insert (format "Size: %sx%s\n" width height)))
-        (when-let* ((url (plist-get media :url)))
-          (insert (format "URL: %s\n" url)))
-        (goto-char (point-min))))
-    (chirp-display-buffer buffer)))
-
-(defun chirp-media-open (media-list index &optional title buffer)
-  "Open MEDIA-LIST at INDEX with TITLE in BUFFER."
+(defun chirp-media-open-dedicated
+    (media-list index &optional title buffer)
+  "Open MEDIA-LIST item INDEX in a reader-style dedicated media BUFFER."
   (let* ((safe-index (max 0 (min index (1- (length media-list)))))
          (media (nth safe-index media-list))
-         (base-title (or title "Chirp Media")))
-    (if (null media)
-        (user-error "No media available")
-      (if (chirp-media-video-like-p media)
-          (chirp-media-play-video media)
-        (let* ((buffer (or buffer (chirp-buffer)))
-               (source-buffer
-                (or (and (buffer-live-p buffer)
-                         (with-current-buffer buffer
-                           chirp--media-source-buffer))
-                    (current-buffer)))
-               (source-anchor
-                (or (and (buffer-live-p buffer)
-                         (with-current-buffer buffer
-                           chirp--media-source-anchor))
-                    (and (buffer-live-p source-buffer)
-                         (with-current-buffer source-buffer
-                           (chirp-capture-point-anchor)))))
-               (source-window-state
-                (or (and (buffer-live-p buffer)
-                         (with-current-buffer buffer
-                           chirp--media-source-window-state))
-                    (chirp-capture-window-state source-buffer))))
-          (if (string= (plist-get media :type) "photo")
-              (chirp-media-view--render-image-buffer
-               buffer media-list safe-index base-title)
-            (chirp-media-view--render-buffer
-             buffer media-list safe-index base-title))
-          (with-current-buffer buffer
-            (setq-local chirp--media-source-buffer source-buffer)
-            (setq-local chirp--media-source-anchor source-anchor)
-            (setq-local chirp--media-source-window-state
-                        source-window-state)))))))
+         (base-title (or title "Chirp Media"))
+         (viewer
+          (or (and (buffer-live-p buffer) buffer)
+              (generate-new-buffer "*Chirp Media*")))
+         (source-buffer
+          (or (and (buffer-live-p buffer)
+                   (with-current-buffer buffer chirp--media-source-buffer))
+              (current-buffer)))
+         (source-anchor
+          (or (and (buffer-live-p buffer)
+                   (with-current-buffer buffer chirp--media-source-anchor))
+              (and (buffer-live-p source-buffer)
+                   (with-current-buffer source-buffer
+                     (chirp-capture-point-anchor)))))
+         (source-window-state
+          (or (and (buffer-live-p buffer)
+                   (with-current-buffer buffer chirp--media-source-window-state))
+              (chirp-capture-window-state source-buffer)))
+         (source-kind (and media (chirp-media-view--dedicated-source media))))
+    (unless media
+      (user-error "No media available"))
+    (setq viewer (video-open (car source-kind) (cdr source-kind) viewer))
+    (with-current-buffer viewer
+      (chirp-media-view--set-state
+       media-list safe-index base-title
+       (and (eq (cdr source-kind) 'image) (car source-kind)))
+      (setq-local chirp--media-source-buffer source-buffer
+                  chirp--media-source-anchor source-anchor
+                  chirp--media-source-window-state source-window-state
+                  video-next-function
+                  (and (> (length media-list) 1) #'chirp-media-next)
+                  video-previous-function
+                  (and (> (length media-list) 1) #'chirp-media-previous)
+                  video-quit-function #'chirp-media-quit))
+    (message "%s (%d/%d)" base-title (1+ safe-index) (length media-list))
+    viewer))
+
+(defun chirp-media-open-dedicated-at-point ()
+  "Open the selected media in a dedicated reader-style media buffer."
+  (interactive)
+  (if-let* ((selection (chirp-media-view--selection-at-point)))
+      (chirp-media-open-dedicated
+       (car selection) (cdr selection)
+       (or chirp--view-title "Chirp Media"))
+    (user-error "No media at point")))
+
+(defun chirp-media-open-external-at-point ()
+  "Open the selected video in the configured external player."
+  (interactive)
+  (if-let* ((selection (chirp-media-view--selection-at-point))
+            (media (nth (cdr selection) (car selection))))
+      (chirp-media-play-video media t)
+    (user-error "No media at point")))
+
+
+(defun chirp-media-open (media-list index &optional title buffer)
+  "Open MEDIA-LIST at INDEX in the dedicated reader-style media BUFFER."
+  (chirp-media-open-dedicated media-list index title buffer))
 
 (defun chirp-media-open-at-point ()
   "Open the media item at point."
   (interactive)
-  (let ((media-list (chirp-media-list-at-point))
-        (index (or (chirp-media-index-at-point) 0)))
-    (if media-list
-        (chirp-media-open media-list
-                          index
-                          (or chirp--view-title "Chirp Media"))
-      (user-error "No media at point"))))
+  (if-let* ((selection (chirp-media-view--selection-at-point)))
+      (chirp-media-open
+       (car selection) (cdr selection)
+       (or chirp--view-title "Chirp Media"))
+    (user-error "No media at point")))
 
 (defun chirp-media-next ()
   "Open the next media item in the current viewer."

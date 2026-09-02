@@ -604,15 +604,14 @@ rerender and creates a CPU loop."
             (recenter 0))
           (let ((source-point (with-current-buffer source (point)))
                 (source-window-state (chirp-capture-window-state source)))
-            (cl-letf (((symbol-function 'chirp-media-view--render-image-buffer)
-                       (lambda (buffer media-list index title)
+            (cl-letf (((symbol-function 'chirp-media--photo-file)
+                       (lambda (_media) "/tmp/photo.jpg"))
+                      ((symbol-function 'video-open)
+                       (lambda (_source _kind buffer)
                          (with-current-buffer buffer
-                           (chirp-media-view-mode)
-                           (setq-local chirp--media-list media-list)
-                           (setq-local chirp--media-index index)
-                           (setq-local chirp--media-title title)
-                           (setq-local chirp--view-title title))
-                         (chirp-display-buffer buffer))))
+                           (special-mode))
+                         (chirp-display-buffer buffer)
+                         buffer)))
               (chirp-media-open
                '((:type "photo" :url "https://example.com/photo.jpg"))
                0
@@ -637,20 +636,23 @@ rerender and creates a CPU loop."
   "Opening video media should pass the selected variant to `video-open'."
   (let ((chirp-video-use-internal-player t)
         (chirp-video-playback-max-bitrate 2176000)
-        opened-url)
-    (cl-letf (((symbol-function 'video-open)
-               (lambda (url)
-                 (setq opened-url url)
-                 'video-buffer)))
-      (chirp-media-open
-       '((:type "video"
-          :url "https://example.com/high.mp4"
-          :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
-                     (:url "https://example.com/mid.mp4" :bitrate 2176000)
-                     (:url "https://example.com/low.mp4" :bitrate 832000))))
-       0
-       "Media"))
-    (should (equal opened-url "https://example.com/mid.mp4"))))
+        opened)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'video-open)
+                 (lambda (url kind buffer)
+                   (setq opened (list url kind buffer))
+                   buffer)))
+        (chirp-media-open
+         '((:type "video"
+            :url "https://example.com/high.mp4"
+            :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
+                       (:url "https://example.com/mid.mp4" :bitrate 2176000)
+                       (:url "https://example.com/low.mp4" :bitrate 832000))))
+         0
+         "Media"
+         (current-buffer))))
+    (should (equal (seq-take opened 2)
+                   '("https://example.com/mid.mp4" video)))))
 
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."
@@ -660,7 +662,6 @@ rerender and creates a CPU loop."
         captured-command
         captured-query-flag)
     (with-temp-buffer
-      (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "animated_gif"
                                        :url "https://example.com/anim-high.mp4"
                                        :variants ((:url "https://example.com/anim-high.mp4" :bitrate 4096000)
@@ -673,7 +674,7 @@ rerender and creates a CPU loop."
                 ((symbol-function 'set-process-query-on-exit-flag)
                  (lambda (_process flag)
                    (setq captured-query-flag flag))))
-        (chirp-media-play)))
+        (chirp-media-play-video (car chirp--media-list) t)))
     (should (equal captured-command
                    '("/usr/bin/mpv" "https://example.com/anim-low.mp4")))
     (should (eq captured-query-flag nil))))
@@ -685,7 +686,6 @@ rerender and creates a CPU loop."
         (chirp-video-player-window-size '(1280 . 720))
         captured-command)
     (with-temp-buffer
-      (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "video"
                                        :url "https://example.com/video.mp4")))
       (setq-local chirp--media-index 0)
@@ -696,7 +696,7 @@ rerender and creates a CPU loop."
                 ((symbol-function 'set-process-query-on-exit-flag)
                  (lambda (&rest _args)
                    nil)))
-        (chirp-media-play)))
+        (chirp-media-play-video (car chirp--media-list) t)))
     (should (equal captured-command
                    '("/usr/bin/mpv" "--geometry=1280x720" "https://example.com/video.mp4")))))
 
@@ -706,14 +706,13 @@ rerender and creates a CPU loop."
         (chirp-video-use-internal-player nil)
         browsed-url)
     (with-temp-buffer
-      (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "animated_gif"
                                        :url "https://example.com/anim.mp4")))
       (setq-local chirp--media-index 0)
       (cl-letf (((symbol-function 'browse-url)
                  (lambda (url &rest _args)
                    (setq browsed-url url))))
-        (chirp-media-play)))
+        (chirp-media-play-video (car chirp--media-list) t)))
     (should (equal browsed-url "https://example.com/anim.mp4"))))
 
 (ert-deftest chirp-media-download-url-prefers-original-photo-and-highest-video-variant ()
@@ -741,7 +740,6 @@ rerender and creates a CPU loop."
         captured-command
         start-message)
     (with-temp-buffer
-      (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "video"
                                        :url "https://example.com/mid.mp4"
                                        :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)))))
@@ -775,7 +773,6 @@ rerender and creates a CPU loop."
         copied-target
         final-message)
     (with-temp-buffer
-      (chirp-media-view-mode)
       (setq-local chirp--media-list '((:type "photo"
                                        :url "https://pbs.twimg.com/media/abc123.jpg")))
       (setq-local chirp--media-index 0)

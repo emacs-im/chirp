@@ -198,7 +198,11 @@ Edited posts show ~Edited · N versions~; activate it or use ~x H~.
 
 * Media
 
-Images render as gapless row-sliced previews.  Normal non-condensed posts—including timelines, reposts, thread focuses, and thread replies—share one large SVG media renderer.  A single item keeps its natural ratio within the full reference width and the same bounded media height.  Multiple items use X Web's current carousel geometry: source aspect ratios determine the common height, each item occupies at most 80 percent of the reference width, 4-pixel gutters separate items, and constrained boxes use center cover.  Quoted posts and other condensed cards retain X Web's center-cropped ~TweetPhotos~ grid.  Every carousel is one SVG display object, so over-wide media remains one visual line.  Video and animated-GIF items retain the shared translucent circle-and-triangle play marker inside that SVG.  ~RIGHT~ or ~TAB~ moves the SVG viewport to the next item, ~LEFT~ or ~S-TAB~ moves to the previous item, and ~RET~ opens the selected item; the surrounding post stays horizontally anchored.  Mouse clicks use per-image hot spots.  In a ~Chirp-Image~ buffer, ~C-x C-j~ opens Dired at the exact cached file currently displayed.  Videos open in ~mpv~ when available.
+Images render as row-sliced previews.  Normal non-condensed posts—including timelines, reposts, thread focuses, and thread replies—share one large carousel display; quoted posts and other condensed cards retain X Web's center-cropped ~TweetPhotos~ grid.  Source aspect ratios determine the common carousel height, each item occupies at most 80 percent of the reference width, 4-pixel gutters separate items, and constrained boxes use center cover.  Static carousels use SVG; inline video playback replaces the complete composite scene with one Canvas while preserving the same geometry and keeping ~window-hscroll~ at zero.
+
+~RIGHT~ and ~LEFT~ select carousel items.  ~RET~ activates the selected item: video toggles lazy inline playback, while a still image opens the dedicated reader.  Mouse hot spots perform the same item activation without moving point.  ~m~ toggles the inline video's desired mute state.  ~C-RET~ always opens the selected image or video in a dedicated media buffer, ~S-RET~ sends a video to the configured external player, and ~M-RET~ ignores media, links, and other local actions and opens the containing tweet thread or profile.
+
+The dedicated buffer uses video.el's reader model.  One buffer owns the current source/player; every window displaying it owns an independent absolute scale and viewport origin.  The virtual media plane may be much larger than the window, while its Canvas and native raster stay exactly viewport-sized.  Fit commands calculate a scale once, so later window resizing does not resize the media.  Images and videos support zoom, pan, fit, mouse-wheel input, and middle-button dragging; videos additionally expose playback transport.  ~n~ and ~p~ move through the source carousel, and ~q~ returns to the saved Chirp view.
 
 #+begin_src emacs-lisp
 (setq chirp-media-thumbnail-size 256
@@ -208,5 +212,5 @@ Images render as gapless row-sliced previews.  Normal non-condensed posts—incl
       chirp-backend-read-cache-ttl 15)
 #+end_src
 
-Set ~chirp-video-player-command~ to another player, or ~nil~ to open
-videos in the browser.  In media views, ~q~ closes and ~D~ downloads.
+Set ~chirp-video-player-command~ to another player, or ~nil~ to open externally
+requested videos in the browser.
