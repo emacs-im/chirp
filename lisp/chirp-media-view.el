@@ -111,7 +111,9 @@
          (source-kind (and media (chirp-media-view--dedicated-source media))))
     (unless media
       (user-error "No media available"))
-    (setq viewer (video-open (car source-kind) (cdr source-kind) viewer))
+    (setq viewer
+          (video-open
+           (car source-kind) :kind (cdr source-kind) :buffer viewer))
     (with-current-buffer viewer
       (chirp-media-view--set-state
        media-list safe-index base-title

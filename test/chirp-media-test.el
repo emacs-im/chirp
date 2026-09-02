@@ -607,11 +607,12 @@ rerender and creates a CPU loop."
             (cl-letf (((symbol-function 'chirp-media--photo-file)
                        (lambda (_media) "/tmp/photo.jpg"))
                       ((symbol-function 'video-open)
-                       (lambda (_source _kind buffer)
-                         (with-current-buffer buffer
-                           (special-mode))
-                         (chirp-display-buffer buffer)
-                         buffer)))
+                       (lambda (_source &rest args)
+                         (let ((buffer (plist-get args :buffer)))
+                           (with-current-buffer buffer
+                             (special-mode))
+                           (chirp-display-buffer buffer)
+                           buffer))))
               (chirp-media-open
                '((:type "photo" :url "https://example.com/photo.jpg"))
                0
@@ -632,16 +633,20 @@ rerender and creates a CPU loop."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-media-open-video-uses-dedicated-video-buffer ()
-  "Opening video media should pass the selected variant to `video-open'."
+(ert-deftest chirp-media-open-video-uses-default-display-policy ()
+  "Opening video media should not override the user's display policy."
   (let ((chirp-video-use-internal-player t)
         (chirp-video-playback-max-bitrate 2176000)
         opened)
     (with-temp-buffer
       (cl-letf (((symbol-function 'video-open)
-                 (lambda (url kind buffer)
-                   (setq opened (list url kind buffer))
-                   buffer)))
+                 (lambda (url &rest args)
+                   (setq opened
+                         (list url
+                               (plist-get args :kind)
+                               (plist-get args :buffer)
+                               (plist-get args :display-function)))
+                   (plist-get args :buffer))))
         (chirp-media-open
          '((:type "video"
             :url "https://example.com/high.mp4"
@@ -652,7 +657,8 @@ rerender and creates a CPU loop."
          "Media"
          (current-buffer))))
     (should (equal (seq-take opened 2)
-                   '("https://example.com/mid.mp4" video)))))
+                   '("https://example.com/mid.mp4" video)))
+    (should-not (nth 3 opened))))
 
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."
