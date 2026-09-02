@@ -1895,7 +1895,7 @@
                (lookup-key map [chirp-media-2 mouse-1]))
               (should (= opened-index 2))))
           (should (equal (nreverse track-offsets)
-                         '(nil 14 28 14 28)))
+                         '(nil 14 28 14)))
           (should-not auto-hscroll-mode)
           (should
            (memq #'chirp-render--media-track-reset-hscroll
@@ -2070,6 +2070,68 @@
               draws)
       '(("/tmp/a.jpg" -104 100 cover)
         ("/tmp/b.jpg" 0 120 cover))))))
+
+(ert-deftest chirp-render-hotspot-video-plays-in-displayed-region ()
+  "Clicking a video should preserve the viewport and replace its own box."
+  (let* ((media
+          '((:type "photo" :file "/tmp/a.jpg")
+            (:type "video" :file "/tmp/b.jpg"
+             :variants ((:url "https://example.com/video.mp4")))))
+         (poster
+          '(image :type svg :data "<svg/>"
+                  :appkit-media-nslices 2
+                  :appkit-media-strip-widths (100 120)
+                  :appkit-media-strip-offset 0))
+         captured)
+    (with-temp-buffer
+      (insert "a\nb")
+      (pcase-let* ((`(,map . ,state)
+                     (chirp-render--media-track-hotspot-map
+                      1 media poster 80 4 '(100 120) 'cover)))
+        (aset state 4 (list (copy-marker 1) (copy-marker 3)))
+        (chirp-render--media-track-prepare-video-host state)
+        (cl-letf (((symbol-function 'chirp-media--preview-file)
+                   (lambda (item) (plist-get item :file)))
+                  ((symbol-function 'chirp-render--media-track-scene-canvas)
+                   (lambda (&rest _arguments) 'scene-canvas))
+                  ((symbol-function 'video-inline-create)
+                   (lambda (&rest arguments)
+                     (setq captured arguments)
+                     'inline-occurrence))
+                  ((symbol-function 'video-inline-play) #'ignore))
+          (call-interactively
+           (lookup-key map [chirp-media-1 mouse-1]))
+          (should (= (aref state 0) 1))
+          (should (= (plist-get (nthcdr 3 captured) :destination-x)
+                     104))
+          (should (= (plist-get (nthcdr 3 captured) :canvas-width)
+                     224))
+          (should-not (plist-get (nthcdr 3 captured) :muted)))))))
+
+(ert-deftest chirp-render-video-activation-uses-host-buffer-line-height ()
+  "Canvas slices should use the media buffer's window metrics."
+  (let* ((host (generate-new-buffer " *chirp-video-host*"))
+         (poster '(image :type svg :appkit-media-nslices 2))
+         (canvas '(image :type canvas :data-width 100 :data-height 40))
+         markers)
+    (unwind-protect
+        (progn
+          (with-current-buffer host
+            (insert "a\nb")
+            (setq markers (list (copy-marker 1) (copy-marker 3))))
+          (cl-letf (((symbol-function 'appkit-media--char-pixel-height)
+                     (lambda ()
+                       (if (eq (current-buffer) host) 20 1))))
+            (with-temp-buffer
+              (chirp-render--media-track-activate-video
+               host markers poster canvas)))
+          (should (= (plist-get (cdr canvas) :height) 40))
+          (with-current-buffer host
+            (dolist (marker markers)
+              (should
+               (= (nth 4 (car (get-text-property marker 'display)))
+                  20)))))
+      (kill-buffer host))))
 
 (ert-deftest chirp-render-quoted-multi-media-keeps-condensed-grid ()
   "Quoted cards should remain condensed while their parent uses carousel."
