@@ -1152,9 +1152,7 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                 (vector id 'mouse-1)
                 (lambda ()
                   (interactive)
-                  (let ((delta (- item-index (aref state 0))))
-                    (unless (zerop delta)
-                      (chirp-render--media-track-select state delta)))
+                  (aset state 0 item-index)
                   (chirp-render--media-track-open state)))))
     (cons map state)))
 
@@ -1180,11 +1178,11 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
       (plist-put (cdr canvas) :appkit-media-nslices slice-count))
     (when image-map
       (plist-put (cdr canvas) :map image-map)))
-  (let ((rows (appkit-media-image-slice-rows canvas)))
-    (unless (= (length rows) (length markers))
-      (error "Video Canvas changed media track slice geometry"))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((rows (appkit-media-image-slice-rows canvas)))
+        (unless (= (length rows) (length markers))
+          (error "Video Canvas changed media track slice geometry"))
         (let ((inhibit-read-only t))
           (cl-mapc
            (lambda (marker row)
@@ -1206,12 +1204,14 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
   state)
 
 (defun chirp-render--media-track-scene-plan (state)
-  "Return backend-neutral scene geometry for media track STATE."
+  "Return scene geometry for STATE's currently displayed viewport."
   (chirp-media-carousel-plan
    (aref state 2)
    (aref state 6)
    (aref state 5)
-   (nth (aref state 0) (aref state 1))
+   (or (plist-get (cdr (aref state 10))
+                  :appkit-media-strip-offset)
+       0)
    (aref state 7)
    (aref state 8)))
 
