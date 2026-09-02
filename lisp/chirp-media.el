@@ -1683,10 +1683,10 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
                        (not (string-empty-p url)))))
               (copy-sequence (plist-get media :variants)))))
       (let* ((sorted
-             (sort variants
-                    (lambda (left right)
-                      (< (chirp-media--variant-bitrate left)
-                         (chirp-media--variant-bitrate right)))))
+              (sort variants
+                     (lambda (left right)
+                       (< (chirp-media--variant-bitrate left)
+                          (chirp-media--variant-bitrate right)))))
              (capped
               (and chirp-video-playback-max-bitrate
                    (cl-remove-if
