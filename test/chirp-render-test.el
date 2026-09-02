@@ -2022,6 +2022,15 @@
           (should-not (plist-get (nthcdr 3 captured) :muted))
           (should (eq (aref state 9) 'inline-occurrence))
           (should (eq played 'inline-occurrence))
+          (should
+           (commandp
+            (lookup-key map [video-control-toggle mouse-1])))
+          (should
+           (commandp
+            (lookup-key map [video-control-mute mouse-1])))
+          (should
+           (commandp
+            (lookup-key map [video-control-seek mouse-1])))
           (should (get-text-property 1 'chirp-video-inline-token))
           (should (get-text-property 3 'chirp-video-inline-token))
           (call-interactively (lookup-key map (kbd "m")))
@@ -2045,7 +2054,7 @@
          (state
           (vector 1 '(0 104) media "Media" nil
                   4 80 '(100 120) 'cover
-                  nil poster nil nil nil))
+                  nil poster nil nil nil nil))
          draws)
     (cl-letf (((symbol-function 'video-canvas-create)
                (lambda (width height)
