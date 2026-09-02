@@ -615,6 +615,32 @@
         (should (string-match-p "Second paragraph" (buffer-string)))
         (should-not (string-match-p "Show more" (buffer-string)))))))
 
+(ert-deftest chirp-open-entry-at-point-bypasses-local-actions ()
+  "Entry-open should ignore a Show more action and open the tweet thread."
+  (let ((tweet (chirp-test--sample-article-tweet))
+        activated
+        opened-thread)
+    (with-temp-buffer
+      (chirp-view-mode)
+      (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'chirp-media-thumbnail-image)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'appkit-ui-activate-at)
+                 (lambda (&rest _args)
+                   (setq activated t)))
+                ((symbol-function 'chirp-thread-open-tweet)
+                 (lambda (entry)
+                   (setq opened-thread (plist-get entry :id)))))
+        (let ((inhibit-read-only t))
+          (chirp-render-insert-tweet tweet))
+        (goto-char (point-min))
+        (search-forward "Show more")
+        (goto-char (match-beginning 0))
+        (chirp-open-entry-at-point)))
+    (should (equal opened-thread "123"))
+    (should-not activated)))
+
 (ert-deftest chirp-render-insert-tweet-highlights-genuine-external-links ()
   "Genuine external links should highlight on hover and open themselves."
   (let ((tweet (chirp--tweet-from-x
@@ -1877,6 +1903,7 @@
               (should (= (1+ position) (line-end-position)))))
           (let ((map (get-text-property (car track-positions) 'keymap))
                 opened-index)
+            (goto-char (car track-positions))
             (should
              (commandp (lookup-key map [chirp-media-2 mouse-1])))
             (cl-letf (((symbol-function 'chirp-media-open)
@@ -1891,8 +1918,11 @@
               (call-interactively (lookup-key map [left]))
               (call-interactively (lookup-key map (kbd "RET")))
               (should (= opened-index 1))
-              (call-interactively
-               (lookup-key map [chirp-media-2 mouse-1]))
+              (cl-letf (((symbol-function 'this-command-keys-vector)
+                         (lambda () [chirp-media-2 mouse-1])))
+                (chirp-render-media-track-open-hotspot
+                 (list 'mouse-1
+                       (list (selected-window) (point) '(0 . 0) 0))))
               (should (= opened-index 2))))
           (should (equal (nreverse track-offsets)
                          '(nil 14 28 14)))
@@ -1997,6 +2027,9 @@
                       1 media poster 180 4 '(320) nil)))
         (aset state 4 (list (copy-marker 1) (copy-marker 3)))
         (chirp-render--media-track-prepare-video-host state)
+        (put-text-property 1 2 'chirp-media-track-state state)
+        (put-text-property 3 4 'chirp-media-track-state state)
+        (goto-char 1)
         (cl-letf (((symbol-function 'chirp-render--media-track-scene-canvas)
                    (lambda (&rest _arguments) 'scene-canvas))
                   ((symbol-function 'video-inline-create)
@@ -2012,7 +2045,7 @@
                   ((symbol-function 'video-inline-set-muted)
                    (lambda (inline muted)
                      (push (list inline muted) mute-calls))))
-          (call-interactively (lookup-key map (kbd "SPC")))
+          (call-interactively (lookup-key map (kbd "RET")))
           (should
            (equal (seq-take captured 3)
                   '("https://example.com/video.mp4" 320 180)))
@@ -2099,6 +2132,8 @@
                       1 media poster 80 4 '(100 120) 'cover)))
         (aset state 4 (list (copy-marker 1) (copy-marker 3)))
         (chirp-render--media-track-prepare-video-host state)
+        (put-text-property 1 2 'chirp-media-track-state state)
+        (goto-char 1)
         (cl-letf (((symbol-function 'chirp-media--preview-file)
                    (lambda (item) (plist-get item :file)))
                   ((symbol-function 'chirp-render--media-track-scene-canvas)
@@ -2108,8 +2143,11 @@
                      (setq captured arguments)
                      'inline-occurrence))
                   ((symbol-function 'video-inline-play) #'ignore))
-          (call-interactively
-           (lookup-key map [chirp-media-1 mouse-1]))
+          (cl-letf (((symbol-function 'this-command-keys-vector)
+                     (lambda () [chirp-media-1 mouse-1])))
+            (chirp-render-media-track-open-hotspot
+             (list 'mouse-1
+                   (list (selected-window) (point) '(0 . 0) 0))))
           (should (= (aref state 0) 1))
           (should (= (plist-get (nthcdr 3 captured) :destination-x)
                      104))

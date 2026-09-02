@@ -40,10 +40,10 @@
 (declare-function chirp-media-at-point "chirp-media" ())
 (declare-function chirp-media-open "chirp-media-view" (media-list index &optional title buffer))
 (declare-function chirp-media-open-at-point "chirp-media-view" ())
+(declare-function chirp-media-open-dedicated-at-point "chirp-media-view" ())
+(declare-function chirp-media-open-external-at-point "chirp-media-view" ())
 (declare-function chirp-media-download-at-point "chirp-media" ())
 (declare-function chirp-media-prefetch-tweet "chirp-media" (tweet buffer))
-(declare-function chirp-media-image-mode "chirp-media-view" ())
-(declare-function chirp-media-view-mode "chirp-media-view" ())
 (declare-function chirp-xchat-native-session-destroy
                   "chirp-xchat-native-module" (session))
 
@@ -308,6 +308,9 @@ commands still work, and displays alt text when the backend provides it."
   "p" #'chirp-previous-entry
   "N" #'chirp-load-more
   "RET" #'chirp-open-at-point
+  "C-RET" #'chirp-media-open-dedicated-at-point
+  "S-RET" #'chirp-media-open-external-at-point
+  "M-RET" #'chirp-open-entry-at-point
   "t" #'chirp-open-at-point
   "m" #'chirp-open-primary-media
   "D" #'chirp-media-download-at-point
@@ -961,18 +964,23 @@ current line metrics."
     (puthash tweet-id t chirp--expanded-tweet-ids)
     (funcall chirp--rerender-function)))
 
+(defun chirp-open-entry-at-point ()
+  "Open the current entry without activating a local action."
+  (interactive)
+  (let ((entry (chirp-entry-at-point)))
+    (cond
+     ((eq (plist-get entry :kind) 'tweet)
+      (chirp-thread-open-tweet entry))
+     ((eq (plist-get entry :kind) 'user)
+      (chirp-profile-open (plist-get entry :handle)))
+     (t
+      (user-error "No entry at point")))))
+
 (defun chirp-open-at-point ()
-  "Activate the Appkit action at point, or open the current entry."
+  "Activate the action at point, or open the current entry."
   (interactive)
   (unless (appkit-ui-activate-at)
-    (let ((entry (chirp-entry-at-point)))
-      (cond
-       ((eq (plist-get entry :kind) 'tweet)
-        (chirp-thread-open-tweet entry))
-       ((eq (plist-get entry :kind) 'user)
-        (chirp-profile-open (plist-get entry :handle)))
-       (t
-        (user-error "No entry at point"))))))
+    (chirp-open-entry-at-point)))
 
 (defun chirp-open-primary-media ()
   "Open the media at point or the first media of the current entry."

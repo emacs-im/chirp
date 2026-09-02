@@ -23,6 +23,9 @@
 (declare-function chirp-quote-at-point "chirp-actions" ())
 (declare-function chirp-thread-open-tweet "chirp-thread" (tweet))
 (declare-function chirp-edit-history-open-tweet "chirp-edit-history" (tweet))
+(declare-function chirp-media-open-dedicated
+                  "chirp-media-view"
+                  (media-list index &optional title buffer))
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -1067,7 +1070,7 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
            "Media %d of %d; %s"
            (1+ index) count
            (if (chirp-media-video-like-p (nth index media-list))
-               "RET/SPC plays it; m toggles audio"
+               "RET plays it; m toggles audio"
              "RET opens it")))
       (user-error "Unable to reveal media item %d" (1+ index)))))
 
@@ -1091,6 +1094,76 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
     (when-let* ((inline (aref state 9)))
       (video-inline-set-muted inline muted))
     (message "Video audio %s" (if muted "muted" "unmuted"))))
+
+(defun chirp-render--media-track-state (&optional event)
+  "Return the media track state at point or mouse EVENT."
+  (let* ((position (and event (posn-point (event-start event))))
+         (window (and event (posn-window (event-start event))))
+         (buffer (and (windowp window) (window-buffer window)))
+         (position
+          (and (integer-or-marker-p position)
+               (if (markerp position) (marker-position position) position))))
+    (or (and position
+             (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (and (<= (point-min) position)
+                    (< position (point-max))
+                    (get-text-property position 'chirp-media-track-state))))
+        (get-char-property (point) 'chirp-media-track-state)
+        (user-error "No media track at point"))))
+
+(defun chirp-render--media-hotspot-index ()
+  "Return the media item index encoded in the current key sequence."
+  (or
+   (cl-loop for event across (this-command-keys-vector)
+            for name = (and (symbolp event) (symbol-name event))
+            when (and name
+                      (string-match
+                       "\\`chirp-media-\\([0-9]+\\)\\'" name))
+            return (string-to-number (match-string 1 name)))
+   (user-error "No media item in the current event")))
+
+(defun chirp-render-media-track-next ()
+  "Select the next item in the media track at point."
+  (interactive)
+  (chirp-render--media-track-select (chirp-render--media-track-state) 1))
+
+(defun chirp-render-media-track-previous ()
+  "Select the previous item in the media track at point."
+  (interactive)
+  (chirp-render--media-track-select (chirp-render--media-track-state) -1))
+
+(defun chirp-render-media-track-open ()
+  "Activate the selected item in the media track at point."
+  (interactive)
+  (chirp-render--media-track-open (chirp-render--media-track-state)))
+
+(defun chirp-render-media-track-open-dedicated ()
+  "Open the selected track item in the dedicated media viewer."
+  (interactive)
+  (let ((state (chirp-render--media-track-state)))
+    (chirp-media-open-dedicated
+     (aref state 2) (aref state 0) (aref state 3))))
+
+(defun chirp-render-media-track-open-external ()
+  "Open the selected track video in the configured external player."
+  (interactive)
+  (let ((state (chirp-render--media-track-state)))
+    (chirp-media-play-video
+     (nth (aref state 0) (aref state 2)) t)))
+
+(defun chirp-render-media-track-toggle-muted ()
+  "Toggle audio for the media track at point."
+  (interactive)
+  (chirp-render--media-track-toggle-muted
+   (chirp-render--media-track-state)))
+
+(defun chirp-render-media-track-open-hotspot (event)
+  "Activate the media item identified by image-map EVENT."
+  (interactive "e")
+  (let ((state (chirp-render--media-track-state event)))
+    (aset state 0 (chirp-render--media-hotspot-index))
+    (chirp-render--media-track-open state)))
 
 (defun chirp-render--media-track-hotspot-map
     (position media-list image height gap widths fit)
@@ -1119,42 +1192,22 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
            nil
            nil
            map)))
-    (dolist (key '([right] [tab]))
-      (define-key
-       map key
-       (lambda ()
-         (interactive)
-         (chirp-render--media-track-select state 1))))
-    (dolist (key '([left] [backtab] [S-iso-lefttab]))
-      (define-key
-       map key
-       (lambda ()
-         (interactive)
-         (chirp-render--media-track-select state -1))))
-    (dolist (key (list (kbd "RET") [return] (kbd "SPC")))
-      (define-key
-       map key
-       (lambda ()
-         (interactive)
-         (chirp-render--media-track-open state))))
-    (define-key
-     map (kbd "m")
-     (lambda ()
-       (interactive)
-       (chirp-render--media-track-toggle-muted state)))
+    (define-key map [right] #'chirp-render-media-track-next)
+    (define-key map [left] #'chirp-render-media-track-previous)
+    (define-key map (kbd "RET") #'chirp-render-media-track-open)
+    (define-key map (kbd "C-RET")
+                #'chirp-render-media-track-open-dedicated)
+    (define-key map (kbd "S-RET")
+                #'chirp-render-media-track-open-external)
+    (define-key map (kbd "M-RET") #'chirp-open-entry-at-point)
+    (define-key map (kbd "m") #'chirp-render-media-track-toggle-muted)
     (cl-loop for _media in media-list
              for index from 0
              for id = (intern (format "chirp-media-%d" index))
              do
-             (let ((item-index index))
-               (define-key map (vector id 'down-mouse-1) #'ignore)
-               (define-key
-                map
-                (vector id 'mouse-1)
-                (lambda ()
-                  (interactive)
-                  (aset state 0 item-index)
-                  (chirp-render--media-track-open state)))))
+             (define-key map (vector id 'down-mouse-1) #'ignore)
+             (define-key map (vector id 'mouse-1)
+                         #'chirp-render-media-track-open-hotspot))
     (cons map state)))
 
 (defun chirp-render--media-track-markers-visible-p (buffer markers)
@@ -1292,7 +1345,6 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
         (video-inline-bind-controls inline (aref state 14))
         (video-inline-play inline)))))
 
-
 (defun chirp-render--insert-media-track
     (media-list prefix prefix-face height gap widths fit)
   "Insert MEDIA-LIST as one unbreakable horizontal track.
@@ -1331,6 +1383,9 @@ describe the shared carousel geometry."
                                       'chirp-media-track t)))
         (aset track-state 4
               (mapcar #'copy-marker (nreverse track-positions)))
+        (dolist (marker (aref track-state 4))
+          (put-text-property marker (1+ marker)
+                             'chirp-media-track-state track-state))
         (chirp-render--media-track-prepare-video-host track-state))
     (chirp-render--insert-media-grid media-list prefix prefix-face)))
 
