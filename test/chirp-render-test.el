@@ -2006,7 +2006,7 @@
                   nil)))))
 
 (ert-deftest chirp-render-single-video-track-installs-lazy-inline-player ()
-  "A single non-condensed video should toggle one lazy Canvas occurrence."
+  "A single non-condensed video should toggle one Appkit Canvas surface."
   (let* ((media
           '((:type "video"
              :url "https://example.com/poster.jpg"
@@ -2016,9 +2016,16 @@
           '(image :type svg :data "<svg/>"
                   :appkit-media-nslices 2
                   :appkit-media-strip-widths (320)))
+         (inline-surface
+          (appkit-media--video-inline-create
+           :session 'video-session :inline 'inline))
+         session-call
          captured
          played
          toggled
+         registered
+         unregistered
+         canonical-muted
          mute-calls)
     (with-temp-buffer
       (insert "a\nb")
@@ -2032,29 +2039,49 @@
         (goto-char 1)
         (cl-letf (((symbol-function 'chirp-render--media-track-scene-canvas)
                    (lambda (&rest _arguments) 'scene-canvas))
-                  ((symbol-function 'video-inline-create)
+                  ((symbol-function 'chirp-media-video-session-create)
+                   (lambda (item muted)
+                     (setq session-call (list item muted))
+                     'video-session))
+                  ((symbol-function 'appkit-media-video-inline-create)
                    (lambda (&rest arguments)
                      (setq captured arguments)
-                     'inline-occurrence))
-                  ((symbol-function 'video-inline-play)
+                     inline-surface))
+                  ((symbol-function 'chirp-media-register-video-inline)
+                   (lambda (items index inline)
+                     (setq registered (list items index inline))))
+                  ((symbol-function 'chirp-media-unregister-video-inline)
+                   (lambda (inline)
+                     (setq unregistered inline)))
+                  ((symbol-function 'appkit-media-video-inline-play)
                    (lambda (inline)
                      (setq played inline)))
-                  ((symbol-function 'video-inline-toggle-occurrence)
+                  ((symbol-function 'appkit-media-video-inline-toggle)
                    (lambda (inline)
                      (setq toggled inline)))
-                  ((symbol-function 'video-inline-set-muted)
+                  ((symbol-function 'appkit-media-video-inline-closed-p)
+                   (lambda (_inline) nil))
+                  ((symbol-function 'appkit-media-video-inline-muted-p)
+                   (lambda (_inline) canonical-muted))
+                  ((symbol-function 'appkit-media-video-inline-set-muted)
                    (lambda (inline muted)
-                     (push (list inline muted) mute-calls))))
+                     (setq canonical-muted muted)
+                     (push (list inline muted) mute-calls)))
+                  ((symbol-function 'appkit-media-video-inline-bind-controls)
+                   (lambda (_inline control-map)
+                     (video-inline-bind-controls nil control-map))))
           (call-interactively (lookup-key map (kbd "RET")))
-          (should
-           (equal (seq-take captured 3)
-                  '("https://example.com/video.mp4" 320 180)))
+          (should (equal (seq-take captured 3)
+                         '(video-session 320 180)))
+          (should (equal session-call (list (car media) nil)))
           (should (eq (plist-get (nthcdr 3 captured) :canvas)
                       'scene-canvas))
-          (should (plist-member (nthcdr 3 captured) :muted))
-          (should-not (plist-get (nthcdr 3 captured) :muted))
-          (should (eq (aref state 9) 'inline-occurrence))
-          (should (eq played 'inline-occurrence))
+          (should (eq (aref state 9) inline-surface))
+          (should (eq played inline-surface))
+          (should (equal registered (list media 0 inline-surface)))
+          (should
+           (functionp
+            (plist-get (nthcdr 3 captured) :close-function)))
           (should
            (commandp
             (lookup-key map [video-control-toggle mouse-1])))
@@ -2070,9 +2097,15 @@
           (call-interactively (lookup-key map (kbd "m")))
           (should
            (equal (nreverse mute-calls)
-                  '((inline-occurrence t) (inline-occurrence nil))))
+                  (list (list inline-surface t)
+                        (list inline-surface nil))))
           (call-interactively (lookup-key map (kbd "RET")))
-          (should (eq toggled 'inline-occurrence)))))))
+          (should (eq toggled inline-surface))
+          (funcall (plist-get (nthcdr 3 captured) :close-function)
+                   inline-surface)
+          (should (eq unregistered inline-surface))
+          (should-not (aref state 9))
+          (should-not (aref state 12)))))))
 
 (ert-deftest chirp-render-carousel-scene-preserves-offset-cover-geometry ()
   "Canvas scene backgrounds should reuse carousel offsets and cover boxes."
@@ -2124,7 +2157,8 @@
                   :appkit-media-nslices 2
                   :appkit-media-strip-widths (100 120)
                   :appkit-media-strip-offset 0))
-         captured)
+         captured
+         registered)
     (with-temp-buffer
       (insert "a\nb")
       (pcase-let* ((`(,map . ,state)
@@ -2138,22 +2172,30 @@
                    (lambda (item) (plist-get item :file)))
                   ((symbol-function 'chirp-render--media-track-scene-canvas)
                    (lambda (&rest _arguments) 'scene-canvas))
-                  ((symbol-function 'video-inline-create)
+                  ((symbol-function 'chirp-media-video-session-create)
+                   (lambda (&rest _) 'video-session))
+                  ((symbol-function 'appkit-media-video-inline-create)
                    (lambda (&rest arguments)
                      (setq captured arguments)
-                     'inline-occurrence))
-                  ((symbol-function 'video-inline-play) #'ignore))
+                     'inline-surface))
+                  ((symbol-function 'chirp-media-register-video-inline)
+                   (lambda (items index inline)
+                     (setq registered (list items index inline))))
+                  ((symbol-function 'appkit-media-video-inline-bind-controls)
+                   #'ignore)
+                  ((symbol-function 'appkit-media-video-inline-play)
+                   #'ignore))
           (cl-letf (((symbol-function 'this-command-keys-vector)
                      (lambda () [chirp-media-1 mouse-1])))
             (chirp-render-media-track-open-hotspot
              (list 'mouse-1
                    (list (selected-window) (point) '(0 . 0) 0))))
           (should (= (aref state 0) 1))
+          (should (equal registered (list media 1 'inline-surface)))
           (should (= (plist-get (nthcdr 3 captured) :destination-x)
                      104))
           (should (= (plist-get (nthcdr 3 captured) :canvas-width)
-                     224))
-          (should-not (plist-get (nthcdr 3 captured) :muted)))))))
+                     224)))))))
 
 (ert-deftest chirp-render-video-activation-uses-host-buffer-line-height ()
   "Canvas slices should use the media buffer's window metrics."

@@ -188,11 +188,75 @@ When nil, Chirp falls back to a text placeholder for video-like media."
 
 ;;; Viewer State Declarations
 
+(cl-defstruct (chirp-media-selection
+               (:constructor chirp-media-selection-create
+                             (media-list index &optional video-inline)))
+  "One selected media item and its active inline presentation, if any."
+  media-list
+  index
+  video-inline)
+
 (defvar chirp--media-list nil
   "Media list owned by `chirp-media-view'.")
 
 (defvar chirp--media-index 0
   "Selected media index owned by `chirp-media-view'.")
+
+(defvar-local chirp-media--video-selections nil
+  "Live inline video selections owned by the current Chirp buffer.")
+
+(defun chirp-media-selection-live-video-inline (selection)
+  "Return SELECTION's live Appkit inline video surface, or nil."
+  (when-let* (((chirp-media-selection-p selection))
+              (inline (chirp-media-selection-video-inline selection))
+              ((appkit-media-video-inline-p inline))
+              ((not (appkit-media-video-inline-closed-p inline)))
+              ((appkit-media-video-session-live-p
+                (appkit-media-video-inline-session inline))))
+    inline))
+
+(defun chirp-media--prune-video-selections ()
+  "Remove closed inline video selections from the current Chirp buffer."
+  (setq chirp-media--video-selections
+        (cl-delete-if-not
+         #'chirp-media-selection-live-video-inline
+         chirp-media--video-selections)))
+
+(defun chirp-media-register-video-inline (media-list index inline)
+  "Register INLINE as MEDIA-LIST item INDEX's presentation in this buffer."
+  (unless (and (appkit-media-video-inline-p inline)
+               (not (appkit-media-video-inline-closed-p inline)))
+    (error "Cannot register a closed Appkit inline video surface"))
+  (chirp-media--prune-video-selections)
+  (setq chirp-media--video-selections
+        (cl-delete-if
+         (lambda (selection)
+           (and (eq (chirp-media-selection-media-list selection) media-list)
+                (equal (chirp-media-selection-index selection) index)))
+         chirp-media--video-selections))
+  (let ((selection
+         (chirp-media-selection-create media-list index inline)))
+    (push selection chirp-media--video-selections)
+    selection))
+
+(defun chirp-media-unregister-video-inline (inline)
+  "Forget every current buffer video selection presented by INLINE."
+  (setq chirp-media--video-selections
+        (cl-delete inline chirp-media--video-selections
+                   :key #'chirp-media-selection-video-inline))
+  nil)
+
+(defun chirp-media-video-selection (media-list index)
+  "Return MEDIA-LIST item INDEX's live inline video selection, or nil.
+
+MEDIA-LIST identity distinguishes separate rendered entries, even when their
+media values happen to be equal."
+  (chirp-media--prune-video-selections)
+  (cl-find-if
+   (lambda (selection)
+     (and (eq (chirp-media-selection-media-list selection) media-list)
+          (equal (chirp-media-selection-index selection) index)))
+   chirp-media--video-selections))
 
 ;;; Runtime
 
@@ -1703,6 +1767,22 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
             (plist-get media :url)))
     (plist-get media :url)))
 
+(defun chirp-media--video-cache-key (media)
+  "Return a stable Appkit playback cache key for video-like MEDIA."
+  (when-let* ((url (chirp-media-playback-url media)))
+    (format "chirp-video:%s"
+            (replace-regexp-in-string "[?#].*\\'" "" url))))
+
+(defun chirp-media-video-session-create (media &optional muted)
+  "Create an Appkit video session for MEDIA with initial MUTED state."
+  (when-let* ((url (chirp-media-playback-url media)))
+    (appkit-media-video-session-create
+     (appkit-media-resource-create
+      :url url :name (appkit-media-url-filename url))
+     "Chirp"
+     :cache-key (chirp-media--video-cache-key media)
+     :muted muted)))
+
 (defun chirp-media--play-external (media)
   "Open video-like MEDIA in the configured external player."
   (if-let* (((chirp-media-video-like-p media))
@@ -1748,9 +1828,16 @@ back to external playback if the internal player cannot start."
     (user-error "Current media is not a video or GIF"))
   (if (or external (not chirp-video-use-internal-player))
       (chirp-media--play-external media)
-    (if-let* ((url (chirp-media-playback-url media)))
+    (if-let* ((session (chirp-media-video-session-create media)))
         (condition-case error-data
-            (video-open url)
+            (let (opened-p)
+              (unwind-protect
+                  (prog1
+                      (appkit-media-present-video-session
+                       session "Chirp" :start t)
+                    (setq opened-p t))
+                (unless opened-p
+                  (appkit-media-video-session-close session))))
           (error
            (display-warning
             'chirp-media
