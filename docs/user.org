@@ -219,7 +219,7 @@ the same geometry and keeping ~window-hscroll~ at zero.
 | ~RET~             | Toggle inline video; open a still image in the media reader   |
 | mouse hotspot     | Activate the clicked carousel item without moving point       |
 | ~m~               | Toggle the inline video's desired mute state                  |
-| ~C-RET~           | Open the selected image or video in the dedicated reader      |
+| ~C-RET~           | Present the selected item in the dedicated reader             |
 | ~S-RET~           | Send the selected video to the configured external player     |
 | ~M-RET~           | Bypass local actions and open the containing entry            |
 
@@ -232,9 +232,10 @@ The dedicated buffer uses video.el's reader model.  Chirp does not override
 ~video-display-buffer-function~: the default placement is the selected window,
 while users may globally choose another window or a presentation frame.
 
-One buffer owns the current source/player; every window displaying it owns an
-independent absolute scale and viewport origin.  The virtual media plane may be
-much larger than the window, while its Canvas and native raster stay exactly
+The buffer presents the current source; every window displaying it owns an
+independent absolute scale and viewport origin.  A video's Appkit session may
+also retain the same player for an inline surface.  The virtual media plane may
+be much larger than the window, while its Canvas and native raster stay exactly
 viewport-sized.  Fit commands calculate a scale once, so later window resizing
 does not resize the media.
 
@@ -242,6 +243,17 @@ Images and videos support zoom, unrestricted pan, fit, mouse-wheel input, and
 middle-button dragging.  Videos additionally expose playback transport.  ~n~
 and ~p~ move through the source carousel, and ~q~ returns to the saved Chirp
 view.
+
+Appkit owns each activated video's canonical resource, stable cache identity,
+and persistent-cache policy; video.el owns the playback session, player, and
+inline/dedicated presentation leases.  Chirp records the active inline
+presentation against its containing entry, so every dedicated-media action
+reuses the same player even after point leaves the media hot spot.  The reader
+preserves the exact position, play/pause and canonical mute state, buffered
+ranges, and in-flight sparse network cache without issuing a second media
+request.  Closing either surface leaves the other running; closing the last
+lease lets video.el retire the player and any incomplete session cache.
+Explicit download remains separate.
 
 ** Configuration
 

@@ -633,32 +633,116 @@ rerender and creates a CPU loop."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-media-open-video-uses-default-display-policy ()
-  "Opening video media should not override the user's display policy."
+(ert-deftest chirp-media-open-video-uses-appkit-cache-identity ()
+  "Opening video should adapt its selected URL into one Appkit session."
   (let ((chirp-video-use-internal-player t)
         (chirp-video-playback-max-bitrate 2176000)
-        opened)
+        created
+        presented)
     (with-temp-buffer
-      (cl-letf (((symbol-function 'video-open)
-                 (lambda (url &rest args)
-                   (setq opened
-                         (list url
-                               (plist-get args :kind)
-                               (plist-get args :buffer)
-                               (plist-get args :display-function)))
-                   (plist-get args :buffer))))
+      (cl-letf (((symbol-function 'appkit-media-video-session-create)
+                 (lambda (resource label &rest keys)
+                   (setq created
+                         (list (alist-get 'url resource)
+                               label
+                               (plist-get keys :cache-key)
+                               (plist-get keys :muted)))
+                   'session))
+                ((symbol-function 'appkit-media-present-video-session)
+                 (lambda (session label &rest keys)
+                   (setq presented
+                         (list session label
+                               (plist-get keys :buffer)
+                               (plist-get keys :start)
+                               (plist-get keys :display-function)))
+                   (plist-get keys :buffer)))
+                ((symbol-function 'appkit-media-video-session-close)
+                 (lambda (_session)
+                   (ert-fail "successful presentation must retain session"))))
         (chirp-media-open
          '((:type "video"
             :url "https://example.com/high.mp4"
-            :variants ((:url "https://example.com/high.mp4" :bitrate 4096000)
-                       (:url "https://example.com/mid.mp4" :bitrate 2176000)
-                       (:url "https://example.com/low.mp4" :bitrate 832000))))
+            :variants
+            ((:url "https://example.com/high.mp4" :bitrate 4096000)
+             (:url "https://example.com/mid.mp4?tag=29"
+              :bitrate 2176000)
+             (:url "https://example.com/low.mp4" :bitrate 832000))))
          0
          "Media"
-         (current-buffer))))
-    (should (equal (seq-take opened 2)
-                   '("https://example.com/mid.mp4" video)))
-    (should-not (nth 3 opened))))
+         (current-buffer))
+        (should
+         (equal created
+                '("https://example.com/mid.mp4?tag=29"
+                  "Chirp"
+                  "chirp-video:https://example.com/mid.mp4"
+                  nil)))
+        (should
+         (equal presented
+                (list 'session "Media" (current-buffer) t nil)))))))
+
+(ert-deftest chirp-media-open-video-reuses-inline-appkit-session ()
+  "Dedicated video should present the exact Appkit inline surface."
+  (let* ((media-list
+          '((:type "video" :url "https://example.com/video.mp4")))
+         (session (list :player 'player :position 23.5))
+         (surface
+          (appkit-media--video-inline-create
+           :session session :inline 'inline))
+         presented)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'appkit-media-video-inline-closed-p)
+                 (lambda (actual) (not (eq actual surface))))
+                ((symbol-function 'appkit-media-video-session-live-p)
+                 (lambda (actual) (eq actual session)))
+                ((symbol-function 'chirp-media-video-session-create)
+                 (lambda (&rest _)
+                   (ert-fail "shared inline session must prevent replacement")))
+                ((symbol-function 'appkit-media-present-video-inline)
+                 (lambda (actual label &rest keys)
+                   (setq presented
+                         (list actual label
+                               (plist-get keys :buffer)))
+                   (plist-get keys :buffer))))
+        (chirp-media-register-video-inline media-list 0 surface)
+        (chirp-media-open media-list 0 "Media" (current-buffer))
+        (should
+         (equal presented
+                (list surface "Media" (current-buffer))))
+        (should (= (plist-get session :position) 23.5))))))
+
+(ert-deftest chirp-media-dedicated-command-keeps-off-track-inline-selection ()
+  "The generic command should retain a mouse-activated entry presentation."
+  (let* ((media-list
+          '((:type "video" :url "https://example.com/video.mp4")))
+         (entry (list :kind 'tweet :media media-list))
+         (session (list :player 'player :position 19.0))
+         (surface
+          (appkit-media--video-inline-create :session session))
+         captured)
+    (with-temp-buffer
+      (insert "tweet text")
+      (add-text-properties
+       (point-min) (point-max)
+       (list 'chirp-entry-item entry))
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'appkit-media-video-session-live-p)
+                 (lambda (actual) (eq actual session)))
+                ((symbol-function 'appkit-media-video-inline-closed-p)
+                 (lambda (actual) (not (eq actual surface))))
+                ((symbol-function 'chirp-media-open-dedicated)
+                 (lambda (selection &rest _)
+                   (setq captured selection)
+                   :opened)))
+        (chirp-media-register-video-inline media-list 0 surface)
+        (should (eq (chirp-media-open-dedicated-at-point) :opened)))
+      (should (chirp-media-selection-p captured))
+      (should (eq (chirp-media-selection-media-list captured) media-list))
+      (should (= (chirp-media-selection-index captured) 0))
+      (should
+       (eq (chirp-media-selection-video-inline captured) surface))
+      (should
+       (eq (appkit-media-video-inline-session surface) session)))))
+
 
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."

@@ -11,6 +11,10 @@
 
 ;;; Code:
 
+(declare-function appkit-media-present-video-inline
+                  "appkit-media-resource"
+                  (surface &optional client-label &rest arguments))
+
 (require 'chirp-core)
 (require 'chirp-media)
 
@@ -60,35 +64,43 @@
   (setq-local chirp--refresh-function nil))
 
 (defun chirp-media-view--selection-at-point ()
-  "Return (MEDIA-LIST . INDEX) for point or its containing entry."
-  (if-let* ((media-list (chirp-media-list-at-point)))
-      (cons media-list (or (chirp-media-index-at-point) 0))
-    (let* ((entry (chirp-entry-at-point))
-           (media-list
-            (or (plist-get entry :media)
-                (and (eq (plist-get entry :kind) 'tweet)
-                     (chirp-tweet-article-images entry)))))
-      (and media-list (cons media-list 0)))))
+  "Return the media selection at point or for its containing entry."
+  (let (media-list index)
+    (if (setq media-list (chirp-media-list-at-point))
+        (setq index (or (chirp-media-index-at-point) 0))
+      (let ((entry (chirp-entry-at-point)))
+        (setq media-list
+              (or (plist-get entry :media)
+                  (and (eq (plist-get entry :kind) 'tweet)
+                       (chirp-tweet-article-images entry)))
+              index 0)))
+    (when media-list
+      (or (chirp-media-video-selection media-list index)
+          (chirp-media-selection-create media-list index)))))
 
-(defun chirp-media-view--dedicated-source (media)
-  "Return (SOURCE . KIND) for dedicated MEDIA viewing."
-  (cond
-   ((chirp-media-video-like-p media)
-    (if-let* ((source (chirp-media-playback-url media)))
-        (cons source 'video)
-      (user-error "Current media has no playable URL")))
-   ((string= (plist-get media :type) "photo")
-    (if-let* ((source (chirp-media--photo-file media)))
-        (cons source 'image)
-      (user-error "Image preview unavailable")))
-   (t
-    (user-error "Unsupported media type"))))
+(defun chirp-media-view--dedicated-image-source (media)
+  "Return a local image source for dedicated MEDIA viewing."
+  (if (string= (plist-get media :type) "photo")
+      (or (chirp-media--photo-file media)
+          (user-error "Image preview unavailable"))
+    (user-error "Unsupported media type")))
 
-(defun chirp-media-open-dedicated
-    (media-list index &optional title buffer)
-  "Open MEDIA-LIST item INDEX in a reader-style dedicated media BUFFER."
-  (let* ((safe-index (max 0 (min index (1- (length media-list)))))
+(defun chirp-media-open-dedicated (selection &optional title buffer)
+  "Open SELECTION in a dedicated reader named by TITLE.
+
+Reuse BUFFER when it is live.  When SELECTION owns an active inline video
+surface, the dedicated target borrows that surface's Appkit session and exact
+player state."
+  (unless (chirp-media-selection-p selection)
+    (error "Invalid Chirp media selection"))
+  (let* ((media-list (chirp-media-selection-media-list selection))
+         (index (chirp-media-selection-index selection))
+         (safe-index (max 0 (min index (1- (length media-list)))))
          (media (nth safe-index media-list))
+         (video-p (and media (chirp-media-video-like-p media)))
+         (video-inline
+          (and (= safe-index index)
+               (chirp-media-selection-live-video-inline selection)))
          (base-title (or title "Chirp Media"))
          (viewer
           (or (and (buffer-live-p buffer) buffer)
@@ -107,55 +119,85 @@
           (or (and (buffer-live-p buffer)
                    (with-current-buffer buffer chirp--media-source-window-state))
               (chirp-capture-window-state source-buffer)))
-         (source-kind (and media (chirp-media-view--dedicated-source media))))
+         (image-source
+          (and media (not video-p)
+               (chirp-media-view--dedicated-image-source media)))
+         (session
+          (and video-p
+               (not video-inline)
+               (or (chirp-media-video-session-create media)
+                   (user-error "Current media has no playable URL"))))
+         opened-p)
     (unless media
       (user-error "No media available"))
-    (setq viewer
-          (video-open
-           (car source-kind) :kind (cdr source-kind) :buffer viewer))
-    (with-current-buffer viewer
-      (chirp-media-view--set-state
-       media-list safe-index base-title
-       (and (eq (cdr source-kind) 'image) (car source-kind)))
-      (setq-local chirp--media-source-buffer source-buffer
-                  chirp--media-source-anchor source-anchor
-                  chirp--media-source-window-state source-window-state
-                  video-next-function
-                  (and (> (length media-list) 1) #'chirp-media-next)
-                  video-previous-function
-                  (and (> (length media-list) 1) #'chirp-media-previous)
-                  video-quit-function #'chirp-media-quit))
-    (message "%s (%d/%d)" base-title (1+ safe-index) (length media-list))
-    viewer))
+    (unwind-protect
+        (progn
+          (setq viewer
+                (cond
+                 (video-inline
+                  (appkit-media-present-video-inline
+                   video-inline base-title :buffer viewer))
+                 (video-p
+                  (appkit-media-present-video-session
+                   session base-title :buffer viewer :start t))
+                 (t
+                  (video-open image-source :kind 'image :buffer viewer))))
+          (with-current-buffer viewer
+            (chirp-media-view--set-state
+             media-list safe-index base-title
+             (and (not video-p) image-source))
+            (setq-local chirp--media-source-buffer source-buffer
+                        chirp--media-source-anchor source-anchor
+                        chirp--media-source-window-state source-window-state
+                        video-next-function
+                        (and (> (length media-list) 1) #'chirp-media-next)
+                        video-previous-function
+                        (and (> (length media-list) 1) #'chirp-media-previous)
+                        video-quit-function #'chirp-media-quit))
+          (setq opened-p t)
+          (message "%s (%d/%d)" base-title (1+ safe-index)
+                   (length media-list))
+          viewer)
+      (unless opened-p
+        (when (buffer-live-p viewer)
+          (kill-buffer viewer))
+        (when session
+          (appkit-media-video-session-close session))))))
 
 (defun chirp-media-open-dedicated-at-point ()
   "Open the selected media in a dedicated reader-style media buffer."
   (interactive)
   (if-let* ((selection (chirp-media-view--selection-at-point)))
       (chirp-media-open-dedicated
-       (car selection) (cdr selection)
-       (or chirp--view-title "Chirp Media"))
+       selection (or chirp--view-title "Chirp Media"))
     (user-error "No media at point")))
 
 (defun chirp-media-open-external-at-point ()
   "Open the selected video in the configured external player."
   (interactive)
   (if-let* ((selection (chirp-media-view--selection-at-point))
-            (media (nth (cdr selection) (car selection))))
+            (media
+             (nth (chirp-media-selection-index selection)
+                  (chirp-media-selection-media-list selection))))
       (chirp-media-play-video media t)
     (user-error "No media at point")))
 
 (defun chirp-media-open (media-list index &optional title buffer)
-  "Open MEDIA-LIST at INDEX in the dedicated reader-style media BUFFER."
-  (chirp-media-open-dedicated media-list index title buffer))
+  "Open MEDIA-LIST at INDEX using TITLE in dedicated media BUFFER.
+
+Reuse the current Chirp buffer's registered inline presentation when the same
+rendered media list and item are already active."
+  (chirp-media-open-dedicated
+   (or (chirp-media-video-selection media-list index)
+       (chirp-media-selection-create media-list index))
+   title buffer))
 
 (defun chirp-media-open-at-point ()
   "Open the media item at point."
   (interactive)
   (if-let* ((selection (chirp-media-view--selection-at-point)))
-      (chirp-media-open
-       (car selection) (cdr selection)
-       (or chirp--view-title "Chirp Media"))
+      (chirp-media-open-dedicated
+       selection (or chirp--view-title "Chirp Media"))
     (user-error "No media at point")))
 
 (defun chirp-media-next ()

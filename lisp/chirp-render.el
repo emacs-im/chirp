@@ -9,6 +9,9 @@
 
 ;;; Code:
 
+(declare-function appkit-media-video-inline-muted-p
+                  "appkit-media-resource" (surface))
+
 (declare-function nerd-icons-faicon "nerd-icons" (icon-name &rest args))
 (declare-function nerd-icons-mdicon "nerd-icons" (icon-name &rest args))
 (declare-function chirp-profile-open "chirp-profile" (handle &optional mode))
@@ -25,7 +28,7 @@
 (declare-function chirp-edit-history-open-tweet "chirp-edit-history" (tweet))
 (declare-function chirp-media-open-dedicated
                   "chirp-media-view"
-                  (media-list index &optional title buffer))
+                  (selection &optional title buffer))
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -1036,7 +1039,7 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
 (defun chirp-render--media-track-select (state delta)
   "Move media track STATE by DELTA items and reveal the selected item."
   (when-let* ((inline (aref state 9)))
-    (video-inline-close inline)
+    (appkit-media-video-inline-close inline)
     (aset state 9 nil)
     (aset state 12 nil))
   (let* ((media-list (aref state 2))
@@ -1081,18 +1084,26 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
              (chirp-media-video-like-p media))
         (chirp-render--media-track-toggle-video state)
       (when-let* ((inline (aref state 9)))
-        (video-inline-close inline)
+        (appkit-media-video-inline-close inline)
         (aset state 9 nil)
         (aset state 12 nil))
       (chirp-media-open
        (aref state 2) (aref state 0) (aref state 3)))))
 
 (defun chirp-render--media-track-toggle-muted (state)
-  "Toggle the desired audio mute state for media track STATE."
-  (let ((muted (not (aref state 13))))
+  "Toggle canonical audio mute state for media track STATE."
+  (let* ((inline (aref state 9))
+         (live-inline
+          (and (appkit-media-video-inline-p inline)
+               (not (appkit-media-video-inline-closed-p inline))
+               inline))
+         (muted
+          (if live-inline
+              (not (appkit-media-video-inline-muted-p live-inline))
+            (not (aref state 13)))))
     (aset state 13 muted)
-    (when-let* ((inline (aref state 9)))
-      (video-inline-set-muted inline muted))
+    (when live-inline
+      (appkit-media-video-inline-set-muted live-inline muted))
     (message "Video audio %s" (if muted "muted" "unmuted"))))
 
 (defun chirp-render--media-track-state (&optional event)
@@ -1141,9 +1152,14 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
 (defun chirp-render-media-track-open-dedicated ()
   "Open the selected track item in the dedicated media viewer."
   (interactive)
-  (let ((state (chirp-render--media-track-state)))
+  (let* ((state (chirp-render--media-track-state))
+         (inline
+          (and (equal (aref state 12) (aref state 0))
+               (aref state 9))))
     (chirp-media-open-dedicated
-     (aref state 2) (aref state 0) (aref state 3))))
+     (chirp-media-selection-create
+      (aref state 2) (aref state 0) inline)
+     (aref state 3))))
 
 (defun chirp-render-media-track-open-external ()
   "Open the selected track video in the configured external player."
@@ -1159,7 +1175,7 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
    (chirp-render--media-track-state)))
 
 (defun chirp-render-media-track-open-hotspot (event)
-  "Activate the media item identified by image-map EVENT."
+  "Activate the media item identified by an `image-map' EVENT."
   (interactive "e")
   (let ((state (chirp-render--media-track-state event)))
     (aset state 0 (chirp-render--media-hotspot-index))
@@ -1298,11 +1314,10 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
   (let ((index (aref state 0)))
     (if (and (aref state 9)
              (equal (aref state 12) index))
-        (video-inline-toggle-occurrence (aref state 9))
+        (appkit-media-video-inline-toggle (aref state 9))
       (when-let* ((inline (aref state 9)))
-        (video-inline-close inline))
+        (appkit-media-video-inline-close inline))
       (let* ((media (nth index (aref state 2)))
-             (source (chirp-media-playback-url media))
              (buffer (current-buffer))
              (markers (aref state 4))
              (token (aref state 11))
@@ -1314,12 +1329,15 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
              (target-x (- (plist-get selected-cell :x)
                           (plist-get plan :offset)))
              (target-width (plist-get selected-cell :width))
+             (session
+              (or (chirp-media-video-session-create
+                   media (aref state 13))
+                  (user-error "Current media has no playable URL")))
              (inline
-              (video-inline-create
-               source target-width (aref state 6)
+              (appkit-media-video-inline-create
+               session target-width (aref state 6)
                :poster poster
                :fit (or (aref state 8) 'contain)
-               :muted (aref state 13)
                :buffer buffer
                :canvas scene
                :canvas-width scene-width
@@ -1339,11 +1357,20 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                :activate-function
                (lambda (_inline canvas)
                  (chirp-render--media-track-activate-video
-                  buffer markers poster canvas)))))
+                  buffer markers poster canvas))
+               :close-function
+               (lambda (closed-inline)
+                 (when (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (chirp-media-unregister-video-inline closed-inline)
+                     (when (eq (aref state 9) closed-inline)
+                       (aset state 9 nil)
+                       (aset state 12 nil))))))))
         (aset state 9 inline)
         (aset state 12 index)
-        (video-inline-bind-controls inline (aref state 14))
-        (video-inline-play inline)))))
+        (chirp-media-register-video-inline (aref state 2) index inline)
+        (appkit-media-video-inline-bind-controls inline (aref state 14))
+        (appkit-media-video-inline-play inline)))))
 
 (defun chirp-render--insert-media-track
     (media-list prefix prefix-face height gap widths fit)
