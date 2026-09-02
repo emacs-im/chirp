@@ -49,7 +49,6 @@
             (when source-anchor
               (chirp-restore-point-anchor source-anchor)))))))
 
-
 (defun chirp-media-view--set-state (media-list index title file)
   "Record MEDIA-LIST, INDEX, TITLE, and rendered FILE in this viewer."
   (setq-local chirp--media-list media-list)
@@ -145,7 +144,6 @@
             (media (nth (cdr selection) (car selection))))
       (chirp-media-play-video media t)
     (user-error "No media at point")))
-
 
 (defun chirp-media-open (media-list index &optional title buffer)
   "Open MEDIA-LIST at INDEX in the dedicated reader-style media BUFFER."
