@@ -1459,9 +1459,7 @@ WIDTHS overrides item widths.  FIT may be `cover' to crop into those boxes."
                   :id (intern (format "chirp-media-%d" index)))
             (and widths
                  (list :display-width (nth index widths)))
-            (and fit (list :fit fit))
-            (and (chirp-media-video-like-p media)
-                 (list :play-icon t)))))
+            (and fit (list :fit fit)))))
 
 (defun chirp-media-carousel-plan
     (media-list height gap &optional offset widths fit)
