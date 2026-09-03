@@ -135,7 +135,7 @@
         :items nil
         :page (list :next-cursor nil :exhausted-p nil)
         :status (list :phase 'initial :message nil)
-        :generation nil))
+        :loading-p nil))
 
 ;;;; Projection
 
@@ -359,89 +359,63 @@
     (append current (nreverse additions))))
 
 (defun chirp-dm-inbox--settle-success
-    (view state generation phase conversations envelope)
-  "Settle inbox GENERATION and PHASE with CONVERSATIONS and ENVELOPE.
+    (view state phase conversations envelope)
+  "Settle inbox PHASE with CONVERSATIONS and ENVELOPE in VIEW STATE."
+  (let* ((page (plist-get state :page))
+         (status (chirp-dm-inbox--status state))
+         (canonical
+          (mapcar #'chirp-dm-state-acquire conversations))
+         (next-cursor (chirp-backend-envelope-next-cursor envelope)))
+    (setf (plist-get state :items)
+          (if (eq phase 'older)
+              (chirp-dm-inbox--append-unique
+               (plist-get state :items) canonical
+               (lambda (item) (plist-get item :id)))
+            canonical)
+          (plist-get page :next-cursor) next-cursor
+          (plist-get page :exhausted-p) (not next-cursor)
+          (plist-get status :phase) 'idle
+          (plist-get status :message) nil
+          (plist-get state :loading-p) nil)
+    (appkit-request-sync view :structure t :part 'entries :position t)
+    (dolist (conversation canonical)
+      (chirp-dm-state-publish conversation))))
 
-VIEW and STATE identify the inbox whose request is completing."
-  (when (chirp-view-state-token-current-p view state generation)
-    (let* ((page (plist-get state :page))
-           (status (chirp-dm-inbox--status state))
-           (canonical
-            (mapcar #'chirp-dm-state-acquire conversations))
-           (next-cursor (chirp-backend-envelope-next-cursor envelope)))
-      (setf (plist-get state :items)
-            (if (eq phase 'older)
-                (chirp-dm-inbox--append-unique
-                 (plist-get state :items) canonical
-                 (lambda (item) (plist-get item :id)))
-              canonical)
-            (plist-get page :next-cursor) next-cursor
-            (plist-get page :exhausted-p) (not next-cursor)
-            (plist-get status :phase) 'idle
-            (plist-get status :message) nil
-            (plist-get state :generation) nil)
-      (appkit-request-sync view :structure t :part 'entries :position t)
-      (dolist (conversation canonical)
-        (chirp-dm-state-publish conversation)))))
+(defun chirp-dm-inbox--settle-error (view state message)
+  "Settle inbox request in VIEW STATE with error MESSAGE."
+  (let ((status (chirp-dm-inbox--status state)))
+    (setf (plist-get status :phase) 'error
+          (plist-get status :message) message
+          (plist-get state :loading-p) nil)
+    (appkit-request-sync view :structure t :part 'entries :position t)
+    (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
 
-(defun chirp-dm-inbox--settle-error (view state generation message)
-  "Settle inbox GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-view-state-token-current-p view state generation)
-    (let ((status (chirp-dm-inbox--status state)))
-      (setf (plist-get status :phase) 'error
-            (plist-get status :message) message
-            (plist-get state :generation) nil)
-      (appkit-request-sync view :structure t :part 'entries :position t)
-      (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))))
-
-(defun chirp-dm-inbox--operation-current-p
-    (view state generation operation)
-  "Return non-nil when GENERATION and OPERATION may update VIEW and STATE."
-  (and (chirp-view-state-token-current-p view state generation)
-       (appkit-view-operation-current-p operation)))
 
 (defun chirp-dm-inbox--request (view phase)
   "Start inbox request PHASE owned by VIEW."
   (let* ((state (chirp-dm-inbox--state view))
          (page (plist-get state :page))
          (status (chirp-dm-inbox--status state))
-         (generation (list 'dm-inbox-generation))
          (operation
           (appkit-view-operation-begin
-           view chirp-dm-inbox--request-key
-           :cancel-function #'chirp-x-cancel-request))
-         request)
-    (setf (plist-get state :generation) generation
+           view chirp-dm-inbox--request-key)))
+    (setf (plist-get state :loading-p) t
           (plist-get status :phase) phase
           (plist-get status :message) nil)
     (appkit-request-sync view :part 'entries :position t)
-    (setq request
-          (chirp-backend-dm-inbox
-           (lambda (conversations envelope)
-             (when (chirp-dm-inbox--operation-current-p
-                    view state generation operation)
-               (appkit-view-operation-finish operation)
-               (chirp-dm-inbox--settle-success
-                view state generation phase conversations envelope)))
-           :cursor (and (eq phase 'older)
-                        (plist-get page :next-cursor))
-           :max-results chirp-dm-inbox-page-size
-           :errback
-           (lambda (text)
-             (when (chirp-dm-inbox--operation-current-p
-                    view state generation operation)
-               (appkit-view-operation-finish operation)
-               (chirp-dm-inbox--settle-error
-                view state generation text)))
-           :owner view))
-    (appkit-view-operation-bind operation request)
-    (when (and (null request)
-               (chirp-dm-inbox--operation-current-p
-                view state generation operation))
-      (appkit-view-operation-finish operation)
-      (chirp-dm-inbox--settle-error
-       view state generation "XChat inbox request did not start"))
-    request))
+    (chirp-backend-dm-inbox
+     (lambda (conversations envelope)
+       (when (appkit-view-operation-finish operation)
+         (chirp-dm-inbox--settle-success
+          view state phase conversations envelope)))
+     :cursor (and (eq phase 'older)
+                  (plist-get page :next-cursor))
+     :max-results chirp-dm-inbox-page-size
+     :errback
+     (lambda (text)
+       (when (appkit-view-operation-finish operation)
+         (chirp-dm-inbox--settle-error view state text)))
+     :owner operation)))
 
 (defun chirp-dm-inbox-refresh-live-view (view)
   "Start a fallback live refresh for inbox VIEW when it is idle.
@@ -449,7 +423,7 @@ VIEW and STATE identify the inbox whose request is completing."
 Return non-nil when the refresh was accepted."
   (when (and (appkit-view-live-p view)
              (eq (plist-get (appkit-view-state view) :type) 'dm-inbox)
-             (null (plist-get (appkit-view-state view) :generation)))
+             (not (plist-get (appkit-view-state view) :loading-p)))
     (chirp-dm-inbox--request view 'refresh)
     t))
 
@@ -467,7 +441,7 @@ Return non-nil when the refresh was accepted."
       (let* ((state (chirp-dm-inbox--state view))
              (page (plist-get state :page)))
         (cond
-         ((plist-get state :generation)
+         ((plist-get state :loading-p)
           (user-error "A direct-message inbox request is already running"))
          ((plist-get page :exhausted-p)
           (user-error "No older conversations available"))

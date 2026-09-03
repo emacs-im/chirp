@@ -63,10 +63,8 @@ Set this to nil to disable automatic pagination.  Manual loading with
 (cl-defstruct (chirp-timeline--generation
                (:constructor chirp-timeline--generation-create))
   "One logical primary timeline request generation."
-  id
   phase
-  quiet-p
-  settled-p)
+  quiet-p)
 
 ;;;; State and Mode
 
@@ -295,99 +293,89 @@ Set this to nil to disable automatic pagination.  Manual loading with
 (defun chirp-timeline--settle-success
     (view state generation tweets envelope)
   "Settle GENERATION in VIEW and merge TWEETS from ENVELOPE into STATE."
-  (setf (chirp-timeline--generation-settled-p generation) t)
-  (when (chirp-view-state-token-current-p view state generation)
-    (let* ((phase (chirp-timeline--generation-phase generation))
-           (quiet (chirp-timeline--generation-quiet-p generation))
-           (query (plist-get state :query))
-           (page (plist-get state :page))
-           (status (plist-get state :status))
-           (current (plist-get state :items))
-           (next-cursor (chirp-backend-envelope-next-cursor envelope))
-           (position-intent 'preserve)
-           new-count)
-      (pcase phase
-        ('older
-         (let* ((cursor (plist-get page :next-cursor))
-                (merged (chirp-append-unique-tweets current tweets))
-                (added-p (> (length merged) (length current))))
-           (unless (or added-p quiet)
-             (message "No older posts."))
-           (setf (plist-get state :items) merged
-                 (plist-get page :next-cursor) next-cursor
-                 (plist-get page :exhausted-p)
-                 (or (not next-cursor) (equal cursor next-cursor))
-                 (plist-get page :auto-load-paused-p) nil)))
-        ((or 'refresh 'poll)
-         (if (null current)
-             (setf (plist-get state :items) tweets
-                   (plist-get state :pending-new-items) nil
-                   (plist-get page :next-cursor) next-cursor
-                   (plist-get page :exhausted-p) (not next-cursor)
-                   position-intent 'first)
-           (let ((pending
-                  (chirp-timeline--stage-new-tweets
-                   current (plist-get state :pending-new-items) tweets)))
-             (setq new-count (length pending))
-             (setf (plist-get state :pending-new-items) pending
-                   (plist-get page :next-cursor)
-                   (if (> (length current) (plist-get query :limit))
-                       (plist-get page :next-cursor)
-                     (or next-cursor (plist-get page :next-cursor)))))))
-        (_
-         (setf (plist-get state :items) tweets
-               (plist-get state :pending-new-items) nil
+  (let* ((phase (chirp-timeline--generation-phase generation))
+         (quiet (chirp-timeline--generation-quiet-p generation))
+         (query (plist-get state :query))
+         (page (plist-get state :page))
+         (status (plist-get state :status))
+         (current (plist-get state :items))
+         (next-cursor (chirp-backend-envelope-next-cursor envelope))
+         (position-intent 'preserve)
+         new-count)
+    (pcase phase
+      ('older
+       (let* ((cursor (plist-get page :next-cursor))
+              (merged (chirp-append-unique-tweets current tweets))
+              (added-p (> (length merged) (length current))))
+         (unless (or added-p quiet)
+           (message "No older posts."))
+         (setf (plist-get state :items) merged
                (plist-get page :next-cursor) next-cursor
-               (plist-get page :exhausted-p) (not next-cursor)
-               (plist-get page :auto-load-paused-p) nil)
-         (setq position-intent 'first)))
-      (setf (plist-get status :phase) 'idle
-            (plist-get status :message) nil
-            (plist-get state :generation) nil
-            (plist-get state :loaded-p) t)
-      (appkit-view-enqueue-event
-       view (list :position position-intent))
-      (appkit-request-sync
-       view :structure t :part 'frame :position t)
-      (chirp-media-prefetch-tweets tweets (appkit-view-buffer view))
-      (chirp-enrich-quoted-tweets tweets (appkit-view-buffer view))
-      (when (and new-count (eq phase 'refresh))
-        (message "%s" (chirp-timeline--refresh-message new-count))))))
+               (plist-get page :exhausted-p)
+               (or (not next-cursor) (equal cursor next-cursor))
+               (plist-get page :auto-load-paused-p) nil)))
+      ((or 'refresh 'poll)
+       (if (null current)
+           (setf (plist-get state :items) tweets
+                 (plist-get state :pending-new-items) nil
+                 (plist-get page :next-cursor) next-cursor
+                 (plist-get page :exhausted-p) (not next-cursor)
+                 position-intent 'first)
+         (let ((pending
+                (chirp-timeline--stage-new-tweets
+                 current (plist-get state :pending-new-items) tweets)))
+           (setq new-count (length pending))
+           (setf (plist-get state :pending-new-items) pending
+                 (plist-get page :next-cursor)
+                 (if (> (length current) (plist-get query :limit))
+                     (plist-get page :next-cursor)
+                   (or next-cursor (plist-get page :next-cursor)))))))
+      (_
+       (setf (plist-get state :items) tweets
+             (plist-get state :pending-new-items) nil
+             (plist-get page :next-cursor) next-cursor
+             (plist-get page :exhausted-p) (not next-cursor)
+             (plist-get page :auto-load-paused-p) nil)
+       (setq position-intent 'first)))
+    (setf (plist-get status :phase) 'idle
+          (plist-get status :message) nil
+          (plist-get state :generation) nil
+          (plist-get state :loaded-p) t)
+    (appkit-view-enqueue-event
+     view (list :position position-intent))
+    (appkit-request-sync
+     view :structure t :part 'frame :position t)
+    (chirp-media-prefetch-tweets tweets (appkit-view-buffer view))
+    (chirp-enrich-quoted-tweets tweets (appkit-view-buffer view))
+    (when (and new-count (eq phase 'refresh))
+      (message "%s" (chirp-timeline--refresh-message new-count)))))
 
 (defun chirp-timeline--settle-error (view state generation message)
   "Settle GENERATION in VIEW and STATE with error MESSAGE."
-  (setf (chirp-timeline--generation-settled-p generation) t)
-  (when (chirp-view-state-token-current-p view state generation)
-    (let* ((phase (chirp-timeline--generation-phase generation))
-           (quiet (chirp-timeline--generation-quiet-p generation))
-           (silent (or quiet (eq phase 'poll)))
-           (page (plist-get state :page))
-           (status (plist-get state :status)))
-      (setf (plist-get status :phase) (if silent 'idle 'error)
-            (plist-get status :message) (and (not silent) message)
-            (plist-get state :generation) nil)
-      (when (and quiet (eq phase 'older))
-        (setf (plist-get page :auto-load-paused-p) t))
-      (appkit-request-sync view :part 'frame :position t)
-      (unless silent
-        (message "%s"
-                 (replace-regexp-in-string "[\r\n]+" "  " message))))))
+  (let* ((phase (chirp-timeline--generation-phase generation))
+         (quiet (chirp-timeline--generation-quiet-p generation))
+         (silent (or quiet (eq phase 'poll)))
+         (page (plist-get state :page))
+         (status (plist-get state :status)))
+    (setf (plist-get status :phase) (if silent 'idle 'error)
+          (plist-get status :message) (and (not silent) message)
+          (plist-get state :generation) nil)
+    (when (and quiet (eq phase 'older))
+      (setf (plist-get page :auto-load-paused-p) t))
+    (appkit-request-sync view :part 'frame :position t)
+    (unless silent
+      (message "%s"
+               (replace-regexp-in-string "[\r\n]+" "  " message)))))
 
 (defun chirp-timeline--interrupt-state-request (state)
-  "Retire STATE's interrupted request generation, if any."
-  (when-let* ((generation (plist-get state :generation)))
-    (setf (chirp-timeline--generation-settled-p generation) t
-          (plist-get state :generation) nil)
+  "Clear STATE's interrupted request context, if any."
+  (when (plist-get state :generation)
+    (setf (plist-get state :generation) nil)
     (let ((status (plist-get state :status)))
       (setf (plist-get status :phase)
             (if (plist-get state :loaded-p) 'idle 'initial)
             (plist-get status :message) nil))))
 
-(defun chirp-timeline--operation-current-p
-    (view state generation operation)
-  "Return non-nil when GENERATION and OPERATION may update VIEW and STATE."
-  (and (chirp-view-state-token-current-p view state generation)
-       (appkit-view-operation-current-p operation)))
 
 (defun chirp-timeline--request (view phase &optional quiet)
   "Start one logical PHASE request owned by VIEW.
@@ -398,48 +386,29 @@ When QUIET is non-nil, suppress user-facing completion and error messages."
          (status (plist-get state :status))
          (generation
           (chirp-timeline--generation-create
-           :id (gensym "chirp-timeline-generation-")
            :phase phase
            :quiet-p quiet))
-         operation
-         request)
-    ;; Revoke the previous generation before cancellation can synchronously
-    ;; deliver its errback at the callback boundary.
+         (operation
+          (appkit-view-operation-begin
+           view chirp-timeline--request-key)))
     (chirp-timeline--interrupt-state-request state)
     (setf (plist-get state :generation) generation
           (plist-get status :phase) phase
           (plist-get status :message) nil)
-    (setq operation
-          (appkit-view-operation-begin
-           view chirp-timeline--request-key
-           :cancel-function #'chirp-x-cancel-request))
     (appkit-request-sync view :part 'frame :position t)
-    (setq request
-          (chirp-backend-feed
-           (lambda (tweets envelope)
-             (when (chirp-timeline--operation-current-p
-                    view state generation operation)
-               (appkit-view-operation-finish operation)
-               (chirp-timeline--settle-success
-                view state generation tweets envelope)))
-           (eq (plist-get query :kind) 'following)
-           (lambda (message)
-             (when (chirp-timeline--operation-current-p
-                    view state generation operation)
-               (appkit-view-operation-finish operation)
-               (chirp-timeline--settle-error
-                view state generation message)))
-           (chirp-timeline--fetch-count state phase)
-           (and (eq phase 'older) (plist-get page :next-cursor))
-           view))
-    (appkit-view-operation-bind operation request)
-    (when (and (null request)
-               (chirp-timeline--operation-current-p
-                view state generation operation))
-      (appkit-view-operation-finish operation)
-      (chirp-timeline--settle-error
-       view state generation "X timeline request did not start"))
-    request))
+    (chirp-backend-feed
+     (lambda (tweets envelope)
+       (when (appkit-view-operation-finish operation)
+         (chirp-timeline--settle-success
+          view state generation tweets envelope)))
+     (eq (plist-get query :kind) 'following)
+     (lambda (message)
+       (when (appkit-view-operation-finish operation)
+         (chirp-timeline--settle-error
+          view state generation message)))
+     (chirp-timeline--fetch-count state phase)
+     (and (eq phase 'older) (plist-get page :next-cursor))
+     operation)))
 
 (defun chirp-timeline--ensure-initial-request (view)
   "Start VIEW's initial request when its feed has never settled."

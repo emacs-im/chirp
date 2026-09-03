@@ -72,7 +72,13 @@
                   (should-not (eq home-state following-state))
                   (should (= (length requests) 2))
                   (should (plist-get (car requests) :following))
-                  (should (eq (plist-get (car requests) :owner) view))
+                  (should
+                   (appkit-view-operation-p
+                    (plist-get (car requests) :owner)))
+                  (should
+                   (eq (appkit-view-operation-view
+                        (plist-get (car requests) :owner))
+                       view))
                   (funcall
                    (plist-get (car requests) :callback)
                    (list '(:kind tweet :id "following" :text "Following"))
@@ -211,7 +217,8 @@
                     ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
             (setq buffer (chirp-timeline-open-home))
             (let ((view (with-current-buffer buffer (appkit-current-view))))
-              (should (eq owner view))
+              (should (appkit-view-operation-p owner))
+              (should (eq (appkit-view-operation-view owner) view))
               (funcall callback
                        (list '(:kind tweet :id "1" :text "Projected later"))
                        nil)
@@ -271,8 +278,13 @@
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'chirp-backend-feed)
-                     (lambda (&rest _args)
-                       (list 'request (cl-incf request-count))))
+                     (lambda (_callback &optional _following _errback
+                                        _max-results _cursor owner)
+                       (let ((request
+                              (list 'request (cl-incf request-count))))
+                         (appkit-register-handle
+                          owner 'function request #'chirp-x-cancel-request)
+                         request)))
                     ((symbol-function 'chirp-x-cancel-request)
                      (lambda (request)
                        (setq canceled request)))
@@ -344,8 +356,6 @@
                 (should-not (eq first-generation second-generation))
                 (funcall (nth 0 callbacks)
                          (list '(:kind tweet :id "old" :text "old")) nil)
-                (should
-                 (chirp-timeline--generation-settled-p first-generation))
                 (should (eq (plist-get state :generation)
                             second-generation))
                 (should-not (plist-get state :items))
