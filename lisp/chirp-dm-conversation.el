@@ -587,25 +587,29 @@ Return non-nil when the refresh was accepted."
                     position start chirp-dm-history-auto-load-threshold))
           (chirp-dm-conversation--request view 'older))))))
 
-(defun chirp-dm-conversation--sync (view invalidations)
+(defun chirp-dm-conversation--sync (view invalidations _events)
   "Synchronize conversation VIEW for pending INVALIDATIONS."
   (let* ((state (chirp-dm-conversation--state view))
          (conversation (chirp-dm-conversation--conversation state))
          (title
           (chirp-dm-conversation--one-line
            (plist-get conversation :title)))
+         (diff
+          (appkit-projection-diff-derive
+           invalidations
+           :existing-keys
+           (and (appkit-chat-timeline-live-p)
+                (appkit-chat-timeline-keys))
+           :reconcile-parts '(timeline)))
          (slice
           (appkit-chat-history-window-slice
            (plist-get conversation :events)
            (lambda (event) (plist-get event :id))))
          (rows
-          (and (plist-get slice :valid-p)
+          (and (appkit-projection-diff-reconcile-p diff)
+               (plist-get slice :valid-p)
                (chirp-dm-render-project-events
-                view conversation (plist-get slice :entries))))
-         (force-keys
-          (and (memq 'geometry
-                     (appkit-invalidations-parts invalidations))
-               (mapcar #'appkit-chat-timeline-row-key rows))))
+                view conversation (plist-get slice :entries)))))
     (unless (plist-get slice :valid-p)
       (error "Invalid XChat history window: %s" (plist-get slice :reason)))
     (setq-local chirp--view-title
@@ -613,11 +617,12 @@ Return non-nil when the refresh was accepted."
                         (if (string-empty-p title) "Conversation" title)))
     (appkit-chat-timeline-run-preserving-position
      (lambda ()
-       (appkit-chat-timeline-sync
-        rows
-        :force-keys force-keys
-        :changed-resources
-        (appkit-invalidations-resource-keys invalidations))
+       (when (appkit-projection-diff-reconcile-p diff)
+         (appkit-chat-timeline-sync
+          rows
+          :force-keys (appkit-projection-diff-force-keys diff)
+          :changed-resources
+          (appkit-projection-diff-changed-dependencies diff)))
        (appkit-chat-timeline-set-frame
         (chirp-dm-render-header conversation)
         (concat (chirp-dm-render-footer state)

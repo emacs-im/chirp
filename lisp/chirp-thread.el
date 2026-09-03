@@ -419,11 +419,11 @@ protected."
       (_ (and (null (plist-get state :items))
               "No thread data returned.\n")))))
 
-(defun chirp-thread--sync (view invalidations)
-  "Synchronize thread VIEW from INVALIDATIONS."
+(defun chirp-thread--sync (view invalidations events)
+  "Synchronize thread VIEW from INVALIDATIONS and EVENTS."
   (let ((state (appkit-view-state view)))
     (chirp-sync-projection
-     view invalidations
+     view invalidations events
      (chirp-thread--project-rows
       (plist-get state :items)
       (plist-get (plist-get state :query) :focus-id))

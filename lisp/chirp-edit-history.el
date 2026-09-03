@@ -56,11 +56,11 @@
       (_ (and (null (plist-get state :items))
               "No edit history returned.\n")))))
 
-(defun chirp-edit-history--sync (view invalidations)
-  "Synchronize edit-history VIEW from INVALIDATIONS."
+(defun chirp-edit-history--sync (view invalidations events)
+  "Synchronize edit-history VIEW from INVALIDATIONS and EVENTS."
   (let ((state (appkit-view-state view)))
     (chirp-sync-projection
-     view invalidations
+     view invalidations events
      (chirp-edit-history--project (plist-get state :items))
      (chirp-edit-history--frame-text state))))
 

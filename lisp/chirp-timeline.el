@@ -261,12 +261,12 @@ Set this to nil to disable automatic pagination.  Manual loading with
     (appkit-sync-invalidations view)
     (chirp-timeline--start-polling view)))
 
-(defun chirp-timeline--sync (view invalidations)
-  "Synchronize VIEW from coalesced INVALIDATIONS."
+(defun chirp-timeline--sync (view invalidations events)
+  "Synchronize VIEW from coalesced INVALIDATIONS and EVENTS."
   (let ((state (chirp-timeline--list-state view)))
     (chirp-timeline--sync-header-line view state)
     (chirp-sync-projection
-     view invalidations
+     view invalidations events
      (chirp-render-project-tweet-rows (plist-get state :items))
      (chirp-timeline--frame-text state))
     (when (and chirp-timeline--auto-load-pending-recheck-p

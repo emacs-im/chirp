@@ -308,7 +308,7 @@
               (plist-get conversation :title)))
     (chirp-dm-conversation-open conversation :refresh-p t)))
 
-(defun chirp-dm-inbox--sync (view invalidations)
+(defun chirp-dm-inbox--sync (view invalidations _events)
   "Synchronize inbox VIEW for pending INVALIDATIONS."
   (let* ((state (chirp-dm-inbox--state view))
          (entries (chirp-dm-inbox--project view state))
@@ -320,15 +320,16 @@
            when (and avatar-key
                      (cl-member avatar-key resources :test #'equal))
            collect (list 'dm-conversation (plist-get conversation :id))))
-         (force-keys
-          (delete-dups
-           (append
-            resource-keys
-            (when (memq 'geometry
-                        (appkit-invalidations-parts invalidations))
-              (mapcar #'appkit-directory-entry-key entries))))))
-    (appkit-directory-reconcile
-     (appkit-directory-surface) entries :force-keys force-keys)))
+         (diff
+          (appkit-projection-diff-derive
+           invalidations
+           :existing-keys (mapcar #'appkit-directory-entry-key entries)
+           :reconcile-parts '(entries)
+           :force-keys resource-keys)))
+    (when (appkit-projection-diff-reconcile-p diff)
+      (appkit-directory-reconcile
+       (appkit-directory-surface) entries
+       :force-keys (appkit-projection-diff-force-keys diff)))))
 
 (defun chirp-dm-inbox--setup (view)
   "Initialize Appkit directory adapters for inbox VIEW."

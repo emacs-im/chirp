@@ -108,19 +108,19 @@
         (insert "\n"))))
     (buffer-string)))
 
-(defun chirp-profile--sync (view invalidations)
-  "Synchronize profile VIEW from INVALIDATIONS."
+(defun chirp-profile--sync (view invalidations events)
+  "Synchronize profile VIEW from INVALIDATIONS and EVENTS."
   (let ((state (appkit-view-state view)))
     (chirp-sync-projection
-     view invalidations
+     view invalidations events
      (chirp-render-project-tweet-rows (plist-get state :items))
      (chirp-profile--header-text state))))
 
-(defun chirp-profile--users-sync (view invalidations)
-  "Synchronize user-list VIEW from INVALIDATIONS."
+(defun chirp-profile--users-sync (view invalidations events)
+  "Synchronize user-list VIEW from INVALIDATIONS and EVENTS."
   (let ((state (appkit-view-state view)))
     (chirp-sync-projection
-     view invalidations
+     view invalidations events
      (chirp-profile--project-users (plist-get state :items))
      (pcase (plist-get (plist-get state :status) :phase)
        ('initial (format "Loading %s...\n" (plist-get state :title)))
