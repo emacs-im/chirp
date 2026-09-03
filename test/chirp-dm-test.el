@@ -265,10 +265,9 @@
               (let* ((view (with-current-buffer buffer (appkit-current-view)))
                      (state (appkit-view-state view)))
                 (should (equal (nreverse calls) '(history signing decrypt)))
-                (should (eq (cadr owners) view))
-                (should (appkit-view-operation-p (car owners)))
-                (should (eq (appkit-view-operation-view (car owners))
-                            view))
+                (dolist (owner owners)
+                  (should (appkit-view-operation-p owner))
+                  (should (eq (appkit-view-operation-view owner) view)))
                 (should
                  (equal (plist-get (car (last (chirp-dm-conversation--events state))) :text)
                         "verified plaintext"))))))
@@ -950,7 +949,9 @@
                     (goto-char
                      (appkit-chat-timeline-key-position "20"))
                     (chirp-dm-load-older-messages)
-                    (should (eq request-owner view))
+                    (should (appkit-view-operation-p request-owner))
+                    (should
+                     (eq (appkit-view-operation-view request-owner) view))
                     (funcall
                      callback
                      (list
@@ -1181,13 +1182,29 @@
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'chirp-backend-dm-history)
-                     (lambda (_id _cursor callback &rest _options)
-                       (setq older-callback callback)
-                       'older-request))
+                     (lambda (_id _cursor callback &rest options)
+                       (let* ((request 'older-request)
+                              (handle
+                               (appkit-register-handle
+                                (plist-get options :owner)
+                                'function request #'chirp-x-cancel-request)))
+                         (setq older-callback
+                               (lambda (&rest arguments)
+                                 (appkit-retire-handle handle)
+                                 (apply callback arguments)))
+                         request)))
                     ((symbol-function 'chirp-backend-dm-conversation-data)
-                     (lambda (_id callback &rest _options)
-                       (setq refresh-callback callback)
-                       'refresh-request))
+                     (lambda (_id callback &rest options)
+                       (let* ((request 'refresh-request)
+                              (handle
+                               (appkit-register-handle
+                                (plist-get options :owner)
+                                'function request #'chirp-x-cancel-request)))
+                         (setq refresh-callback
+                               (lambda (&rest arguments)
+                                 (appkit-retire-handle handle)
+                                 (apply callback arguments)))
+                         request)))
                     ((symbol-function 'chirp-x-cancel-request)
                      (lambda (request)
                        (push request canceled))))

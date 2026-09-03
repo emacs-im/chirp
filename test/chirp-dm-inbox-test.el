@@ -247,7 +247,8 @@
               (setq buffer (chirp-dm-inbox--activate-item nil entry))
               (let* ((view (with-current-buffer buffer (appkit-current-view)))
                      (state (appkit-view-state view)))
-                (should (eq owner view))
+                (should (appkit-view-operation-p owner))
+                (should (eq (appkit-view-operation-view owner) view))
                 (should refresh)
                 (funcall refresh
                          (chirp-dm-test--normalized-conversation new-event)
