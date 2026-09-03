@@ -460,7 +460,6 @@ Return non-nil when the refresh was accepted."
           :older-stalled-p nil
           :status (list :phase 'idle :message nil)
           :decrypt-loading-p nil
-          :reaction-operations (make-hash-table :test #'equal)
           :send-error nil)))
 
 ;;;; Rendering
@@ -924,20 +923,15 @@ Disjoint focused fragments are bridged through older history before merging."
 
 ;;;; Sending
 
-(defun chirp-dm-conversation--send-owner-current-p (view owner)
-  "Return non-nil when OWNER is VIEW's current Appkit compose operation."
-  (and (appkit-view-live-p view)
-       (with-current-buffer (appkit-view-buffer view)
-         (and (bound-and-true-p appkit-compose-session-mode)
-              (appkit-compose-operation-current-p owner)))))
-
 (defun chirp-dm-conversation--settle-send-error (view state owner message)
   "Settle Appkit send OWNER in VIEW and STATE with error MESSAGE."
-  (when (chirp-dm-conversation--send-owner-current-p view owner)
-    (appkit-with-live-view view
-      (appkit-compose-operation-finish owner)
-      (setq buffer-read-only nil)
-      (setf (plist-get state :send-error) message))
+  (when
+      (appkit-with-live-view view
+        (when (and (bound-and-true-p appkit-compose-session-mode)
+                   (appkit-compose-operation-finish owner))
+          (setq buffer-read-only nil)
+          (setf (plist-get state :send-error) message)
+          t))
     (appkit-request-sync view :part 'frame :position t)
     (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
 
@@ -947,16 +941,18 @@ Disjoint focused fragments are bridged through older history before merging."
 
 When REPLY-P is non-nil, clear the reply context owned by the acknowledged
 composer capture."
-  (when (chirp-dm-conversation--send-owner-current-p view owner)
-    (appkit-with-live-view view
-      (appkit-compose-operation-finish owner)
-      (setq buffer-read-only nil)
-      (setf (plist-get state :send-error) nil)
-      (unless (string-empty-p (string-trim text))
-        (appkit-chatbuf-input-history-push text))
-      (appkit-chatbuf-input-set-text "")
-      (when reply-p
-        (appkit-chatbuf-aux-reset)))
+  (when
+      (appkit-with-live-view view
+        (when (and (bound-and-true-p appkit-compose-session-mode)
+                   (appkit-compose-operation-finish owner))
+          (setq buffer-read-only nil)
+          (setf (plist-get state :send-error) nil)
+          (unless (string-empty-p (string-trim text))
+            (appkit-chatbuf-input-history-push text))
+          (appkit-chatbuf-input-set-text "")
+          (when reply-p
+            (appkit-chatbuf-aux-reset))
+          t))
     (appkit-request-sync view :part 'frame :position t)
     (chirp-dm-conversation--request view 'refresh)
     (message "%s sent" (if reply-p "Direct-message reply" "Direct message"))))
@@ -1128,7 +1124,7 @@ composer capture."
              (reply-p (eq (plist-get aux :aux-type) 'reply))
              (reply-target (and reply-p
                                 (chirp-dm-conversation--reply-target state)))
-             callback-ran-p request capture owner text attachments)
+             request capture owner transport-operation text attachments)
         (unless (appkit-chatbuf-point-in-input-p)
           (user-error "Point is not in the direct-message composer"))
         (when (appkit-compose-operation-active-p)
@@ -1162,20 +1158,28 @@ composer capture."
                  "Sending direct-message reply with attachments")
                 (reply-p "Sending direct-message reply")
                 (attachments "Sending direct message with attachments")
-                (t "Sending direct message"))))
+                (t "Sending direct message"))
+               :cancel-function
+               (lambda ()
+                 (when transport-operation
+                   (appkit-view-operation-cancel view 'dm-send))
+                 (chirp-dm-conversation--settle-send-error
+                  view state owner "Direct message send canceled"))))
+        (setq transport-operation
+              (appkit-view-operation-begin view 'dm-send))
         (setf (plist-get state :send-error) nil)
         (setq buffer-read-only t)
         (appkit-request-sync view :part 'frame :position t)
         (let ((success
                (lambda (_event _envelope)
-                 (setq callback-ran-p t)
-                 (chirp-dm-conversation--settle-send-success
-                  view state owner text reply-p)))
+                 (when (appkit-view-operation-finish transport-operation)
+                   (chirp-dm-conversation--settle-send-success
+                    view state owner text reply-p))))
               (failure
                (lambda (message)
-                 (setq callback-ran-p t)
-                 (chirp-dm-conversation--settle-send-error
-                  view state owner message))))
+                 (when (appkit-view-operation-finish transport-operation)
+                   (chirp-dm-conversation--settle-send-error
+                    view state owner message)))))
           (condition-case err
               (setq request
                     (cond
@@ -1191,7 +1195,7 @@ composer capture."
                             (chirp-dm-conversation--reply-key-events
                              state reply-target))
                        :errback failure
-                       :owner view))
+                       :owner transport-operation))
                      (reply-p
                       (chirp-backend-dm-send-reply
                        (chirp-dm-conversation--id state)
@@ -1201,22 +1205,18 @@ composer capture."
                         state reply-target)
                        success
                        :errback failure
-                       :owner view))
+                       :owner transport-operation))
                      (t
                       (chirp-backend-dm-send-text
                        (chirp-dm-conversation--id state) text success
                        :errback failure
-                       :owner view))))
+                       :owner transport-operation))))
             ((error quit)
-             (chirp-dm-conversation--settle-send-error
-              view state owner (error-message-string err))
+             (when (appkit-view-operation-finish transport-operation)
+               (chirp-dm-conversation--settle-send-error
+                view state owner (error-message-string err)))
              (signal (car err) (cdr err)))))
-        (when (and (not callback-ran-p)
-                   (chirp-dm-conversation--send-owner-current-p view owner)
-                   (not (buffer-live-p request)))
-          (chirp-dm-conversation--settle-send-error
-           view state owner "XChat message request did not start"))
-        (when (chirp-dm-conversation--send-owner-current-p view owner)
+        (when (appkit-view-operation-current-p transport-operation)
           (message "%s..."
                    (if reply-p
                        "Sending direct-message reply"
@@ -1314,31 +1314,17 @@ composer capture."
       (plist-get (car (plist-get event :reactions)) :emoji)
       "👍"))
 
-(defun chirp-dm-conversation--reaction-owner-current-p
-    (view state key owner)
-  "Return non-nil when OWNER still owns reaction KEY in VIEW and STATE."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq owner
-           (gethash key (plist-get state :reaction-operations)))))
-
-(defun chirp-dm-conversation--settle-reaction-error
-    (view state key owner message)
-  "Settle reaction OWNER for KEY in VIEW and STATE with error MESSAGE."
-  (when (chirp-dm-conversation--reaction-owner-current-p
-         view state key owner)
-    (remhash key (plist-get state :reaction-operations))
+(defun chirp-dm-conversation--settle-reaction-error (operation message)
+  "Settle reaction OPERATION with error MESSAGE."
+  (when (appkit-view-operation-finish operation)
     (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
 
 (defun chirp-dm-conversation--settle-reaction-success
-    (view state key owner event emoji remove-p)
-  "Settle acknowledged reaction OWNER with EVENT in VIEW and STATE.
+    (view state operation event emoji remove-p)
+  "Settle acknowledged reaction OPERATION with EVENT in VIEW and STATE.
 
-KEY identifies the target and EMOJI.  REMOVE-P describes the acknowledged
-operation."
-  (when (chirp-dm-conversation--reaction-owner-current-p
-         view state key owner)
-    (remhash key (plist-get state :reaction-operations))
+EMOJI and REMOVE-P describe the acknowledged operation."
+  (when (appkit-view-operation-finish operation)
     (let ((conversation (chirp-dm-conversation--conversation state)))
       (chirp-dm-state-set-events
        conversation
@@ -1368,18 +1354,16 @@ operation."
              (target-id
               (or (plist-get event :sequence-id)
                   (plist-get event :id)))
-             (key (list target-id emoji))
-             (operations (plist-get state :reaction-operations))
+             (key (list 'dm-reaction target-id emoji))
              (remove-p
               (and (chirp-dm-conversation--reaction-selected-p event emoji)
                    t))
-             (owner (list 'dm-reaction target-id emoji))
-             callback-ran-p request)
+             operation request)
         (when (string-empty-p emoji)
           (user-error "Reaction emoji cannot be empty"))
-        (when (gethash key operations)
+        (when (gethash key (appkit-view-request-table view))
           (user-error "This reaction operation is already running"))
-        (puthash key owner operations)
+        (setq operation (appkit-view-operation-begin view key))
         (condition-case err
             (setq request
                   (chirp-backend-dm-send-reaction
@@ -1387,27 +1371,18 @@ operation."
                    (plist-get event :encoded-event)
                    emoji remove-p
                    (lambda (acknowledged _envelope)
-                     (setq callback-ran-p t)
                      (chirp-dm-conversation--settle-reaction-success
-                      view state key owner acknowledged emoji remove-p))
+                      view state operation acknowledged emoji remove-p))
                    :errback
                    (lambda (text)
-                     (setq callback-ran-p t)
                      (chirp-dm-conversation--settle-reaction-error
-                      view state key owner text))
-                   :owner view))
+                      operation text))
+                   :owner operation))
           ((error quit)
            (chirp-dm-conversation--settle-reaction-error
-            view state key owner (error-message-string err))
+            operation (error-message-string err))
            (signal (car err) (cdr err))))
-        (when (and (not callback-ran-p)
-                   (chirp-dm-conversation--reaction-owner-current-p
-                    view state key owner)
-                   (not (buffer-live-p request)))
-          (chirp-dm-conversation--settle-reaction-error
-           view state key owner "XChat reaction request did not start"))
-        (when (chirp-dm-conversation--reaction-owner-current-p
-               view state key owner)
+        (when (appkit-view-operation-current-p operation)
           (message "%s reaction..."
                    (if remove-p "Removing" "Adding")))
         request)
