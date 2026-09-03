@@ -1163,9 +1163,9 @@
           (let ((sync (appkit-view-sync-function view))
                 (sync-count 0))
             (setf (appkit-view-sync-function view)
-                  (lambda (live-view invalidations)
+                  (lambda (live-view invalidations events)
                     (setq sync-count (1+ sync-count))
-                    (funcall sync live-view invalidations)))
+                    (funcall sync live-view invalidations events)))
             (chirp-request-rerender buffer 60)
             (let ((handle
                    (appkit-invalidations-scheduled-handle

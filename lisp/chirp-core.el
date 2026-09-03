@@ -598,36 +598,16 @@ projected row.  MODE, ANCHOR-PROPERTY, PARTS, and SELECT are forwarded to
       (chirp--apply-buffer-name (current-buffer) title))
     view))
 
-(defun chirp-sync-projection (view invalidations rows &optional header)
-  "Apply INVALIDATIONS to VIEW by reconciling ROWS.
+(defun chirp-sync-projection
+    (view invalidations events rows &optional header)
+  "Apply INVALIDATIONS and EVENTS to VIEW by reconciling ROWS.
 
 HEADER updates the generated frame when supplied."
-  (let* ((events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (position-intent (chirp-projection-position-intent events))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (parts (appkit-invalidations-parts invalidations))
-         (all-resources-p (memq 'all resources))
-         (force-all-rows-p
-          (or all-resources-p (memq 'geometry parts)))
-         (reconcile-p
-          (or (appkit-invalidations-structure-p invalidations)
-              (appkit-invalidations-entry-keys invalidations)
-              resources
-              parts))
-         (force-keys
-          (append
-           (appkit-invalidations-entry-keys invalidations)
-           (and force-all-rows-p
-                (mapcar #'appkit-projection-row-key rows)))))
-    (appkit-projection-sync
-     view (and reconcile-p rows)
-     :header (or header "")
-     :force-keys force-keys
-     :changed-dependencies (and (not all-resources-p) resources)
-     :position position-intent
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)))
+  (appkit-projection-sync-invalidations
+      view invalidations rows
+    :reconcile-parts '(entries)
+    :header (or header "")
+    :position (chirp-projection-position-intent events)))
 
 (defun chirp--on-text-scale-change ()
   "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
