@@ -338,51 +338,41 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
           event))
       (plist-get conversation :events)))))
 
-(defun chirp-dm-conversation--settle-decrypt-error (view state generation message)
-  "Settle decryption GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-view-state-token-current-p
-         view state generation :decrypt-generation)
-    (setf (plist-get state :decrypt-generation) nil)
-    (display-warning 'chirp message :warning)))
+(defun chirp-dm-conversation--settle-decrypt-error (state message)
+  "Settle STATE's decryption request with error MESSAGE."
+  (setf (plist-get state :decrypt-loading-p) nil)
+  (display-warning 'chirp message :warning))
 
 (defun chirp-dm-conversation--settle-decrypt-success
-    (view state generation encoded signing-keys)
-  "Decrypt ENCODED events with SIGNING-KEYS for GENERATION in VIEW and STATE."
-  (when (chirp-view-state-token-current-p
-         view state generation :decrypt-generation)
-    (condition-case err
-        (let ((messages
-               (cl-loop for batch in (seq-partition encoded 200)
-                        append
-                        (chirp-xchat-native-decrypt-events
-                         (chirp-dm-conversation--id state)
-                         batch signing-keys))))
-          (setf (plist-get state :decrypt-generation) nil)
-          (chirp-dm-conversation--mark-key-events-processed
-           state encoded (chirp-dm-conversation--native-key-epoch))
-          (let ((updated
-                 (chirp-dm-conversation--apply-verified-messages
-                  state messages)))
-            (when (> updated 0)
-              (chirp-dm-state-publish
-               (chirp-dm-conversation--conversation state))
-              (message "Decrypted %d verified XChat message%s"
-                       updated (if (= updated 1) "" "s"))))
-          (let ((remaining
-                 (plist-get
-                  (chirp-dm-conversation--decrypt-input state) :events)))
-            (when (cl-set-difference remaining encoded :test #'equal)
-              (chirp-dm-conversation--decrypt-view view t))))
-      (error
-       (chirp-dm-conversation--settle-decrypt-error
-        view state generation (error-message-string err))))))
+    (view state encoded signing-keys)
+  "Decrypt ENCODED events with SIGNING-KEYS for VIEW STATE."
+  (condition-case err
+      (let ((messages
+             (cl-loop for batch in (seq-partition encoded 200)
+                      append
+                      (chirp-xchat-native-decrypt-events
+                       (chirp-dm-conversation--id state)
+                       batch signing-keys))))
+        (setf (plist-get state :decrypt-loading-p) nil)
+        (chirp-dm-conversation--mark-key-events-processed
+         state encoded (chirp-dm-conversation--native-key-epoch))
+        (let ((updated
+               (chirp-dm-conversation--apply-verified-messages
+                state messages)))
+          (when (> updated 0)
+            (chirp-dm-state-publish
+             (chirp-dm-conversation--conversation state))
+            (message "Decrypted %d verified XChat message%s"
+                     updated (if (= updated 1) "" "s"))))
+        (let ((remaining
+               (plist-get
+                (chirp-dm-conversation--decrypt-input state) :events)))
+          (when (cl-set-difference remaining encoded :test #'equal)
+            (chirp-dm-conversation--decrypt-view view t))))
+    (error
+     (chirp-dm-conversation--settle-decrypt-error
+      state (error-message-string err)))))
 
-(defun chirp-dm-conversation--decrypt-operation-current-p
-    (view state generation operation)
-  "Return non-nil when GENERATION and OPERATION may decrypt VIEW and STATE."
-  (and (chirp-view-state-token-current-p
-        view state generation :decrypt-generation)
-       (appkit-view-operation-current-p operation)))
 
 (defun chirp-dm-conversation--decrypt-view (view &optional key-history-loaded-p)
   "Decrypt encrypted events in conversation VIEW.
@@ -399,9 +389,7 @@ view has no conversation-key event."
              (lambda (event)
                (eq (plist-get event :kind) 'conversation-key-change))
              (append (plist-get state :recovery-key-events)
-                     (chirp-dm-conversation--events state))))
-           (generation (cons 'decrypt nil))
-           operation request)
+                     (chirp-dm-conversation--events state)))))
       (cond
        ((null encoded)
         (message "This conversation has no encoded XChat events"))
@@ -418,36 +406,22 @@ view has no conversation-key event."
        ((> (length user-ids) 100)
         (display-warning 'chirp "XChat conversation has too many signing-key users" :warning))
        (t
-        (setf (plist-get state :decrypt-generation) generation)
-        (setq operation
-              (appkit-view-operation-begin
-               view chirp-dm-conversation--decrypt-request-key
-               :cancel-function #'chirp-x-cancel-request))
-        (setq request
-              (chirp-backend-dm-signing-keys
-               user-ids
-               (lambda (signing-keys _envelope)
-                 (when (chirp-dm-conversation--decrypt-operation-current-p
-                        view state generation operation)
-                   (appkit-view-operation-finish operation)
-                   (chirp-dm-conversation--settle-decrypt-success
-                    view state generation encoded signing-keys)))
-               :errback
-               (lambda (message)
-                 (when (chirp-dm-conversation--decrypt-operation-current-p
-                        view state generation operation)
-                   (appkit-view-operation-finish operation)
-                   (chirp-dm-conversation--settle-decrypt-error
-                    view state generation message)))
-               :owner view))
-        (appkit-view-operation-bind operation request)
-        (when (and (null request)
-                   (chirp-dm-conversation--decrypt-operation-current-p
-                    view state generation operation))
-          (appkit-view-operation-finish operation)
-          (chirp-dm-conversation--settle-decrypt-error
-           view state generation
-           "XChat signing-key request did not start")))))))
+        (let ((operation
+               (appkit-view-operation-begin
+                view chirp-dm-conversation--decrypt-request-key)))
+          (setf (plist-get state :decrypt-loading-p) t)
+          (chirp-backend-dm-signing-keys
+           user-ids
+           (lambda (signing-keys _envelope)
+             (when (appkit-view-operation-finish operation)
+               (chirp-dm-conversation--settle-decrypt-success
+                view state encoded signing-keys)))
+           :errback
+           (lambda (message)
+             (when (appkit-view-operation-finish operation)
+               (chirp-dm-conversation--settle-decrypt-error
+                state message)))
+           :owner operation)))))))
 
 (defun chirp-dm-conversation-accept-live-event (view conversation)
   "Process a canonical live update for CONVERSATION through matching VIEW.
@@ -459,7 +433,7 @@ request remains active; a later live event is picked up after it settles."
       (when (and (eq (plist-get state :type) 'dm-conversation)
                  (eq (plist-get state :conversation) conversation))
         (when (and (chirp-dm-conversation--decryption-needed-p state)
-                   (null (plist-get state :decrypt-generation)))
+                   (not (plist-get state :decrypt-loading-p)))
           (chirp-dm-conversation--decrypt-view view t))
         t))))
 
@@ -487,7 +461,7 @@ Return non-nil when the refresh was accepted."
           :older-available-p (plist-get canonical :has-more)
           :older-stalled-p nil
           :status (list :phase 'idle :message nil)
-          :decrypt-generation nil
+          :decrypt-loading-p nil
           :reaction-operations (make-hash-table :test #'equal)
           :send-error nil)))
 
@@ -1437,7 +1411,7 @@ operation."
         (plist-get conversation :events) (list event)))
       (chirp-dm-state-publish conversation)
       (when (and (chirp-dm-conversation--decryption-needed-p state)
-                 (null (plist-get state :decrypt-generation)))
+                 (not (plist-get state :decrypt-loading-p)))
         (chirp-dm-conversation--decrypt-view view t)))
     (message "Reaction %s: %s"
              (if remove-p "removed" "added") emoji)))

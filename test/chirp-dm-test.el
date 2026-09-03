@@ -59,7 +59,9 @@
                    (lambda (callback &rest options)
                      (push 'inbox call-order)
                      (setq buffer
-                           (appkit-view-buffer (plist-get options :owner)))
+                           (appkit-view-buffer
+                            (appkit-owner-view
+                             (plist-get options :owner))))
                      (funcall callback nil nil)
                      nil)))
           (should-not (chirp-direct-messages))
@@ -103,7 +105,8 @@
                     (chirp-dm-test--normalized-conversation
                      (chirp-dm-test--normalized-event
                       "20" "20" "projected later"))))
-              (should (eq owner view))
+              (should (appkit-view-operation-p owner))
+              (should (eq (appkit-view-operation-view owner) view))
               (should (eq (plist-get (appkit-view-state view) :type)
                           'dm-inbox))
               (funcall callback (list conversation) nil)
@@ -163,7 +166,8 @@
               (let* ((view (with-current-buffer buffer (appkit-current-view)))
                      (state (appkit-view-state view))
                      (decrypted (car (chirp-dm-conversation--events state))))
-                (should (eq owner view))
+                (should (appkit-view-operation-p owner))
+                (should (eq (appkit-view-operation-view owner) view))
                 (should (equal (plist-get decrypted :text)
                                "verified plaintext"))
                 (should
@@ -261,7 +265,10 @@
               (let* ((view (with-current-buffer buffer (appkit-current-view)))
                      (state (appkit-view-state view)))
                 (should (equal (nreverse calls) '(history signing decrypt)))
-                (should (cl-every (lambda (owner) (eq owner view)) owners))
+                (should (eq (cadr owners) view))
+                (should (appkit-view-operation-p (car owners)))
+                (should (eq (appkit-view-operation-view (car owners))
+                            view))
                 (should
                  (equal (plist-get (car (last (chirp-dm-conversation--events state))) :text)
                         "verified plaintext"))))))
