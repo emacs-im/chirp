@@ -1362,7 +1362,7 @@ request is retried automatically."
                    ()
                    (cond
                     (settled-p nil)
-                    ((chirp-x--owner-live-p upload-owner) t)
+                    ((appkit-owner-live-p upload-owner) t)
                     (t
                      (fail "XChat media upload was canceled")
                      nil)))
@@ -1777,11 +1777,6 @@ MEDIA-ID identifies the upload and SEGMENT-INDEX is its zero-based part."
         (format "%s (%s)" message code)
       message)))
 
-(defun chirp-x--owner-live-p (owner)
-  "Return non-nil when Appkit OWNER is live."
-  (cond
-   ((appkit-app-p owner) (appkit-app-live-p owner))
-   ((appkit-view-p owner) (appkit-view-live-p owner))))
 
 (defun chirp-x--cancel-upload-poll (poll)
   "Cancel the upload timer described by POLL and settle its workflow."
@@ -1870,7 +1865,7 @@ upload mutation is retried automatically."
                      ()
                      (cond
                       (settled-p nil)
-                      ((chirp-x--owner-live-p upload-owner) t)
+                      ((appkit-owner-live-p upload-owner) t)
                       (t
                        (fail cancel-message)
                        nil)))
@@ -1904,7 +1899,7 @@ upload mutation is retried automatically."
                                   (when (appkit-handle-p handle)
                                     (appkit-retire-handle handle))
                                   (unless settled-p
-                                    (if (chirp-x--owner-live-p upload-owner)
+                                    (if (appkit-owner-live-p upload-owner)
                                         (check-status media-id attempt)
                                       (fail cancel-message))))))
                          (unless fired-p

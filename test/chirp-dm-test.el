@@ -975,6 +975,53 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest chirp-dm-history-observer-starts-one-eligible-page ()
+  "The timeline observer should close its loading gate before requesting."
+  (let ((chirp--app nil)
+        (chirp-dm-history-auto-load-threshold nil)
+        (request-count 0)
+        buffer callback)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-dm-history)
+                     (lambda (_conversation-id _cursor success &rest _options)
+                       (cl-incf request-count)
+                       (setq callback success)
+                       (list 'history-request request-count))))
+            (let* ((current
+                    (chirp-dm-test--normalized-event
+                     "20" "20" "current"))
+                   (conversation
+                    (chirp-dm-test--normalized-conversation current)))
+              (setq buffer (chirp-dm-conversation-open conversation))
+              (with-current-buffer buffer
+                (let* ((view (appkit-current-view))
+                       (observer
+                        (appkit-chat-timeline-scroll-observer))
+                       (start-function
+                        (appkit-scroll-observer-start-function observer)))
+                  (should (appkit-scroll-observer-p observer))
+                  (should (functionp start-function))
+                  (setq chirp-dm-history-auto-load-threshold 2000)
+                  (funcall start-function
+                           (selected-window) (point-min) (point-min))
+                  (funcall start-function
+                           (selected-window) (point-min) (point-min))
+                  (should (= request-count 1))
+                  (funcall
+                   callback
+                   (list
+                    (chirp-dm-test--normalized-event
+                     "10" "10" "older")
+                    current)
+                   '(("pagination" . (("complete" . t)))))
+                  (appkit-sync-invalidations view)
+                  (should (appkit-chat-history-older-loaded-p))
+                  (should (= request-count 1)))))))
+      (chirp-stop)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest chirp-dm-disjoint-refresh-bridges-the-canonical-timeline ()
   "A focused fragment must prove continuity before joining loaded messages."
   (let ((chirp--app nil)
