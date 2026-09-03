@@ -527,7 +527,7 @@
 (ert-deftest chirp-dm-reaction-toggle-waits-for-verified-ack ()
   "Reaction toggles should not mutate canonical chips before acknowledgement."
   (let ((chirp--app nil)
-        buffers callback remove-p)
+        buffers callback reaction-owner remove-p)
     (unwind-protect
         (save-window-excursion
           (let ((request (generate-new-buffer " *chirp-dm-reaction*")))
@@ -535,8 +535,9 @@
             (cl-letf
                 (((symbol-function 'chirp-backend-dm-send-reaction)
                   (lambda (_conversation-id _target-event _emoji remove
-                                            success &rest _options)
+                                            success &rest options)
                     (setq callback success
+                          reaction-owner (plist-get options :owner)
                           remove-p remove)
                     request)))
               (setf (chirp--session-xchat-user-id (chirp--session)) "42")
@@ -555,6 +556,8 @@
                   (goto-char (point-min))
                   (search-forward "react here")
                   (chirp-dm-toggle-reaction "🔥"))
+                (should (appkit-view-operation-p reaction-owner))
+                (should (eq (appkit-view-operation-view reaction-owner) view))
                 (should-not remove-p)
                 (should-not
                  (plist-get
@@ -600,9 +603,8 @@
                  (plist-get
                   (chirp-dm-conversation--message-by-id state "20")
                   :reactions))
-                (should (= (hash-table-count
-                            (plist-get state :reaction-operations))
-                           0))))))
+                (should-not
+                 (appkit-view-operation-current-p reaction-owner))))))
       (chirp-stop)
       (dolist (buffer buffers)
         (when (buffer-live-p buffer)
@@ -620,8 +622,8 @@
             (cl-letf (((symbol-function 'chirp-backend-dm-send-text)
                        (lambda (_conversation-id text callback &rest options)
                          (setq sent-text text
-                               send-success callback
-                               send-owner (plist-get options :owner))
+                               send-owner (plist-get options :owner)
+                               send-success callback)
                          send-request))
                       ((symbol-function 'chirp-backend-dm-conversation-data)
                        (lambda (_conversation-id callback &rest _options)
@@ -648,7 +650,8 @@
                   (should (eq (appkit-compose-operation-kind) 'dm-send))
                   (should (equal (appkit-compose-label)
                                  "Sending direct message")))
-                (should (eq send-owner view))
+                (should (appkit-view-operation-p send-owner))
+                (should (eq (appkit-view-operation-view send-owner) view))
                 (should (equal sent-text "hello"))
                 (should (= (length (chirp-dm-conversation--events state)) 1))
                 (funcall send-success '(:message-id "message-21") nil)
@@ -682,20 +685,28 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest chirp-dm-send-error-preserves-the-draft ()
-  "A synchronous ambiguous send error should preserve and re-enable input."
+(ert-deftest chirp-dm-send-error-and-cancel-preserve-the-draft ()
+  "Synchronous errors and cancellation should preserve and re-enable input."
   (let ((chirp--app nil)
-        buffer)
+        buffer cancel-p canceled transport-owner)
     (unwind-protect
         (save-window-excursion
-          (cl-letf (((symbol-function 'chirp-backend-dm-send-text)
-                     (lambda (_conversation-id _text _callback &rest options)
-                       (funcall
-                        (plist-get options :errback)
-                        (concat
-                         "X write outcome is unknown; the request may have "
-                         "succeeded. Check X before trying again."))
-                       nil)))
+          (cl-letf
+              (((symbol-function 'chirp-backend-dm-send-text)
+                (lambda (_conversation-id _text _callback &rest options)
+                  (if cancel-p
+                      (progn
+                        (setq transport-owner (plist-get options :owner))
+                        (appkit-register-handle
+                         transport-owner 'function 'send-request
+                         (lambda (request) (setq canceled request)))
+                        'send-request)
+                    (funcall
+                     (plist-get options :errback)
+                     (concat
+                      "X write outcome is unknown; the request may have "
+                      "succeeded. Check X before trying again."))
+                    nil))))
             (let* ((conversation
                     (chirp-dm-test--normalized-conversation
                      (chirp-dm-test--normalized-event "20" "20" "old")))
@@ -712,9 +723,22 @@
                 (should (equal (appkit-chatbuf-input-string)
                                "keep this draft"))
                 (should (string-match-p "Unable to send message"
-                                        (buffer-string))))
-              (with-current-buffer buffer
-                (should-not (appkit-compose-operation-active-p)))
+                                        (buffer-string)))
+                (should-not (appkit-compose-operation-active-p))
+                (setq cancel-p t)
+                (goto-char (point-max))
+                (chirp-dm-submit)
+                (should (appkit-compose-operation-active-p))
+                (appkit-compose-cancel-operation)
+                (appkit-sync-invalidations view)
+                (should-not buffer-read-only)
+                (should-not (appkit-compose-operation-active-p))
+                (should (equal (appkit-chatbuf-input-string)
+                               "keep this draft")))
+              (should (appkit-view-operation-p transport-owner))
+              (should-not
+               (appkit-view-operation-current-p transport-owner))
+              (should (eq canceled 'send-request))
               (should (= (length (chirp-dm-conversation--events state)) 1)))))
       (chirp-stop)
       (when (buffer-live-p buffer)
