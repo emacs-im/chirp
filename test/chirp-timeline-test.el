@@ -279,20 +279,11 @@
                     ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
                     ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
             (setq buffer (chirp-timeline-open-home))
-            (let ((view (with-current-buffer buffer (appkit-current-view))))
-              (should
-               (equal
-                (gethash chirp-timeline--request-key
-                         (appkit-view-request-table view))
-                '(request 1)))
-              (with-current-buffer buffer
-                (chirp-refresh))
-              (should (equal canceled '(request 1)))
-              (should
-               (equal
-                (gethash chirp-timeline--request-key
-                         (appkit-view-request-table view))
-                '(request 2))))))
+            (should (= request-count 1))
+            (with-current-buffer buffer
+              (chirp-refresh))
+            (should (equal canceled '(request 1)))
+            (should (= request-count 2))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1166,11 +1157,20 @@
                     (setq sync-count (1+ sync-count))
                     (funcall sync live-view invalidations)))
             (chirp-request-rerender buffer 60)
-            (chirp-request-rerender buffer 60)
-            (should (= (length (appkit-view-handles view)) 5))
+            (let ((handle
+                   (appkit-invalidations-scheduled-handle
+                    (appkit-view-invalidations view))))
+              (should (appkit-handle-p handle))
+              (chirp-request-rerender buffer 60)
+              (should
+               (eq handle
+                   (appkit-invalidations-scheduled-handle
+                    (appkit-view-invalidations view)))))
             (appkit-sync-invalidations view)
             (should (= sync-count 1))
-            (should (= (length (appkit-view-handles view)) 4))))
+            (should-not
+             (appkit-invalidations-scheduled-handle
+              (appkit-view-invalidations view)))))
       (chirp-stop)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1223,11 +1223,15 @@
                                  (list delay repeat function arguments))
                            'chirp-test-poll-timer)
                        'chirp-test-sync-timer)))
+                  ((symbol-function 'run-with-idle-timer)
+                   (lambda (&rest _arguments)
+                     'chirp-test-scroll-timer))
                   ((symbol-function 'timerp)
                    (lambda (object)
                      (memq object
                            '(chirp-test-poll-timer
-                             chirp-test-sync-timer))))
+                             chirp-test-sync-timer
+                             chirp-test-scroll-timer))))
                   ((symbol-function 'cancel-timer)
                    (lambda (timer)
                      (push timer canceled)))

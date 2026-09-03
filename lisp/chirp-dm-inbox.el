@@ -34,7 +34,7 @@
   "Monotonic identity source for fresh direct-message inbox views.")
 
 (defconst chirp-dm-inbox--request-key 'dm-inbox
-  "Request-table key for one inbox view's active transport.")
+  "Operation key for one inbox view's active transport.")
 
 ;;; Implementation
 (defconst chirp-dm-inbox--icon-slot-width 4
@@ -127,11 +127,6 @@
     view))
 
 
-(defun chirp-dm-inbox--retire-request (view state generation)
-  "Retire GENERATION's inbox transport when it still owns VIEW and STATE."
-  (when (chirp-view-state-token-current-p view state generation)
-    (remhash chirp-dm-inbox--request-key
-             (appkit-view-request-table view))))
 
 (defun chirp-dm-inbox--make-state (instance)
   "Return canonical inbox state for INSTANCE."
@@ -399,46 +394,53 @@ VIEW and STATE identify the inbox whose request is completing."
       (appkit-request-sync view :structure t :part 'entries :position t)
       (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message)))))
 
+(defun chirp-dm-inbox--operation-current-p
+    (view state generation operation)
+  "Return non-nil when GENERATION and OPERATION may update VIEW and STATE."
+  (and (chirp-view-state-token-current-p view state generation)
+       (appkit-view-operation-current-p operation)))
+
 (defun chirp-dm-inbox--request (view phase)
   "Start inbox request PHASE owned by VIEW."
   (let* ((state (chirp-dm-inbox--state view))
          (page (plist-get state :page))
          (status (chirp-dm-inbox--status state))
          (generation (list 'dm-inbox-generation))
-         callback-ran-p
+         (operation
+          (appkit-view-operation-begin
+           view chirp-dm-inbox--request-key
+           :cancel-function #'chirp-x-cancel-request))
          request)
     (setf (plist-get state :generation) generation
           (plist-get status :phase) phase
           (plist-get status :message) nil)
-    (chirp-cancel-view-request view chirp-dm-inbox--request-key #'chirp-x-cancel-request)
     (appkit-request-sync view :part 'entries :position t)
     (setq request
           (chirp-backend-dm-inbox
            (lambda (conversations envelope)
-             (setq callback-ran-p t)
-             (chirp-dm-inbox--retire-request view state generation)
-             (chirp-dm-inbox--settle-success
-              view state generation phase conversations envelope))
+             (when (chirp-dm-inbox--operation-current-p
+                    view state generation operation)
+               (appkit-view-operation-finish operation)
+               (chirp-dm-inbox--settle-success
+                view state generation phase conversations envelope)))
            :cursor (and (eq phase 'older)
                         (plist-get page :next-cursor))
            :max-results chirp-dm-inbox-page-size
            :errback
            (lambda (text)
-             (setq callback-ran-p t)
-             (chirp-dm-inbox--retire-request view state generation)
-             (chirp-dm-inbox--settle-error view state generation text))
+             (when (chirp-dm-inbox--operation-current-p
+                    view state generation operation)
+               (appkit-view-operation-finish operation)
+               (chirp-dm-inbox--settle-error
+                view state generation text)))
            :owner view))
-    (cond
-     ((and (not callback-ran-p)
-           request
-           (chirp-view-state-token-current-p view state generation))
-      (puthash chirp-dm-inbox--request-key request
-               (appkit-view-request-table view)))
-     ((and (not callback-ran-p)
-           (null request)
-           (chirp-view-state-token-current-p view state generation))
+    (appkit-view-operation-bind operation request)
+    (when (and (null request)
+               (chirp-dm-inbox--operation-current-p
+                view state generation operation))
+      (appkit-view-operation-finish operation)
       (chirp-dm-inbox--settle-error
-       view state generation "XChat inbox request did not start")))
+       view state generation "XChat inbox request did not start"))
     request))
 
 (defun chirp-dm-inbox-refresh-live-view (view)

@@ -19,6 +19,7 @@
 (require 'appkit-ui)
 (require 'appkit-chat-history)
 (require 'appkit-chat-timeline)
+(require 'appkit-scroll)
 (require 'appkit-evil)
 (require 'appkit-invalidation)
 (require 'appkit-markup-codec)
@@ -41,6 +42,15 @@
   :type '(integer 1 200)
   :group 'chirp)
 
+(defcustom chirp-dm-history-auto-load-threshold 2000
+  "Character distance from the visible history start that loads older events.
+
+Set this to nil to disable automatic pagination.  Manual loading with
+`chirp-dm-load-older-messages' remains available."
+  :type '(choice (const :tag "Disable automatic pagination" nil)
+                 integer)
+  :group 'chirp)
+
 (defcustom chirp-dm-attach-commands
   '(("photo" . chirp-dm-attach-photo)
     ("video" . chirp-dm-attach-video)
@@ -59,10 +69,10 @@
 ;;; Constants
 
 (defconst chirp-dm-conversation--request-key 'dm-conversation
-  "Request-table key for one conversation view's active transport.")
+  "Operation key for one conversation view's active transport.")
 
 (defconst chirp-dm-conversation--decrypt-request-key 'dm-decrypt
-  "Request-table key for one conversation view's signing-key retrieval.")
+  "Operation key for one conversation view's signing-key retrieval.")
 
 (defconst chirp-dm-conversation--refresh-bridge-page-limit 10
   "Maximum history pages fetched to join one focused refresh fragment.")
@@ -330,16 +340,16 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
 
 (defun chirp-dm-conversation--settle-decrypt-error (view state generation message)
   "Settle decryption GENERATION in VIEW and STATE with error MESSAGE."
-  (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
+  (when (chirp-view-state-token-current-p
+         view state generation :decrypt-generation)
     (setf (plist-get state :decrypt-generation) nil)
-    (remhash chirp-dm-conversation--decrypt-request-key
-             (appkit-view-request-table view))
     (display-warning 'chirp message :warning)))
 
 (defun chirp-dm-conversation--settle-decrypt-success
     (view state generation encoded signing-keys)
   "Decrypt ENCODED events with SIGNING-KEYS for GENERATION in VIEW and STATE."
-  (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
+  (when (chirp-view-state-token-current-p
+         view state generation :decrypt-generation)
     (condition-case err
         (let ((messages
                (cl-loop for batch in (seq-partition encoded 200)
@@ -348,8 +358,6 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
                          (chirp-dm-conversation--id state)
                          batch signing-keys))))
           (setf (plist-get state :decrypt-generation) nil)
-          (remhash chirp-dm-conversation--decrypt-request-key
-                   (appkit-view-request-table view))
           (chirp-dm-conversation--mark-key-events-processed
            state encoded (chirp-dm-conversation--native-key-epoch))
           (let ((updated
@@ -369,6 +377,13 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
        (chirp-dm-conversation--settle-decrypt-error
         view state generation (error-message-string err))))))
 
+(defun chirp-dm-conversation--decrypt-operation-current-p
+    (view state generation operation)
+  "Return non-nil when GENERATION and OPERATION may decrypt VIEW and STATE."
+  (and (chirp-view-state-token-current-p
+        view state generation :decrypt-generation)
+       (appkit-view-operation-current-p operation)))
+
 (defun chirp-dm-conversation--decrypt-view (view &optional key-history-loaded-p)
   "Decrypt encrypted events in conversation VIEW.
 
@@ -386,7 +401,7 @@ view has no conversation-key event."
              (append (plist-get state :recovery-key-events)
                      (chirp-dm-conversation--events state))))
            (generation (cons 'decrypt nil))
-           callback-ran-p request)
+           operation request)
       (cond
        ((null encoded)
         (message "This conversation has no encoded XChat events"))
@@ -404,28 +419,35 @@ view has no conversation-key event."
         (display-warning 'chirp "XChat conversation has too many signing-key users" :warning))
        (t
         (setf (plist-get state :decrypt-generation) generation)
-        (chirp-cancel-view-request view chirp-dm-conversation--decrypt-request-key #'chirp-x-cancel-request)
+        (setq operation
+              (appkit-view-operation-begin
+               view chirp-dm-conversation--decrypt-request-key
+               :cancel-function #'chirp-x-cancel-request))
         (setq request
               (chirp-backend-dm-signing-keys
                user-ids
                (lambda (signing-keys _envelope)
-                 (setq callback-ran-p t)
-                 (when (chirp-view-state-token-current-p view state generation :decrypt-generation)
+                 (when (chirp-dm-conversation--decrypt-operation-current-p
+                        view state generation operation)
+                   (appkit-view-operation-finish operation)
                    (chirp-dm-conversation--settle-decrypt-success
                     view state generation encoded signing-keys)))
                :errback
                (lambda (message)
-                 (setq callback-ran-p t)
-                 (chirp-dm-conversation--settle-decrypt-error
-                  view state generation message))
+                 (when (chirp-dm-conversation--decrypt-operation-current-p
+                        view state generation operation)
+                   (appkit-view-operation-finish operation)
+                   (chirp-dm-conversation--settle-decrypt-error
+                    view state generation message)))
                :owner view))
-        (when (and (buffer-live-p request)
-                   (chirp-view-state-token-current-p view state generation :decrypt-generation))
-          (puthash chirp-dm-conversation--decrypt-request-key request
-                   (appkit-view-request-table view)))
-        (when (and (null request) (not callback-ran-p))
+        (appkit-view-operation-bind operation request)
+        (when (and (null request)
+                   (chirp-dm-conversation--decrypt-operation-current-p
+                    view state generation operation))
+          (appkit-view-operation-finish operation)
           (chirp-dm-conversation--settle-decrypt-error
-           view state generation "XChat signing-key request did not start")))))))
+           view state generation
+           "XChat signing-key request did not start")))))))
 
 (defun chirp-dm-conversation-accept-live-event (view conversation)
   "Process a canonical live update for CONVERSATION through matching VIEW.
@@ -579,6 +601,20 @@ Return non-nil when the refresh was accepted."
                     ordered)))
      64)))
 
+(defun chirp-dm-conversation--maybe-auto-load-older
+    (view window position start)
+  "Load older events for VIEW when WINDOW's POSITION approaches START."
+  (ignore window)
+  (when (appkit-view-live-p view)
+    (with-current-buffer (appkit-view-buffer view)
+      (let* ((state (chirp-dm-conversation--state view))
+             (status (chirp-dm-conversation--status state)))
+        (when (and (eq (plist-get status :phase) 'idle)
+                   (plist-get state :older-cursor)
+                   (not (plist-get state :older-stalled-p))
+                   (appkit-chat-history-autoload-older-p
+                    position start chirp-dm-history-auto-load-threshold))
+          (chirp-dm-conversation--request view 'older))))))
 
 (defun chirp-dm-conversation--sync (view invalidations)
   "Synchronize conversation VIEW for pending INVALIDATIONS."
@@ -615,9 +651,12 @@ Return non-nil when the refresh was accepted."
         (chirp-dm-render-header conversation)
         (concat (chirp-dm-render-footer state)
                 (chirp-dm-conversation--reply-context-text state))
-        :bind-input-function (lambda () (chirp-dm-conversation--bind-composer state))
+        :bind-input-function
+        (lambda () (chirp-dm-conversation--bind-composer state))
         :composer-visible-p t)
-       (chirp-dm-conversation--sync-composer-state state)))))
+       (chirp-dm-conversation--sync-composer-state state)))
+    (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
+      (appkit-scroll-observer-check observer))))
 
 (defun chirp-dm-conversation--establish-window (state)
   "Establish Appkit's exact history window from conversation STATE."
@@ -651,12 +690,18 @@ Return non-nil when the refresh was accepted."
     (appkit-chat-history-reset-state)
     (chirp-dm-conversation--establish-window state)
     (chirp-dm-conversation--ensure-timeline)
+    (appkit-chat-timeline-install-history-observer
+     view
+     :start-function
+     (lambda (window position start)
+       (chirp-dm-conversation--maybe-auto-load-older
+        view window position start)))
     (appkit-invalidate view :structure t :parts '(frame timeline) :position t)
     (appkit-sync-invalidations view)))
 
 ;;;; Requests
 
-(defun chirp-dm-conversation--owner-current-p (view state generation)
+(defun chirp-dm-conversation--history-current-p (view state generation)
   "Return non-nil when GENERATION owns VIEW's history request for STATE."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
@@ -664,21 +709,24 @@ Return non-nil when the refresh was accepted."
        (with-current-buffer (appkit-view-buffer view)
          (appkit-chat-history-request-current-p generation))))
 
-(defun chirp-dm-conversation--retire-transport (view state generation)
-  "Retire GENERATION's transport when it still owns VIEW and STATE."
-  (when (chirp-dm-conversation--owner-current-p view state generation)
-    (remhash chirp-dm-conversation--request-key
-             (appkit-view-request-table view))))
+(defun chirp-dm-conversation--owner-current-p
+    (view state generation operation)
+  "Return non-nil when GENERATION and OPERATION own VIEW and STATE."
+  (and (chirp-dm-conversation--history-current-p view state generation)
+       (appkit-view-operation-current-p operation)))
 
-(defun chirp-dm-conversation--finish-request (view generation)
-  "End GENERATION's Appkit history request in VIEW."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-chat-history-request-end generation)))
+(defun chirp-dm-conversation--finish-request (view generation operation)
+  "End GENERATION and OPERATION for VIEW after normal settlement."
+  (when (appkit-view-operation-finish operation)
+    (with-current-buffer (appkit-view-buffer view)
+      (appkit-chat-history-request-end generation))))
 
 (defun chirp-dm-conversation--settle-older-success
-    (view state generation events envelope)
-  "Settle older GENERATION in VIEW and STATE with EVENTS and ENVELOPE."
-  (when (chirp-dm-conversation--owner-current-p view state generation)
+    (view state generation operation events envelope)
+  "Settle older GENERATION and OPERATION with EVENTS and ENVELOPE.
+VIEW and STATE identify the conversation receiving that page."
+  (when (chirp-dm-conversation--owner-current-p
+         view state generation operation)
     (let* ((conversation (chirp-dm-conversation--conversation state))
            (current (plist-get conversation :events))
            (old-first (and current (plist-get (car current) :id)))
@@ -695,7 +743,7 @@ Return non-nil when the refresh was accepted."
                            (and next-cursor
                                 (not (equal old-cursor next-cursor)))))
            (status (chirp-dm-conversation--status state)))
-      (chirp-dm-conversation--finish-request view generation)
+      (chirp-dm-conversation--finish-request view generation operation)
       (chirp-dm-state-set-events conversation merged)
       (setf (plist-get state :recovery-key-events)
             (chirp-dm-conversation--append-unique-events
@@ -723,16 +771,17 @@ Return non-nil when the refresh was accepted."
         (chirp-dm-conversation--decrypt-view view t)))))
 
 (cl-defun chirp-dm-conversation--settle-refresh-success
-    (view state generation conversation
+    (view state generation operation conversation
           &key recovery-key-events history-first-key history-cursor
           older-complete-p)
-  "Settle a continuous refreshed CONVERSATION for GENERATION.
+  "Settle refreshed CONVERSATION for GENERATION and OPERATION.
 
 VIEW and STATE identify the conversation.  RECOVERY-KEY-EVENTS came from any
 history pages used to prove continuity.  HISTORY-FIRST-KEY and HISTORY-CURSOR
 describe that bridge's older edge.  OLDER-COMPLETE-P means those pages also
 reached the oldest remote edge."
-  (when (chirp-dm-conversation--owner-current-p view state generation)
+  (when (chirp-dm-conversation--owner-current-p
+         view state generation operation)
     (let* ((canonical (chirp-dm-conversation--conversation state))
            (current (plist-get canonical :events))
            (merged
@@ -740,7 +789,7 @@ reached the oldest remote edge."
              current (plist-get conversation :events)))
            (first (and merged (plist-get (car merged) :id)))
            (status (chirp-dm-conversation--status state)))
-      (chirp-dm-conversation--finish-request view generation)
+      (chirp-dm-conversation--finish-request view generation operation)
       (setf (plist-get conversation :title)
             (chirp-dm-conversation--title
              conversation (plist-get canonical :title)))
@@ -787,13 +836,14 @@ reached the oldest remote edge."
         (chirp-dm-conversation--decrypt-view view)))))
 
 (defun chirp-dm-conversation--settle-error
-    (view state generation phase message)
-  "Settle conversation GENERATION and PHASE with error MESSAGE.
+    (view state generation operation phase message)
+  "Settle GENERATION and OPERATION for PHASE with error MESSAGE.
 
 VIEW and STATE identify the conversation whose request failed."
-  (when (chirp-dm-conversation--owner-current-p view state generation)
+  (when (chirp-dm-conversation--owner-current-p
+         view state generation operation)
     (let ((status (chirp-dm-conversation--status state)))
-      (chirp-dm-conversation--finish-request view generation)
+      (chirp-dm-conversation--finish-request view generation operation)
       (setf (plist-get status :phase) 'error
             (plist-get status :message) message)
       (appkit-request-sync view :part 'frame :position t)
@@ -811,108 +861,113 @@ VIEW and STATE identify the conversation whose request failed."
 GENERATION owns the multi-stage request in VIEW.  CURSOR selects the next
 older history page, RECOVERY-KEY-EVENTS accumulates its key history, and
 REMAINING bounds the automatic page count."
-  (let (callback-ran-p request)
-    (setq request
-          (chirp-backend-dm-history
-           (chirp-dm-conversation--id state)
-           cursor
-           (lambda (events envelope)
-             (setq callback-ran-p t)
-             (chirp-dm-conversation--retire-transport
-              view state generation)
-             (when (chirp-dm-conversation--owner-current-p
-                    view state generation)
-               (let* ((bridged (copy-sequence conversation))
-                      (bridged-events
-                       (chirp-dm-state-merge-events (plist-get conversation :events) events))
-                      (key-events
-                       (chirp-dm-conversation--append-unique-events
-                        recovery-key-events
-                        (chirp-dm-conversation--history-key-events envelope)))
-                      (next-cursor
-                       (chirp-backend-envelope-next-cursor envelope))
-                      (complete
-                       (and (chirp-get-in envelope
+  (when (chirp-dm-conversation--history-current-p view state generation)
+    (let ((operation
+           (appkit-view-operation-begin
+            view chirp-dm-conversation--request-key
+            :cancel-function #'chirp-x-cancel-request))
+          request)
+      (setq request
+            (chirp-backend-dm-history
+             (chirp-dm-conversation--id state)
+             cursor
+             (lambda (events envelope)
+               (when (chirp-dm-conversation--owner-current-p
+                      view state generation operation)
+                 (let* ((bridged (copy-sequence conversation))
+                        (bridged-events
+                         (chirp-dm-state-merge-events
+                          (plist-get conversation :events) events))
+                        (key-events
+                         (chirp-dm-conversation--append-unique-events
+                          recovery-key-events
+                          (chirp-dm-conversation--history-key-events envelope)))
+                        (next-cursor
+                         (chirp-backend-envelope-next-cursor envelope))
+                        (complete
+                         (and (chirp-get-in envelope
                                           '("pagination" "complete"))
-                            t)))
-                 (setf (plist-get bridged :events) bridged-events)
-                 (cond
-                  ((chirp-dm-conversation--events-overlap-p
-                    (chirp-dm-conversation--events state) bridged-events)
-                   (chirp-dm-conversation--settle-refresh-success
-                    view state generation bridged
-                    :recovery-key-events key-events
-                    :history-first-key
-                    (plist-get (car bridged-events) :id)
-                    :history-cursor next-cursor
-                    :older-complete-p complete))
-                  ((and (not complete)
-                        next-cursor
-                        (not (equal cursor next-cursor))
-                        (> remaining 1))
-                   (chirp-dm-conversation--request-refresh-bridge
-                    view state generation bridged
-                    :cursor next-cursor
-                    :recovery-key-events key-events
-                    :remaining (1- remaining)))
-                  (t
-                   (chirp-dm-conversation--settle-error
-                    view state generation 'refresh
-                    "XChat history could not bridge the visible timeline"))))))
-           :max-results chirp-dm-history-page-size
-           :errback
-           (lambda (text)
-             (setq callback-ran-p t)
-             (chirp-dm-conversation--retire-transport
-              view state generation)
-             (chirp-dm-conversation--settle-error
-              view state generation 'refresh text))
-           :owner view))
-    (cond
-     ((and (not callback-ran-p)
-           request
-           (chirp-dm-conversation--owner-current-p view state generation))
-      (puthash chirp-dm-conversation--request-key request
-               (appkit-view-request-table view)))
-     ((and (not callback-ran-p)
-           (null request)
-           (chirp-dm-conversation--owner-current-p view state generation))
-      (chirp-dm-conversation--settle-error
-       view state generation 'refresh
-       "XChat history bridge request did not start")))
-    request))
+                              t)))
+                   (setf (plist-get bridged :events) bridged-events)
+                   (cond
+                    ((chirp-dm-conversation--events-overlap-p
+                      (chirp-dm-conversation--events state) bridged-events)
+                     (chirp-dm-conversation--settle-refresh-success
+                      view state generation operation bridged
+                      :recovery-key-events key-events
+                      :history-first-key
+                      (plist-get (car bridged-events) :id)
+                      :history-cursor next-cursor
+                      :older-complete-p complete))
+                    ((and (not complete)
+                          next-cursor
+                          (not (equal cursor next-cursor))
+                          (> remaining 1))
+                     (appkit-view-operation-finish operation)
+                     (chirp-dm-conversation--request-refresh-bridge
+                      view state generation bridged
+                      :cursor next-cursor
+                      :recovery-key-events key-events
+                      :remaining (1- remaining)))
+                    (t
+                     (chirp-dm-conversation--settle-error
+                      view state generation operation 'refresh
+                      "XChat history could not bridge the visible timeline"))))))
+             :max-results chirp-dm-history-page-size
+             :errback
+             (lambda (text)
+               (when (chirp-dm-conversation--owner-current-p
+                      view state generation operation)
+                 (chirp-dm-conversation--settle-error
+                  view state generation operation 'refresh text)))
+             :owner view))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (chirp-dm-conversation--owner-current-p
+                  view state generation operation))
+        (chirp-dm-conversation--settle-error
+         view state generation operation 'refresh
+         "XChat history bridge request did not start"))
+      request)))
 
 (defun chirp-dm-conversation--accept-refresh-success
-    (view state generation conversation)
-  "Accept refreshed CONVERSATION for GENERATION in VIEW and STATE.
+    (view state generation operation conversation)
+  "Accept refreshed CONVERSATION for GENERATION and OPERATION.
 
-Disjoint focused fragments are bridged through older history before merging."
-  (when (chirp-dm-conversation--owner-current-p view state generation)
+VIEW and STATE identify the conversation.  Disjoint focused fragments are
+bridged through older history before merging."
+  (when (chirp-dm-conversation--owner-current-p
+         view state generation operation)
     (let ((current (chirp-dm-conversation--events state))
           (refreshed (plist-get conversation :events)))
       (if (and current refreshed
-               (not (chirp-dm-conversation--events-overlap-p current refreshed)))
+               (not (chirp-dm-conversation--events-overlap-p
+                     current refreshed)))
           (if-let* ((cursor (plist-get conversation :older-cursor)))
-              (chirp-dm-conversation--request-refresh-bridge
-               view state generation conversation :cursor cursor)
+              (progn
+                (appkit-view-operation-finish operation)
+                (chirp-dm-conversation--request-refresh-bridge
+                 view state generation conversation :cursor cursor))
             (chirp-dm-conversation--settle-error
-             view state generation 'refresh
+             view state generation operation 'refresh
              "XChat refresh has no cursor to bridge the visible timeline"))
         (chirp-dm-conversation--settle-refresh-success
-         view state generation conversation)))))
+         view state generation operation conversation)))))
 
 (defun chirp-dm-conversation--request (view phase)
   "Start conversation request PHASE owned by VIEW."
   (let* ((state (chirp-dm-conversation--state view))
          (status (chirp-dm-conversation--status state))
          (generation (list 'dm-conversation-generation))
-         callback-ran-p
-         request)
+         operation request)
     (setf (plist-get status :phase) 'idle
           (plist-get status :message) nil)
     (with-current-buffer (appkit-view-buffer view)
       (appkit-chat-history-request-begin phase generation))
-    (chirp-cancel-view-request view chirp-dm-conversation--request-key #'chirp-x-cancel-request)
+    (setq operation
+          (appkit-view-operation-begin
+           view chirp-dm-conversation--request-key
+           :cancel-function #'chirp-x-cancel-request))
     (appkit-request-sync view :part 'frame :position t)
     (setq request
           (pcase phase
@@ -921,50 +976,41 @@ Disjoint focused fragments are bridged through older history before merging."
               (chirp-dm-conversation--id state)
               (plist-get state :older-cursor)
               (lambda (events envelope)
-                (setq callback-ran-p t)
-                (chirp-dm-conversation--retire-transport
-                 view state generation)
-                (chirp-dm-conversation--settle-older-success
-                 view state generation events envelope))
+                (when (chirp-dm-conversation--owner-current-p
+                       view state generation operation)
+                  (chirp-dm-conversation--settle-older-success
+                   view state generation operation events envelope)))
               :max-results chirp-dm-history-page-size
               :errback
               (lambda (text)
-                (setq callback-ran-p t)
-                (chirp-dm-conversation--retire-transport
-                 view state generation)
-                (chirp-dm-conversation--settle-error
-                 view state generation phase text))
+                (when (chirp-dm-conversation--owner-current-p
+                       view state generation operation)
+                  (chirp-dm-conversation--settle-error
+                   view state generation operation phase text)))
               :owner view))
             ('refresh
              (chirp-backend-dm-conversation-data
               (chirp-dm-conversation--id state)
               (lambda (conversation _envelope)
-                (setq callback-ran-p t)
-                (chirp-dm-conversation--retire-transport
-                 view state generation)
-                (chirp-dm-conversation--accept-refresh-success
-                 view state generation conversation))
+                (when (chirp-dm-conversation--owner-current-p
+                       view state generation operation)
+                  (chirp-dm-conversation--accept-refresh-success
+                   view state generation operation conversation)))
               :errback
               (lambda (text)
-                (setq callback-ran-p t)
-                (chirp-dm-conversation--retire-transport
-                 view state generation)
-                (chirp-dm-conversation--settle-error
-                 view state generation phase text))
+                (when (chirp-dm-conversation--owner-current-p
+                       view state generation operation)
+                  (chirp-dm-conversation--settle-error
+                   view state generation operation phase text)))
               :owner view))
             (_ (error "Unknown XChat conversation request phase: %S" phase))))
-    (cond
-     ((and (not callback-ran-p)
-           request
-           (chirp-dm-conversation--owner-current-p view state generation))
-      (puthash chirp-dm-conversation--request-key request
-               (appkit-view-request-table view)))
-     ((and (not callback-ran-p)
-           (null request)
-           (chirp-dm-conversation--owner-current-p view state generation))
+    (appkit-view-operation-bind operation request)
+    (when (and (null request)
+               (chirp-dm-conversation--owner-current-p
+                view state generation operation))
       (chirp-dm-conversation--settle-error
-       view state generation phase
-       "XChat conversation request did not start")))
+       view state generation operation phase
+       "XChat conversation request did not start"))
     request))
 
 ;;;; Sending

@@ -47,7 +47,7 @@ Set this to nil to disable automatic pagination.  Manual loading with
 
 (defun chirp-timeline--title (kind)
   "Return the buffer title for timeline KIND."
-(pcase kind
+  (pcase kind
     ('home "For You")
     ('following "Following")
     (_ "Timeline")))
@@ -58,7 +58,7 @@ Set this to nil to disable automatic pagination.  Manual loading with
   "Stable Appkit view identity shared by Home and Following.")
 
 (defconst chirp-timeline--request-key 'primary-timeline
-  "View request-table key for the active primary timeline transport.")
+  "Operation key for the active primary timeline transport.")
 
 (cl-defstruct (chirp-timeline--generation
                (:constructor chirp-timeline--generation-create))
@@ -383,11 +383,11 @@ Set this to nil to disable automatic pagination.  Manual loading with
             (if (plist-get state :loaded-p) 'idle 'initial)
             (plist-get status :message) nil))))
 
-(defun chirp-timeline--retire-request (view state generation)
-  "Retire VIEW's transport when GENERATION still owns STATE."
-  (when (chirp-view-state-token-current-p view state generation)
-    (remhash chirp-timeline--request-key
-             (appkit-view-request-table view))))
+(defun chirp-timeline--operation-current-p
+    (view state generation operation)
+  "Return non-nil when GENERATION and OPERATION may update VIEW and STATE."
+  (and (chirp-view-state-token-current-p view state generation)
+       (appkit-view-operation-current-p operation)))
 
 (defun chirp-timeline--request (view phase &optional quiet)
   "Start one logical PHASE request owned by VIEW.
@@ -401,7 +401,7 @@ When QUIET is non-nil, suppress user-facing completion and error messages."
            :id (gensym "chirp-timeline-generation-")
            :phase phase
            :quiet-p quiet))
-         callback-ran-p
+         operation
          request)
     ;; Revoke the previous generation before cancellation can synchronously
     ;; deliver its errback at the callback boundary.
@@ -409,35 +409,36 @@ When QUIET is non-nil, suppress user-facing completion and error messages."
     (setf (plist-get state :generation) generation
           (plist-get status :phase) phase
           (plist-get status :message) nil)
-    (chirp-cancel-view-request view chirp-timeline--request-key #'chirp-x-cancel-request)
+    (setq operation
+          (appkit-view-operation-begin
+           view chirp-timeline--request-key
+           :cancel-function #'chirp-x-cancel-request))
     (appkit-request-sync view :part 'frame :position t)
     (setq request
           (chirp-backend-feed
            (lambda (tweets envelope)
-             (setq callback-ran-p t)
-             (chirp-timeline--retire-request view state generation)
-             (chirp-timeline--settle-success
-              view state generation tweets envelope))
+             (when (chirp-timeline--operation-current-p
+                    view state generation operation)
+               (appkit-view-operation-finish operation)
+               (chirp-timeline--settle-success
+                view state generation tweets envelope)))
            (eq (plist-get query :kind) 'following)
            (lambda (message)
-             (setq callback-ran-p t)
-             (chirp-timeline--retire-request view state generation)
-             (chirp-timeline--settle-error
-              view state generation message))
+             (when (chirp-timeline--operation-current-p
+                    view state generation operation)
+               (appkit-view-operation-finish operation)
+               (chirp-timeline--settle-error
+                view state generation message)))
            (chirp-timeline--fetch-count state phase)
            (and (eq phase 'older) (plist-get page :next-cursor))
            view))
-    (cond
-     ((and (not callback-ran-p)
-           request
-           (chirp-view-state-token-current-p view state generation))
-      (puthash chirp-timeline--request-key request
-               (appkit-view-request-table view)))
-     ((and (not callback-ran-p)
-           (null request)
-           (chirp-view-state-token-current-p view state generation))
+    (appkit-view-operation-bind operation request)
+    (when (and (null request)
+               (chirp-timeline--operation-current-p
+                view state generation operation))
+      (appkit-view-operation-finish operation)
       (chirp-timeline--settle-error
-       view state generation "X timeline request did not start")))
+       view state generation "X timeline request did not start"))
     request))
 
 (defun chirp-timeline--ensure-initial-request (view)
@@ -523,7 +524,7 @@ When QUIET is non-nil, suppress user-facing completion and error messages."
                    :anchor-property 'chirp-entry-id
                    :preserve-window-start t))))
         (chirp-timeline--interrupt-state-request state)
-        (chirp-cancel-view-request view chirp-timeline--request-key #'chirp-x-cancel-request)
+        (appkit-view-operation-cancel view chirp-timeline--request-key)
         (chirp-timeline--interrupt-state-request target)
         (setf (appkit-view-state view) target
               (appkit-view-pending-events view) nil)
