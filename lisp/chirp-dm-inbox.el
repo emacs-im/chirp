@@ -308,27 +308,38 @@
               (plist-get conversation :title)))
     (chirp-dm-conversation-open conversation :refresh-p t)))
 
-(defun chirp-dm-inbox--sync (view invalidations _events)
-  "Synchronize inbox VIEW for pending INVALIDATIONS."
+(defun chirp-dm-inbox--sync (view invalidations events)
+  "Synchronize inbox VIEW from INVALIDATIONS and EVENTS."
   (let* ((state (chirp-dm-inbox--state view))
-         (entries (chirp-dm-inbox--project view state))
+         (surface (appkit-directory-surface))
+         (parts (appkit-invalidations-parts invalidations))
          (resources (appkit-invalidations-resource-keys invalidations))
+         (all-resources-p (memq 'all resources))
+         (global-redraw-p
+          (or (memq 'geometry parts) all-resources-p))
          (resource-keys
-          (cl-loop
-           for conversation in (plist-get state :items)
-           for avatar-key = (chirp-dm-inbox--avatar-key view conversation)
-           when (and avatar-key
-                     (cl-member avatar-key resources :test #'equal))
-           collect (list 'dm-conversation (plist-get conversation :id))))
+          (and resources
+               (not all-resources-p)
+               (cl-loop
+                for conversation in (plist-get state :items)
+                for avatar-key = (chirp-dm-inbox--avatar-key view conversation)
+                when (and avatar-key
+                          (cl-member avatar-key resources :test #'equal))
+                collect
+                (list 'dm-conversation (plist-get conversation :id)))))
          (diff
           (appkit-projection-diff-derive
            invalidations
-           :existing-keys (mapcar #'appkit-directory-entry-key entries)
+           :existing-keys
+           (and global-redraw-p
+                (hash-table-keys
+                 (appkit-directory-surface-node-table surface)))
            :reconcile-parts '(entries)
+           :reconcile (not (null events))
            :force-keys resource-keys)))
     (when (appkit-projection-diff-reconcile-p diff)
       (appkit-directory-reconcile
-       (appkit-directory-surface) entries
+       surface (chirp-dm-inbox--project view state)
        :force-keys (appkit-projection-diff-force-keys diff)))))
 
 (defun chirp-dm-inbox--setup (view)

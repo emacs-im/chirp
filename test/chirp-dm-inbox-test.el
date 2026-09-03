@@ -118,6 +118,25 @@
               '(dm-inbox recent)))
       (should (appkit-directory-entry-stamp request-entry)))))
 
+(ert-deftest chirp-dm-inbox-frame-sync-does-not-project-entries ()
+  "Frame-only inbox sync should not traverse canonical conversations."
+  (let ((invalidations (appkit-invalidations-create)))
+    (setf (appkit-invalidations-parts invalidations) '(frame))
+    (cl-letf (((symbol-function 'chirp-dm-inbox--state)
+               (lambda (_view) '(:items ((:id "canary")))))
+              ((symbol-function 'appkit-directory-surface)
+               (lambda () :surface))
+              ((symbol-function 'appkit-directory-surface-node-table)
+               (lambda (_surface)
+                 (ert-fail "Frame-only sync inspected directory keys")))
+              ((symbol-function 'chirp-dm-inbox--project)
+               (lambda (&rest _arguments)
+                 (ert-fail "Frame-only sync projected inbox entries")))
+              ((symbol-function 'appkit-directory-reconcile)
+               (lambda (&rest _arguments)
+                 (ert-fail "Frame-only sync reconciled the directory"))))
+      (chirp-dm-inbox--sync :view invalidations nil))))
+
 (ert-deftest chirp-dm-inbox-activity-model-labels-group-sender ()
   "A group activity preview should identify its latest sender."
   (let* ((alice '(:id "42" :name "Alice" :handle "alice"))
