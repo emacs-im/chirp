@@ -24,6 +24,24 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest chirp-sync-projection-keeps-frame-only-rows-lazy ()
+  "Frame-only sync should preserve position without projecting tweet rows."
+  (let ((invalidations (appkit-invalidations-create))
+        call)
+    (setf (appkit-invalidations-parts invalidations) '(frame))
+    (cl-letf (((symbol-function 'appkit-projection-sync-diff)
+               (lambda (view rows diff &rest arguments)
+                 (setq call (list view rows diff arguments)))))
+      (chirp-sync-projection
+          :view invalidations '((:position first))
+          (ert-fail "Frame-only sync projected tweet rows")
+        "Ready\n"))
+    (should (eq :view (nth 0 call)))
+    (should-not (nth 1 call))
+    (should (appkit-projection-diff-p (nth 2 call)))
+    (should (equal "Ready\n" (plist-get (nth 3 call) :header)))
+    (should (eq 'first (plist-get (nth 3 call) :position)))))
+
 (ert-deftest chirp-primary-timeline-retains-both-feeds-in-one-view ()
   "Primary commands should reuse one view and both canonical feed states."
   (let ((chirp--app nil)

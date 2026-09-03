@@ -598,16 +598,17 @@ projected row.  MODE, ANCHOR-PROPERTY, PARTS, and SELECT are forwarded to
       (chirp--apply-buffer-name (current-buffer) title))
     view))
 
-(defun chirp-sync-projection
+(defmacro chirp-sync-projection
     (view invalidations events rows &optional header)
-  "Apply INVALIDATIONS and EVENTS to VIEW by reconciling ROWS.
+  "Synchronize VIEW from INVALIDATIONS and EVENTS with lazily projected ROWS.
 
 HEADER updates the generated frame when supplied."
-  (appkit-projection-sync-invalidations
-      view invalidations rows
-    :reconcile-parts '(entries)
-    :header (or header "")
-    :position (chirp-projection-position-intent events)))
+  (declare (indent 3) (debug t))
+  `(appkit-projection-sync-invalidations
+       ,view ,invalidations ,rows
+     :reconcile-parts '(entries)
+     :header (or ,header "")
+     :position (chirp-projection-position-intent ,events)))
 
 (defun chirp--on-text-scale-change ()
   "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
