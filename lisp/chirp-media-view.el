@@ -42,16 +42,24 @@
 (defun chirp-media-quit ()
   "Close the current media buffer and restore its source view."
   (interactive)
-  (let ((source-buffer chirp--media-source-buffer)
-        (source-anchor chirp--media-source-anchor)
-        (source-window-state chirp--media-source-window-state))
-    (chirp-quit-current-buffer)
+  (let
+      ((source-buffer chirp--media-source-buffer)
+       (source-anchor chirp--media-source-anchor)
+       (source-window-state chirp--media-source-window-state))
+    (progn
+      (chirp-quit-current-buffer)
+      (when-let*
+          ((surface (chirp--live-projection-view source-buffer)))
+        (appkit-surface-send surface '(chirp-media cancel))))
     (when (buffer-live-p source-buffer)
       (chirp-display-buffer source-buffer)
       (or (chirp-restore-window-state source-window-state)
           (with-current-buffer source-buffer
             (when source-anchor
               (chirp-restore-point-anchor source-anchor)))))))
+
+(defvar-local chirp--media-close-hook nil
+  "Settlement hook owned by the current dedicated presentation.")
 
 (defun chirp-media-view--set-state (media-list index title file)
   "Record MEDIA-LIST, INDEX, TITLE, and rendered FILE in this viewer."
@@ -78,91 +86,35 @@
       (or (chirp-media-video-selection media-list index)
           (chirp-media-selection-create media-list index)))))
 
-(defun chirp-media-view--dedicated-image-source (media)
-  "Return a local image source for dedicated MEDIA viewing."
-  (if (string= (plist-get media :type) "photo")
-      (or (chirp-media--photo-file media)
-          (user-error "Image preview unavailable"))
-    (user-error "Unsupported media type")))
-
-(defun chirp-media-open-dedicated (selection &optional title buffer)
-  "Open SELECTION in a dedicated reader named by TITLE.
-
-Reuse BUFFER when it is live.  When SELECTION owns an active inline video
-surface, the dedicated target borrows that surface's Appkit session and exact
-player state."
+(defun chirp-media-open-dedicated (selection &optional title buffer external-fallback)
+  "Send SELECTION to its exact source Surface for managed presentation."
   (unless (chirp-media-selection-p selection)
     (error "Invalid Chirp media selection"))
-  (let* ((media-list (chirp-media-selection-media-list selection))
-         (index (chirp-media-selection-index selection))
-         (safe-index (max 0 (min index (1- (length media-list)))))
-         (media (nth safe-index media-list))
-         (video-p (and media (chirp-media-video-like-p media)))
-         (video-inline
-          (and (= safe-index index)
-               (chirp-media-selection-live-video-inline selection)))
-         (base-title (or title "Chirp Media"))
-         (viewer
-          (or (and (buffer-live-p buffer) buffer)
-              (generate-new-buffer "*Chirp Media*")))
-         (source-buffer
+  (let* ((source-buffer
           (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer chirp--media-source-buffer))
+                   (buffer-local-value 'chirp--media-source-buffer buffer))
               (current-buffer)))
-         (source-anchor
-          (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer chirp--media-source-anchor))
-              (and (buffer-live-p source-buffer)
-                   (with-current-buffer source-buffer
-                     (chirp-capture-point-anchor)))))
-         (source-window-state
-          (or (and (buffer-live-p buffer)
-                   (with-current-buffer buffer chirp--media-source-window-state))
-              (chirp-capture-window-state source-buffer)))
-         (image-source
-          (and media (not video-p)
-               (chirp-media-view--dedicated-image-source media)))
-         (session
-          (and video-p
-               (not video-inline)
-               (or (chirp-media-video-session-create media)
-                   (user-error "Current media has no playable URL"))))
-         opened-p)
-    (unless media
-      (user-error "No media available"))
-    (unwind-protect
-        (progn
-          (setq viewer
-                (cond
-                 (video-inline
-                  (appkit-media-present-video-inline
-                   video-inline base-title :buffer viewer))
-                 (video-p
-                  (appkit-media-present-video-session
-                   session base-title :buffer viewer :start t))
-                 (t
-                  (video-open image-source :kind 'image :buffer viewer))))
-          (with-current-buffer viewer
-            (chirp-media-view--set-state
-             media-list safe-index base-title
-             (and (not video-p) image-source))
-            (setq-local chirp--media-source-buffer source-buffer
-                        chirp--media-source-anchor source-anchor
-                        chirp--media-source-window-state source-window-state
-                        video-next-function
-                        (and (> (length media-list) 1) #'chirp-media-next)
-                        video-previous-function
-                        (and (> (length media-list) 1) #'chirp-media-previous)
-                        video-quit-function #'chirp-media-quit))
-          (setq opened-p t)
-          (message "%s (%d/%d)" base-title (1+ safe-index)
-                   (length media-list))
-          viewer)
-      (unless opened-p
-        (when (buffer-live-p viewer)
-          (kill-buffer viewer))
-        (when session
-          (appkit-media-video-session-close session))))))
+         (surface (chirp--live-projection-view source-buffer))
+         (media-list (chirp-media-selection-media-list selection))
+         (index (max 0 (min (chirp-media-selection-index selection)
+                            (1- (length media-list)))))
+         (media (nth index media-list)))
+    (unless (and surface media) (user-error "No live source media Surface"))
+    (appkit-surface-send
+     surface
+     (list 'chirp-media 'open
+           (list :selection selection :index index :media media
+                 :inline (chirp-media-selection-live-video-inline selection)
+                 :title (or title "Chirp Media") :reuse buffer :source surface
+                 :external-fallback external-fallback
+                 :source-buffer source-buffer
+                 :anchor (or (and (buffer-live-p buffer)
+                                  (buffer-local-value 'chirp--media-source-anchor buffer))
+                             (with-current-buffer source-buffer (chirp-capture-point-anchor)))
+                 :window-state
+                 (or (and (buffer-live-p buffer)
+                          (buffer-local-value 'chirp--media-source-window-state buffer))
+                     (chirp-capture-window-state source-buffer)))))))
 
 (defun chirp-media-open-dedicated-at-point ()
   "Open the selected media in a dedicated reader-style media buffer."
@@ -221,6 +173,177 @@ rendered media list and item are already active."
                            (length chirp--media-list))
                       chirp--media-title
                       (current-buffer))))
+
+(require 'appkit-media-effect)
+
+(defun chirp-media-view--present-start (_context input _observe resolve reject)
+  "Present committed INPUT, borrowing its exact inline video session."
+  (let* ((intent (plist-get input :intent))
+         (source (plist-get intent :source))
+         (selection (plist-get intent :selection))
+         (media-list (chirp-media-selection-media-list selection))
+         (media (plist-get intent :media))
+         (index (plist-get intent :index))
+         (inline (plist-get intent :inline))
+         (video-p (chirp-media-video-like-p media))
+         (title (plist-get intent :title))
+         (file (plist-get input :file))
+         (reuse (plist-get intent :reuse))
+         (viewer (or (and (buffer-live-p reuse) reuse)
+                     (generate-new-buffer "*Chirp Media*")))
+         session opened-p canceling)
+    (condition-case condition
+        (progn
+          (unless (appkit-surface-live-p source)
+            (error "Media source has closed"))
+          (when (and video-p (not inline))
+            (setq session (or (chirp-media-video-session-create media)
+                              (error "Current media has no playable URL"))))
+          (setq viewer
+                (cond
+                 (inline
+                   (unless (eq inline (chirp-media-selection-live-video-inline selection))
+                     (error "Inline video session has closed"))
+                   (appkit-media-present-video-inline inline title :buffer viewer))
+                 (video-p
+                  (appkit-media-present-video-session session title :buffer viewer :start t))
+                 (t (video-open file :kind 'image :buffer viewer))))
+          (with-current-buffer viewer
+            (chirp-media-view--set-state media-list index title (and (not video-p) file))
+            (setq-local chirp--media-source-buffer (plist-get intent :source-buffer)
+                        chirp--media-source-anchor (plist-get intent :anchor)
+                        chirp--media-source-window-state (plist-get intent :window-state)
+                        video-next-function (and (> (length media-list) 1) #'chirp-media-next)
+                        video-previous-function (and (> (length media-list) 1) #'chirp-media-previous)
+                        video-quit-function #'chirp-media-quit)
+            (when chirp--media-close-hook
+              (remove-hook 'kill-buffer-hook chirp--media-close-hook t))
+            (setq-local chirp--media-close-hook
+                        (lambda ()
+                          (unless canceling
+                            (when (appkit-surface-live-p source)
+                              (let ((current (plist-get (appkit-surface-model source) :media-intent)))
+                                (when (or (eq current intent) (eq viewer (plist-get current :reuse)))
+                                  (appkit-surface-post source '(chirp-media cancel))))))
+                          (funcall resolve nil)))
+            (add-hook 'kill-buffer-hook chirp--media-close-hook nil t))
+          (setq opened-p t)
+          (appkit-cancellation-create
+           :kind 'logical
+           :cancel
+           (lambda ()
+             (unless (and (appkit-surface-live-p source)
+                          (eq viewer (plist-get (plist-get (appkit-surface-model source) :media-intent)
+                                                :reuse)))
+               (when (buffer-live-p viewer) (setq canceling t) (kill-buffer viewer))))))
+      ((error quit)
+       (unless opened-p
+         (when (buffer-live-p viewer) (setq canceling t) (kill-buffer viewer))
+         (when session (appkit-media-video-session-close session)))
+       (if (and (plist-get intent :external-fallback) (not inline)
+                (appkit-surface-live-p source))
+           (progn
+             (display-warning 'chirp-media
+                              (format "Internal video playback failed: %s"
+                                      (error-message-string condition)) :warning)
+             (chirp-media--play-external media)
+             (funcall resolve nil))
+         (funcall reject (error-message-string condition)))
+       nil))))
+
+(defun chirp-media-view--acquire-start (context input observe resolve reject)
+  "Acquire media without giving transport callbacks presentation authority."
+  (let* ((media (plist-get input :media))
+         (url (plist-get media :url))
+         (video-p (chirp-media-video-like-p media))
+         (cached (and (not video-p) (chirp-media-cached-file url "media" "jpg"))))
+    (cond
+     (video-p (funcall resolve nil) nil)
+     ((not (equal (plist-get media :type) "photo"))
+      (funcall reject "Unsupported media type") nil)
+     (cached (funcall resolve cached) nil)
+     (t (appkit-media-image-acquisition-start
+         context
+         (appkit-media-image-acquisition-create
+          (appkit-media-resource-create :url url)
+          (chirp-media-cache-base url "media"))
+         observe resolve reject)))))
+
+(defun chirp-media-view--failed (_input reason)
+  "Map media failure REASON to source model state."
+  (list 'chirp-media 'failed (format "%s" reason)))
+
+(defun chirp-media-view--update (_context model message)
+  "Commit media state and emit post-commit acquisition or presentation."
+  (pcase (cadr message)
+    ('open
+     (let ((intent (nth 2 message)))
+       (setf (plist-get model :media-intent) intent
+             (plist-get model :media-phase) 'acquiring
+             (plist-get model :media-error) nil)
+       (appkit-next
+        :model model :render (appkit-projection-change-create :frame-p t)
+        :commands
+        (list (appkit-command-start-effect
+               (appkit-effect-create
+                :key 'chirp-media-acquire :input intent
+                :start #'chirp-media-view--acquire-start
+                :success (lambda (input file) (list 'chirp-media 'acquired input file))
+                :failure #'chirp-media-view--failed
+                :cancellation-requirement 'transport))))))
+    ('acquired
+     (let ((intent (nth 2 message)) (file (nth 3 message)))
+       (setf (plist-get model :media-phase) 'presenting)
+       (appkit-next
+        :model model :render (appkit-projection-change-create :frame-p t)
+        :commands
+        (list (appkit-command-start-effect
+               (appkit-effect-create
+                :key 'chirp-media-present :input (list :intent intent :file file)
+                :start #'chirp-media-view--present-start
+                :success (lambda (_input _result) '(chirp-media closed))
+                :failure #'chirp-media-view--failed))))))
+    ('local
+     (let ((file (nth 2 message)) (kind (nth 3 message)))
+       (setf (plist-get model :media-intent) nil
+             (plist-get model :media-phase) 'presenting
+             (plist-get model :media-error) nil)
+       (appkit-next
+        :model model :render appkit-render-none
+        :commands
+        (list (appkit-command-cancel-effect 'chirp-media-acquire)
+              (appkit-command-start-effect
+               (appkit-effect-create
+                :key 'chirp-media-present
+                :input (if (eq kind 'video)
+                           (appkit-media-video-presentation-create
+                            (appkit-media-resource-create :file file)
+                            :label "Chirp XChat" :start t)
+                         file)
+                :start (if (eq kind 'video) #'appkit-media-video-presentation-start
+                         #'appkit-media-file-presentation-start)
+                :success (lambda (_input _result) '(chirp-media closed))
+                :failure #'chirp-media-view--failed))))))
+    ('closed
+     (setf (plist-get model :media-phase) 'idle)
+     (appkit-next :model model :render (appkit-projection-change-create :frame-p t)))
+    ('failed
+     (setf (plist-get model :media-phase) 'failed
+           (plist-get model :media-error) (nth 2 message))
+     (appkit-next :model model :render (appkit-projection-change-create :frame-p t)))
+    ('cancel
+     (setf (plist-get model :media-intent) nil
+           (plist-get model :media-phase) 'idle)
+     (appkit-next :model model :render (appkit-projection-change-create :frame-p t)
+                  :commands (list (appkit-command-cancel-effect 'chirp-media-acquire)
+                                  (appkit-command-cancel-effect 'chirp-media-present))))
+    (_ (error "Unsupported Chirp media message: %S" message))))
+
+(defun chirp-media-open-local (surface file kind)
+  "Present decrypted local FILE through its exact initiating SURFACE."
+  (unless (and (appkit-surface-live-p surface) (chirp-media--valid-cache-file-p file))
+    (user-error "Local media is unavailable"))
+  (appkit-surface-send surface (list 'chirp-media 'local file kind)))
 
 (provide 'chirp-media-view)
 

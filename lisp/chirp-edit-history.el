@@ -56,46 +56,61 @@
       (_ (and (null (plist-get state :items))
               "No edit history returned.\n")))))
 
-(defun chirp-edit-history--sync (view invalidations events)
-  "Synchronize edit-history VIEW from INVALIDATIONS and EVENTS."
-  (let ((state (appkit-view-state view)))
-    (chirp-sync-projection
-     view invalidations events
-     (chirp-edit-history--project (plist-get state :items))
-     (chirp-edit-history--frame-text state))))
+(defun chirp-edit-history--sync (surface _app state change)
+  "Render committed STATE in SURFACE using native projection CHANGE."
+  (chirp-render-projection
+      surface change
+    (chirp-edit-history--project (plist-get state :items))
+    (chirp-edit-history--frame-text state)))
 
 (defun chirp-edit-history--present (view tweets)
   "Install normalized TWEETS into edit-history VIEW."
-  (let ((state (appkit-view-state view))
-        (buffer (appkit-view-buffer view)))
+  (let
+      ((state (appkit-surface-model view))
+       (buffer (appkit-surface-buffer view)))
     (setf (plist-get state :items) tweets
           (plist-get (plist-get state :status) :phase) 'idle
           (plist-get (plist-get state :status) :message) nil)
-    (appkit-view-enqueue-event view (list :position 'first))
-    (appkit-invalidate view :structure t :part 'frame :position t)
-    (appkit-sync-invalidations view)
-    (chirp-clear-status buffer)
+    (appkit-surface-post view
+                         (appkit-projection-change-create :position
+                                                          (plist-get
+                                                           (list
+                                                            :position
+                                                            'first)
+                                                           :position)))
+    (appkit-surface-post view
+                         (appkit-projection-change-create :full-p t
+                                                          :frame-p t
+                                                          :position
+                                                          'preserve))
+    nil (chirp-clear-status buffer)
     (chirp-media-prefetch-tweets tweets buffer)))
 
 ;;; Requests
 
 (defun chirp-edit-history--request (view)
   "Fetch and present the versions owned by edit-history VIEW."
-  (let* ((state (appkit-view-state view))
-         (tweet-id (plist-get (plist-get state :query) :tweet-id))
-         (title (plist-get state :title))
-         (buffer (appkit-view-buffer view))
-         (token (chirp-begin-background-request buffer title)))
-    (chirp-backend-edit-history
-     tweet-id
-     (lambda (tweets _envelope)
-       (when (chirp-request-current-p buffer token)
-         (chirp-edit-history--present view tweets)))
-     (lambda (message)
-       (when (chirp-request-current-p buffer token)
-         (chirp-show-error buffer title
-                           (plist-get state :refresh)
-                           message))))
+  (let*
+      ((state (appkit-surface-model view))
+       (tweet-id (plist-get (plist-get state :query) :tweet-id))
+       (title (plist-get state :title))
+       (buffer (appkit-surface-buffer view))
+       (token (chirp-begin-background-request buffer title)))
+    (chirp-backend-edit-history tweet-id
+                                (lambda (tweets _envelope)
+                                  (when
+                                      (chirp-request-current-p buffer
+                                                               token)
+                                    (chirp-edit-history--present view
+                                                                 tweets)))
+                                (lambda (message)
+                                  (when
+                                      (chirp-request-current-p buffer
+                                                               token)
+                                    (chirp-show-error buffer title
+                                                      (plist-get state
+                                                                 :refresh)
+                                                      message))))
     buffer))
 
 ;;; Commands
@@ -116,26 +131,30 @@
 
 (defun chirp-edit-history--open (tweet-id initial-id)
   "Open TWEET-ID's edit history whose initial version is INITIAL-ID."
-  (let* ((title (format "Edit history: %s" initial-id))
-         (refresh
-          (lambda ()
-            (chirp-backend-invalidate-edit-history tweet-id)
-            (chirp-edit-history--open tweet-id initial-id)))
-         (view
-          (chirp-open-projection-view
-           :id (list 'edit-history initial-id)
-           :title title
-           :state (list :type 'edit-history
-                        :query (list :tweet-id tweet-id
-                                     :initial-id initial-id)
-                        :items nil
-                        :title title
-                        :refresh refresh
-                        :status (list :phase 'initial :message nil)
-                        :expanded-tweet-ids (make-hash-table :test #'equal))
-           :sync-function #'chirp-edit-history--sync
-           :printer #'chirp-edit-history--print-row
-           :select t)))
+  (let*
+      ((title (format "Edit history: %s" initial-id))
+       (refresh
+        (lambda () (chirp-backend-invalidate-edit-history tweet-id)
+          (chirp-edit-history--open tweet-id initial-id)))
+       (view
+        (chirp-open-projection-view :id
+                                    (list 'edit-history initial-id)
+                                    :title title :state
+                                    (list :type 'edit-history :query
+                                          (list :tweet-id tweet-id
+                                                :initial-id initial-id)
+                                          :items nil :title title
+                                          :refresh refresh :status
+                                          (list :phase 'initial
+                                                :message nil)
+                                          :expanded-tweet-ids
+                                          (make-hash-table :test
+                                                           #'equal))
+                                    :render-function
+                                    #'chirp-edit-history--sync
+                                    :printer
+                                    #'chirp-edit-history--print-row
+                                    :select t)))
     (chirp-edit-history--request view)))
 
 ;;;###autoload

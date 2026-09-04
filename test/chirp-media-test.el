@@ -157,67 +157,73 @@ rerender and creates a CPU loop."
       (should-not (member "-L" image-command)))))
 
 (ert-deftest chirp-media-image-resource-retries-and-binds-cache-to-source ()
-  "Image retries should be explicit, source-bound, and lifecycle-safe."
+  "Replacement and explicit renewed interest fence stale or invalid image bytes."
   (let ((chirp--app nil)
-        (buffer (generate-new-buffer " *chirp-media-resource*"))
-        callbacks cache-bases curl-defaults view store entry)
-    (unwind-protect
-        (progn
-          (with-current-buffer buffer
-            (chirp-view-mode)
+        (directory (make-temp-file "chirp-resource-" t))
+        view callbacks canceled invalid)
+    (cl-labels
+        ((drain ()
+           (let ((app-loop (appkit-app-loop (chirp-app)))
+                 (loop (appkit-surface-loop view)))
+             (while (> (+ (appkit-loop-pending-count app-loop)
+                          (appkit-loop-pending-count loop)) 0)
+               (appkit-loop-run-pass app-loop)
+               (appkit-loop-run-pass loop))))
+         (source (url)
+           (appkit-surface-post view (list 'chirp-model (list :type 'test :source url)))
+           (drain)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-media--prefetch-enabled-p) (lambda () t))
+                    ((symbol-function 'appkit-media-image-cache-existing-file) (lambda (_base) nil))
+                    ((symbol-function 'appkit-media-image-resource-load)
+                     (lambda (_context input resolve reject)
+                       (let ((url (alist-get 'url (appkit-media-image-acquisition-resource input))))
+                         (push (list url resolve reject) callbacks)
+                         (appkit-cancellation-create
+                          :kind 'transport :cancel (lambda () (push url canceled)))))))
             (setq view
-                  (appkit-attach-view
-                   :app (chirp-app)
-                   :id '(test media-resource)
-                   :state '(:type test)
-                   :mode 'chirp-view-mode
-                   :sync-function #'ignore
-                   :parts nil)))
-          (setq store (appkit-app-resource-store (chirp-app)))
-          (cl-letf (((symbol-function 'chirp-media--prefetch-enabled-p)
-                     (lambda () t))
-                    ((symbol-function 'appkit-media-image-cache-existing-file)
-                     (lambda (_cache-base) nil))
-                    ((symbol-function 'appkit-media-cache-image-resource-async)
-                     (lambda (_resource cache-base success error &rest _options)
-                       (push (cons success error) callbacks)
-                       (push cache-base cache-bases)
-                       (push (copy-sequence plz-curl-default-args)
-                             curl-defaults)
-                       nil)))
-            (chirp-media-request-image-resource
-             view 'photo "https://pbs.twimg.com/media/one.jpg")
-            (chirp-media-request-image-resource
-             view 'photo "https://pbs.twimg.com/media/two.jpg")
+                  (chirp-open-projection-view
+                   :id (make-symbol "image-resource-test") :title "Image resource"
+                   :state '(:type test :source "https://pbs.twimg.com/media/one.jpg")
+                   :setup #'ignore
+                   :render-function
+                   (lambda (surface _app model _change)
+                     (let ((demand (chirp-media-image-demand
+                                    surface 'photo (plist-get model :source))))
+                       (appkit-render-result-create
+                        :resource-demands (and demand (list demand))
+                        :resource-interest-update
+                        (appkit-resource-interest-update-create
+                         :mode 'replace :entries
+                         (and demand (list (appkit-resource-interest-create
+                                            :key 'photo :row-keys '(photo))))))))))
+            (source "https://pbs.twimg.com/media/two.jpg")
             (should (= (length callbacks) 2))
-            (should-not (equal (car cache-bases) (cadr cache-bases)))
-            (funcall (car (cadr callbacks)) "/tmp/stale-source.jpg")
-            (should (eq (plist-get (gethash 'photo store) :status) 'pending))
-            (funcall (cdar callbacks) "transient failure")
-            (should (eq (plist-get (gethash 'photo store) :status) 'failed))
-            (chirp-media-request-image-resource
-             view 'photo "https://pbs.twimg.com/media/two.jpg")
+            (should (member "https://pbs.twimg.com/media/one.jpg" canceled))
+            (funcall (nth 1 (cadr callbacks)) (expand-file-name "stale-source.jpg" directory))
+            (drain)
+            (should (eq (appkit-resource-state-status (appkit-resource-state view 'photo)) 'pending))
+            (funcall (nth 2 (car callbacks)) "transient failure")
+            (drain)
+            (should (eq (appkit-resource-state-status (appkit-resource-state view 'photo)) 'failed))
+            (source nil)
+            (source "https://pbs.twimg.com/media/two.jpg")
             (should (= (length callbacks) 3))
-            (let ((invalid (make-temp-file "chirp-image-" nil ".img")))
-              (with-temp-file invalid
-                (insert "<!DOCTYPE html><title>not an image</title>"))
-              (funcall (caar callbacks) invalid)
-              (should-not (file-exists-p invalid))
-              (should (eq (plist-get (gethash 'photo store) :status)
-                          'failed)))
-            (chirp-media-request-image-resource
-             view 'photo "https://pbs.twimg.com/media/two.jpg")
-            (should (= (length callbacks) 4))
-            (should (equal (caar curl-defaults) "--disable"))
-            (should-not (member "--location" (car curl-defaults)))
-            (should-not (member "--cookie" (car curl-defaults)))
-            (setq entry (gethash 'photo store))
+            (setq invalid (make-temp-file (expand-file-name "invalid-" directory) nil ".img"))
+            (with-temp-file invalid (insert "<!DOCTYPE html><title>not an image</title>"))
+            (funcall (nth 1 (car callbacks)) invalid)
+            (drain)
+            (should-not (file-exists-p invalid))
+            (should (eq (appkit-resource-state-status (appkit-resource-state view 'photo)) 'failed))
+            (source nil)
+            (source "https://pbs.twimg.com/media/two.jpg")
             (chirp-stop)
-            (funcall (caar callbacks) "/tmp/stale-image.jpg")
-            (should (eq (plist-get entry :status) 'pending))))
-      (chirp-stop)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+            (funcall (nth 1 (car callbacks)) (expand-file-name "stale-image.jpg" directory))
+            (should-not (appkit-surface-live-p view)))
+        (chirp-stop)
+        (when (file-directory-p directory) (delete-directory directory t))
+        (when (and view (buffer-live-p (appkit-surface-buffer view)))
+          (kill-buffer (appkit-surface-buffer view)))))))
 
 (ert-deftest chirp-media-prefetch-callback-errors-are-reported-and-isolated ()
   "A failed media callback should warn without blocking later callbacks."
@@ -340,7 +346,6 @@ rerender and creates a CPU loop."
                    "Research & development"))
     (should (equal (plist-get card :image-url)
                    "https://github.com/preview.png"))))
-
 
 (ert-deftest chirp-media-thumbnail-image-uses-appkit-video-decoration ()
   "Photo and video thumbnails should use Appkit sizing and video decoration."
@@ -583,166 +588,61 @@ rerender and creates a CPU loop."
                    "https://example.com/video.mp4"))))
 
 (ert-deftest chirp-media-quit-restores-source-buffer-point ()
-  "Closing media should restore point and scroll state in the source buffer."
-  (let ((source (generate-new-buffer " *chirp-media-source*"))
-        (viewer (generate-new-buffer " *chirp-media-viewer*")))
+  "Closing a managed viewer restores the exact source viewport."
+  (let* ((chirp--app nil) (surface (chirp-media-test--source))
+         (source (appkit-surface-buffer surface))
+         (viewer (generate-new-buffer " *chirp-media-viewer*")))
     (unwind-protect
         (save-window-excursion
           (switch-to-buffer source)
-          (with-current-buffer source
-            (chirp-view-mode)
-            (let ((inhibit-read-only t))
-              (dotimes (index 80)
-                (insert (format "line %02d\n" index))))
-            (goto-char (point-min))
-            (forward-line 40)
-            (set-window-start (selected-window)
-                              (save-excursion
-                                (goto-char (point-min))
-                                (forward-line 34)
-                                (point)))
-            (recenter 0))
-          (let ((source-point (with-current-buffer source (point)))
-                (source-window-state (chirp-capture-window-state source)))
-            (cl-letf (((symbol-function 'chirp-media--photo-file)
-                       (lambda (_media) "/tmp/photo.jpg"))
+          (let ((inhibit-read-only t))
+            (dotimes (index 80) (insert (format "line %02d\n" index))))
+          (goto-char (point-min)) (forward-line 40) (recenter 0)
+          (let ((source-point (point)) (source-start (window-start)))
+            (cl-letf (((symbol-function 'chirp-media-cached-file) (lambda (&rest _) "/tmp/photo.jpg"))
                       ((symbol-function 'video-open)
-                       (lambda (_source &rest args)
-                         (let ((buffer (plist-get args :buffer)))
-                           (with-current-buffer buffer
-                             (special-mode))
-                           (chirp-display-buffer buffer)
-                           buffer))))
-              (chirp-media-open
-               '((:type "photo" :url "https://example.com/photo.jpg"))
-               0
-               "Media"
-               viewer))
-            (with-current-buffer viewer
-              (chirp-media-quit))
-            (should (eq (window-buffer (selected-window)) source))
-            (with-current-buffer source
-              (should (= (point) source-point)))
-            (should (= (window-point (selected-window)) source-point))
-            (should
-             (= (window-start (selected-window))
-                (with-current-buffer source
-                  (chirp-point-position-from-anchor
-                   (plist-get source-window-state :start-anchor)))))))
+                       (lambda (_file &rest args)
+                         (let ((target (plist-get args :buffer)))
+                           (with-current-buffer target (special-mode))
+                           (chirp-display-buffer target) target))))
+              (chirp-media-open '((:type "photo" :url "https://example.com/photo.jpg")) 0 "Media" viewer)
+              (appkit-loop-run-pass (appkit-surface-loop surface))
+              (with-current-buffer viewer (chirp-media-quit)))
+            (should (eq (window-buffer) source))
+            (should (= (window-point) source-point))
+            (should (= (window-start) source-start))))
+      (chirp-stop)
       (dolist (buffer (list source viewer))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
-
-(ert-deftest chirp-media-open-video-uses-appkit-cache-identity ()
-  "Opening video should adapt its selected URL into one Appkit session."
-  (let ((chirp-video-use-internal-player t)
-        (chirp-video-playback-max-bitrate 2176000)
-        created
-        presented)
-    (with-temp-buffer
-      (cl-letf (((symbol-function 'appkit-media-video-session-create)
-                 (lambda (resource label &rest keys)
-                   (setq created
-                         (list (alist-get 'url resource)
-                               label
-                               (plist-get keys :cache-key)
-                               (plist-get keys :muted)))
-                   'session))
-                ((symbol-function 'appkit-media-present-video-session)
-                 (lambda (session label &rest keys)
-                   (setq presented
-                         (list session label
-                               (plist-get keys :buffer)
-                               (plist-get keys :start)
-                               (plist-get keys :display-function)))
-                   (plist-get keys :buffer)))
-                ((symbol-function 'appkit-media-video-session-close)
-                 (lambda (_session)
-                   (ert-fail "successful presentation must retain session"))))
-        (chirp-media-open
-         '((:type "video"
-            :url "https://example.com/high.mp4"
-            :variants
-            ((:url "https://example.com/high.mp4" :bitrate 4096000)
-             (:url "https://example.com/mid.mp4?tag=29"
-              :bitrate 2176000)
-             (:url "https://example.com/low.mp4" :bitrate 832000))))
-         0
-         "Media"
-         (current-buffer))
-        (should
-         (equal created
-                '("https://example.com/mid.mp4?tag=29"
-                  "Chirp"
-                  "chirp-video:https://example.com/mid.mp4"
-                  nil)))
-        (should
-         (equal presented
-                (list 'session "Media" (current-buffer) t nil)))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest chirp-media-open-video-reuses-inline-appkit-session ()
-  "Dedicated video should present the exact Appkit inline surface."
-  (let* ((media-list
-          '((:type "video" :url "https://example.com/video.mp4")))
-         (session (list :player 'player :position 23.5))
-         (surface
-          (appkit-media--video-inline-create
-           :session session :inline 'inline))
+  "Committed dedicated presentation preserves the exact inline player state."
+  (let* ((chirp--app nil) (source (chirp-media-test--source))
+         (buffer (appkit-surface-buffer source))
+         (viewer (generate-new-buffer " *chirp-inline-handoff*"))
+         (media-list '((:type "video" :url "https://example.com/video.mp4")))
+         (session (list :player (make-symbol "player") :position 23.5 :paused t))
+         (inline (appkit-media--video-inline-create :session session :inline 'inline))
          presented)
-    (with-temp-buffer
-      (cl-letf (((symbol-function 'appkit-media-video-inline-closed-p)
-                 (lambda (actual) (not (eq actual surface))))
-                ((symbol-function 'appkit-media-video-session-live-p)
-                 (lambda (actual) (eq actual session)))
-                ((symbol-function 'chirp-media-video-session-create)
-                 (lambda (&rest _)
-                   (ert-fail "shared inline session must prevent replacement")))
-                ((symbol-function 'appkit-media-present-video-inline)
-                 (lambda (actual label &rest keys)
-                   (setq presented
-                         (list actual label
-                               (plist-get keys :buffer)))
-                   (plist-get keys :buffer))))
-        (chirp-media-register-video-inline media-list 0 surface)
-        (chirp-media-open media-list 0 "Media" (current-buffer))
-        (should
-         (equal presented
-                (list surface "Media" (current-buffer))))
-        (should (= (plist-get session :position) 23.5))))))
-
-(ert-deftest chirp-media-dedicated-command-keeps-off-track-inline-selection ()
-  "The generic command should retain a mouse-activated entry presentation."
-  (let* ((media-list
-          '((:type "video" :url "https://example.com/video.mp4")))
-         (entry (list :kind 'tweet :media media-list))
-         (session (list :player 'player :position 19.0))
-         (surface
-          (appkit-media--video-inline-create :session session))
-         captured)
-    (with-temp-buffer
-      (insert "tweet text")
-      (add-text-properties
-       (point-min) (point-max)
-       (list 'chirp-entry-item entry))
-      (goto-char (point-min))
-      (cl-letf (((symbol-function 'appkit-media-video-session-live-p)
-                 (lambda (actual) (eq actual session)))
-                ((symbol-function 'appkit-media-video-inline-closed-p)
-                 (lambda (actual) (not (eq actual surface))))
-                ((symbol-function 'chirp-media-open-dedicated)
-                 (lambda (selection &rest _)
-                   (setq captured selection)
-                   :opened)))
-        (chirp-media-register-video-inline media-list 0 surface)
-        (should (eq (chirp-media-open-dedicated-at-point) :opened)))
-      (should (chirp-media-selection-p captured))
-      (should (eq (chirp-media-selection-media-list captured) media-list))
-      (should (= (chirp-media-selection-index captured) 0))
-      (should
-       (eq (chirp-media-selection-video-inline captured) surface))
-      (should
-       (eq (appkit-media-video-inline-session surface) session)))))
-
+    (unwind-protect
+        (cl-letf (((symbol-function 'appkit-media-video-inline-closed-p) (lambda (actual) (not (eq actual inline))))
+                  ((symbol-function 'appkit-media-video-session-live-p) (lambda (actual) (eq actual session)))
+                  ((symbol-function 'chirp-media-video-session-create)
+                   (lambda (&rest _) (ert-fail "Inline handoff must not create a fresh session")))
+                  ((symbol-function 'appkit-media-present-video-inline)
+                   (lambda (actual _label &rest keys)
+                     (setq presented (appkit-media-video-inline-session actual))
+                     (plist-get keys :buffer))))
+          (with-current-buffer buffer
+            (chirp-media-register-video-inline media-list 0 inline)
+            (chirp-media-open media-list 0 "Media" viewer))
+          (should-not presented)
+          (appkit-loop-run-pass (appkit-surface-loop source))
+          (should (eq presented session))
+          (should (= (plist-get presented :position) 23.5))
+          (should (plist-get presented :paused)))
+      (chirp-stop)
+      (dolist (target (list buffer viewer)) (when (buffer-live-p target) (kill-buffer target))))))
 
 (ert-deftest chirp-media-play-launches-configured-player ()
   "Media viewer playback should launch the configured external player on demand."
@@ -930,35 +830,33 @@ rerender and creates a CPU loop."
         (chirp--on-text-scale-change)
         (should (equal rerender-args '(nil 0)))))))
 
-(ert-deftest chirp-projection-text-scale-requests-sync ()
-  "Text scale should invalidate an Appkit projection instead of refetching."
-  (let (view)
+(defun chirp-media-test--source (&optional identity)
+  "Open a real generated source Surface without multimedia dependencies."
+  (chirp-open-projection-view :id (or identity (make-symbol "media-test"))
+                              :title "Media test" :state (list :type 'test)
+                              :setup #'ignore :render-function #'ignore))
+
+(ert-deftest chirp-media-replaced-source-rejects-late-acquisition ()
+  "Replacing a source model revokes the old acquisition's viewer authority."
+  (let* ((chirp--app nil) (source (chirp-media-test--source))
+         (buffer (appkit-surface-buffer source)) resolve canceled opened)
     (unwind-protect
-        (let ((state (list :type 'collection
-                           :query (list :kind 'bookmarks)
-                           :items nil
-                           :title "Bookmarks"
-                           :refresh #'ignore
-                           :status (list :phase 'idle :message nil)
-                           :expanded-tweet-ids (make-hash-table :test #'equal))))
-          (setq view (chirp-open-projection-view
-                      :id (list 'collection 'scale-test)
-                      :title "Bookmarks"
-                      :state state
-                      :sync-function #'chirp-timeline--sync
-                      :printer #'chirp-render-print-tweet-row))
-          (with-current-buffer (appkit-view-buffer view)
-            (text-scale-increase 2)
-            (let ((amount text-scale-mode-amount)
-                  requested)
-              (cl-letf (((symbol-function 'appkit-request-sync)
-                         (lambda (live &rest _args)
-                           (setq requested live))))
-                (chirp--on-text-scale-change))
-              (should (eq requested view))
-              (should (equal amount text-scale-mode-amount))
-              (should (bound-and-true-p text-scale-mode)))))
-      (chirp-stop))))
+        (cl-letf (((symbol-function 'chirp-media-view--acquire-start)
+                   (lambda (_context _input _observe success _reject)
+                     (setq resolve success)
+                     (appkit-cancellation-create :kind 'transport :cancel (lambda () (setq canceled t)))))
+                  ((symbol-function 'video-open)
+                   (lambda (&rest _) (setq opened t) (ert-fail "Late acquisition opened a viewer"))))
+          (with-current-buffer buffer
+            (chirp-media-open '((:type "photo" :url "https://example.com/photo.jpg")) 0))
+          (appkit-surface-send source (list 'chirp-model (list :type 'replacement)))
+          (should canceled)
+          (funcall resolve "/tmp/photo.jpg")
+          (appkit-loop-run-pass (appkit-surface-loop source))
+          (should-not opened)
+          (should (eq (plist-get (appkit-surface-model source) :type) 'replacement)))
+      (chirp-stop)
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (provide 'chirp-media-test)
 

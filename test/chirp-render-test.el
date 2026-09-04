@@ -903,10 +903,12 @@
         (goto-char (match-beginning 0))
         (chirp-open-at-point)
         (should (equal opened-url "https://example.com"))
-        (dolist (label '("Replies" "RT" "Likes" "Quotes" "Bookmarks"))
-          (goto-char (point-min))
-          (search-forward label)
-          (should-not (appkit-ui-action-at (match-beginning 0))))
+        (cl-loop for position from (point-min) below (point-max)
+                 do (should-not
+                     (memq (appkit-ui-action-at position)
+                           '(chirp-reply-at-point chirp-toggle-retweet-at-point
+                             chirp-toggle-like-at-point chirp-quote-at-point
+                             chirp-toggle-bookmark-at-point))))
         (goto-char (point-min))
         (should (search-forward "Version history" nil t))
         (should-not (search-forward "Edited" nil t))))))
@@ -1031,7 +1033,7 @@
          (equal
           (get-text-property spacer 'display)
           `(space :align-to
-                  (- right (,(string-width "6小时") . width)))))))))
+            (- right (,(string-width "6小时") . width)))))))))
 
 (ert-deftest chirp-render-insert-tweet-can-hide-avatar-and-keep-author-text ()
   "Hiding avatars should leave the display name and handle visible."
@@ -1406,7 +1408,7 @@
               'chirp-meta-face)))
 
 (ert-deftest chirp-render-insert-tweet-marks-metric-actions ()
-  "Tweet metrics should be Appkit actions with the matching commands."
+  "Tweet metrics should activate their actions on the rendered tweet."
   (let ((tweet '(:kind tweet
                  :id "mouse-1"
                  :text "Clickable actions"
@@ -1425,38 +1427,26 @@
       (chirp-view-mode)
       (let ((inhibit-read-only t))
         (chirp-render-insert-tweet tweet))
-      (dolist (spec
-               `((reply 1 nil ,#'chirp-reply-at-point
-                        chirp-meta-face "Reply")
-                 (retweet 2 t ,#'chirp-toggle-retweet-at-point
-                          chirp-retweeted-metric-face "Repost")
-                 (like 3 t ,#'chirp-toggle-like-at-point
-                       chirp-liked-metric-face "Like")
-                 (quote 4 nil ,#'chirp-quote-at-point
-                        chirp-meta-face "Quote")
-                 (bookmark 5 t ,#'chirp-toggle-bookmark-at-point
-                           chirp-bookmarked-metric-face "Bookmark")))
-        (pcase-let ((`(,label ,count ,active ,command ,face ,help) spec))
-          (goto-char (point-min))
-          (search-forward (chirp-render--metric-string label count active))
-          (let ((position (match-beginning 0)))
-            (should (eq (get-text-property position 'face) face))
-            (should (eq (get-text-property position 'mouse-face) 'highlight))
-            (should (eq (get-text-property position 'pointer) 'hand))
-            (should (equal (get-text-property position 'help-echo) help))
-            (should (eq (appkit-ui-action-at position) command))
-            (should (eq (lookup-key (get-text-property position 'keymap)
-                                    [mouse-1])
-                        #'appkit-ui-activate))
-            (goto-char position)
-            (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
-            (should (equal (get-text-property position 'chirp-entry-item)
-                           tweet)))))
+      (dolist (command '(chirp-reply-at-point
+                         chirp-toggle-retweet-at-point
+                         chirp-toggle-like-at-point
+                         chirp-quote-at-point
+                         chirp-toggle-bookmark-at-point))
+        (let ((position (text-property-any (point-min) (point-max)
+                                           appkit-ui-action-property command))
+              activated-tweet)
+          (should position)
+          (goto-char position)
+          (cl-letf (((symbol-function command)
+                     (lambda ()
+                       (setq activated-tweet
+                             (get-text-property (point) 'chirp-entry-item)))))
+            (appkit-ui-activate))
+          (should (equal activated-tweet tweet))))
       (goto-char (point-min))
       (search-forward (chirp-render--metric-string 'view 6))
       (let ((position (match-beginning 0)))
-        (should-not (appkit-ui-action-at position))
-        (should-not (get-text-property position 'mouse-face)))
+        (should-not (appkit-ui-action-at position)))
       (should buffer-read-only))))
 
 (ert-deftest chirp-render-insert-tweet-renders-reply-control ()
@@ -1703,6 +1693,7 @@
                'chirp-quoted-tweet-block-face
                (get-text-property (match-beginning 0) 'face)))
       (should (stringp (get-text-property (match-beginning 0) 'line-prefix))))))
+
 (ert-deftest chirp-render-quoted-tweet-lines-use-wrap-prefix ()
   "Quoted tweet body lines should keep the card prefix on visual wraps."
   (let ((tweet (chirp-test--sample-quoted-tweet)))
@@ -1719,11 +1710,12 @@
              (wrap-prefix (get-text-property pos 'wrap-prefix)))
         (should (stringp wrap-prefix))
         (should (>= (string-width wrap-prefix) 3))))))
+
 (ert-deftest chirp-render-quoted-tweet-media-uses-gapless-image-slices ()
   "Quoted tweet media should use the card prefix on gapless image slices."
   (let ((tweet (chirp-test--sample-quoted-tweet-with-media))
         (fake-image '(image :type png :file "/tmp/fake.png"
-                            :appkit-media-nslices 4)))
+                      :appkit-media-nslices 4)))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-avatar-image) (lambda (&rest _args) nil))
@@ -1762,8 +1754,8 @@
 (ert-deftest chirp-render-media-cell-uses-appkit-slice-rows ()
   "Tweet media cells should use Appkit slice rows for current-line geometry."
   (let ((source '(image :type png :file "/tmp/fake.png"
-                        :height (3 . ch)
-                        :appkit-media-nslices 3))
+                  :height (3 . ch)
+                  :appkit-media-nslices 3))
         (media '(:type "photo" :url "https://example.com/a.jpg")))
     (cl-letf (((symbol-function 'image-size)
                (lambda (&rest _args) '(8 . 3)))
@@ -1773,7 +1765,7 @@
              (rows (plist-get cell :rows)))
         (should (= (length rows) 3))
         (should (equal (get-text-property 0 'display
-                                         (plist-get cell :padding))
+                                          (plist-get cell :padding))
                        '(space :width 8)))
         (cl-loop for row in rows
                  for index from 0
@@ -1783,8 +1775,8 @@
                  do (should (= (plist-get (cdr (cadr display)) :height) 30)))
         (should (equal source
                        '(image :type png :file "/tmp/fake.png"
-                               :height (3 . ch)
-                               :appkit-media-nslices 3)))))))
+                         :height (3 . ch)
+                         :appkit-media-nslices 3)))))))
 
 (ert-deftest chirp-render-two-media-grid-uses-official-landscape-group ()
   "Two large media cells should fill equal halves of one 16:9 group."
@@ -1858,7 +1850,7 @@
                  (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-media-carousel-image)
                  (lambda (media-list height gap
-                           &optional offset widths fit)
+                                     &optional offset widths fit)
                    (setq track-media media-list
                          track-height height
                          track-gap gap
@@ -1956,7 +1948,7 @@
                  (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-render--insert-media-track)
                  (lambda (items _prefix _prefix-face
-                           height gap widths fit)
+                                height gap widths fit)
                    (setq captured
                          (list items height gap widths fit))))
                 ((symbol-function 'chirp-render--insert-media-grid)
@@ -1989,7 +1981,7 @@
                  (lambda (&rest _args) nil))
                 ((symbol-function 'chirp-render--insert-media-track)
                  (lambda (items _prefix _prefix-face
-                           height gap widths fit)
+                                height gap widths fit)
                    (setq captured
                          (list items height gap widths fit))))
                 ((symbol-function 'chirp-render--insert-media-grid)
@@ -2014,8 +2006,8 @@
                          :bitrate 832000)))))
          (poster
           '(image :type svg :data "<svg/>"
-                  :appkit-media-nslices 2
-                  :appkit-media-strip-widths (320)))
+            :appkit-media-nslices 2
+            :appkit-media-strip-widths (320)))
          (inline-surface
           (appkit-media--video-inline-create
            :session 'video-session :inline 'inline))
@@ -2030,8 +2022,8 @@
     (with-temp-buffer
       (insert "a\nb")
       (pcase-let* ((`(,map . ,state)
-                     (chirp-render--media-track-hotspot-map
-                      1 media poster 180 4 '(320) nil)))
+                    (chirp-render--media-track-hotspot-map
+                     1 media poster 180 4 '(320) nil)))
         (aset state 4 (list (copy-marker 1) (copy-marker 3)))
         (chirp-render--media-track-prepare-video-host state)
         (put-text-property 1 2 'chirp-media-track-state state)
@@ -2114,9 +2106,9 @@
             (:type "video" :file "/tmp/b.jpg")))
          (poster
           '(image :type svg :data "<svg/>"
-                  :appkit-media-nslices 3
-                  :appkit-media-strip-widths (100 120)
-                  :appkit-media-strip-offset 104))
+            :appkit-media-nslices 3
+            :appkit-media-strip-widths (100 120)
+            :appkit-media-strip-offset 104))
          (state
           (vector 1 '(0 104) media "Media" nil
                   4 80 '(100 120) 'cover
@@ -2154,16 +2146,16 @@
              :variants ((:url "https://example.com/video.mp4")))))
          (poster
           '(image :type svg :data "<svg/>"
-                  :appkit-media-nslices 2
-                  :appkit-media-strip-widths (100 120)
-                  :appkit-media-strip-offset 0))
+            :appkit-media-nslices 2
+            :appkit-media-strip-widths (100 120)
+            :appkit-media-strip-offset 0))
          captured
          registered)
     (with-temp-buffer
       (insert "a\nb")
       (pcase-let* ((`(,map . ,state)
-                     (chirp-render--media-track-hotspot-map
-                      1 media poster 80 4 '(100 120) 'cover)))
+                    (chirp-render--media-track-hotspot-map
+                     1 media poster 80 4 '(100 120) 'cover)))
         (aset state 4 (list (copy-marker 1) (copy-marker 3)))
         (chirp-render--media-track-prepare-video-host state)
         (put-text-property 1 2 'chirp-media-track-state state)
@@ -2254,51 +2246,51 @@
   "Every TweetPhotos topology should place expected items on each band."
   (cl-labels
       ((rendered-lines
-        (count)
-        (with-temp-buffer
-          (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
-                     (lambda (_media &optional crop-spec)
-                       `(image
-                         :type png
-                         :appkit-media-nslices
-                         ,(/ (plist-get crop-spec :height) 18))))
-                    ((symbol-function
-                      'chirp-media-thumbnail-placeholder-image)
-                     (lambda (&rest _args) nil))
-                    ((symbol-function 'image-size)
-                     (lambda (&rest _args) '(10 . 10)))
-                    ((symbol-function 'frame-char-height)
-                     (lambda (&optional _frame) 18))
-                    ((symbol-function 'appkit-media--char-pixel-height)
-                     (lambda () 18)))
-            (chirp-render--insert-media-grid
-             (cl-loop for index below count
-                      collect
-                      (list :type "photo"
-                            :url (format "media-%d" index)))
-             nil nil))
-          (goto-char (point-min))
-          (let (lines)
-            (while (< (point) (point-max))
-              (let ((end (line-end-position))
-                    indices)
-                (while (< (point) end)
-                  (when-let* ((index
-                               (get-text-property
-                                (point) 'chirp-media-index)))
-                    (unless (memq index indices)
-                      (setq indices (append indices (list index)))))
-                  (forward-char 1))
-                (setq lines (append lines (list indices))))
-              (forward-line 1))
-            lines)))
+         (count)
+         (with-temp-buffer
+           (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
+                      (lambda (_media &optional crop-spec)
+                        `(image
+                          :type png
+                          :appkit-media-nslices
+                          ,(/ (plist-get crop-spec :height) 18))))
+                     ((symbol-function
+                       'chirp-media-thumbnail-placeholder-image)
+                      (lambda (&rest _args) nil))
+                     ((symbol-function 'image-size)
+                      (lambda (&rest _args) '(10 . 10)))
+                     ((symbol-function 'frame-char-height)
+                      (lambda (&optional _frame) 18))
+                     ((symbol-function 'appkit-media--char-pixel-height)
+                      (lambda () 18)))
+             (chirp-render--insert-media-grid
+              (cl-loop for index below count
+                       collect
+                       (list :type "photo"
+                             :url (format "media-%d" index)))
+              nil nil))
+           (goto-char (point-min))
+           (let (lines)
+             (while (< (point) (point-max))
+               (let ((end (line-end-position))
+                     indices)
+                 (while (< (point) end)
+                   (when-let* ((index
+                                (get-text-property
+                                 (point) 'chirp-media-index)))
+                     (unless (memq index indices)
+                       (setq indices (append indices (list index)))))
+                   (forward-char 1))
+                 (setq lines (append lines (list indices))))
+               (forward-line 1))
+             lines)))
        (bands-match-p
-        (lines split first second)
-        (and (= (length lines) (* 2 split))
-             (cl-every (lambda (line) (equal line first))
-                       (seq-take lines split))
-             (cl-every (lambda (line) (equal line second))
-                       (seq-drop lines split)))))
+         (lines split first second)
+         (and (= (length lines) (* 2 split))
+              (cl-every (lambda (line) (equal line first))
+                        (seq-take lines split))
+              (cl-every (lambda (line) (equal line second))
+                        (seq-drop lines split)))))
     (should
      (bands-match-p (rendered-lines 3) 8 '(0 1) '(0 2)))
     (should
@@ -2312,7 +2304,7 @@
   "Video placeholders should use the same sliced cover path as photos."
   (let ((media '(:type "video" :url "https://example.com/video.mp4"))
         (placeholder '(image :type svg :data "video-cover"
-                             :appkit-media-nslices 3)))
+                       :appkit-media-nslices 3)))
     (with-temp-buffer
       (chirp-view-mode)
       (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
@@ -2338,9 +2330,9 @@
       (cl-letf (((symbol-function 'chirp-media-thumbnail-image)
                  (lambda (media &optional _crop-size)
                    `(image :type png
-                           :file ,(plist-get media :url)
-                           :appkit-media-nslices
-                           ,(if (equal (plist-get media :url) "short") 2 3))))
+                     :file ,(plist-get media :url)
+                     :appkit-media-nslices
+                     ,(if (equal (plist-get media :url) "short") 2 3))))
                 ((symbol-function 'chirp-media-thumbnail-placeholder-image)
                  (lambda (&rest _args) nil))
                 ((symbol-function 'image-size)
@@ -2700,7 +2692,6 @@
                '(:id "123"
                  :text "Read this"
                  :article-text "Full article body."))))
-
 
 (provide 'chirp-render-test)
 

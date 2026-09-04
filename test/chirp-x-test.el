@@ -505,7 +505,7 @@
              "https://x.com/i/api/graphql/query-id/HomeTimeline?"
              captured-url))
     (should (equal (alist-get "count" (chirp-x-test--query-json
-                                         "variables" captured-url)
+                                       "variables" captured-url)
                               nil nil #'string=)
                    20))
     (let ((features (chirp-x-test--query-json "features" captured-url)))
@@ -810,7 +810,7 @@
                  '(:auth-token "auth" :ct0 "csrf" :bearer-token "bearer")))
               ((symbol-function 'chirp-x--retrieve)
                (lambda (_url callback _callback-args _silent
-                        _inhibit-cookies)
+                             _inhibit-cookies)
                  (chirp-x-test--response 200 "{\"data\":{}}" callback))))
       (let ((condition
              (should-error
@@ -879,7 +879,7 @@
                    '(:auth-token "auth" :ct0 "csrf" :bearer-token "bearer")))
                 ((symbol-function 'chirp-x--retrieve)
                  (lambda (_url callback _callback-args _silent
-                          _inhibit-cookies)
+                               _inhibit-cookies)
                    (chirp-x-test--response status "{}" callback))))
         (chirp-x-graphql-request
          '(:query-id "query-id" :name "WriteMutation" :method post)
@@ -921,7 +921,7 @@
                      :bearer-token "bearer")))
                 ((symbol-function 'chirp-x--retrieve)
                  (lambda (_url callback _callback-args _silent
-                          _inhibit-cookies)
+                               _inhibit-cookies)
                    (chirp-x-test--response
                     status
                     (concat
@@ -946,7 +946,7 @@
                  '(:auth-token "auth" :ct0 "csrf" :bearer-token "bearer")))
               ((symbol-function 'chirp-x--retrieve)
                (lambda (_url callback _callback-args _silent
-                        _inhibit-cookies)
+                             _inhibit-cookies)
                  (chirp-x-test--response
                   200 "{\"data\":{},\"errors\":[{\"code\":5001}]}"
                   callback))))
@@ -971,7 +971,7 @@
                  (error "oversized acknowledgement was parsed")))
               ((symbol-function 'chirp-x--retrieve)
                (lambda (_url callback _callback-args _silent
-                        _inhibit-cookies)
+                             _inhibit-cookies)
                  (chirp-x-test--response
                   200 (concat "{\"data\":\"" (make-string 64 ?x) "\"}")
                   callback))))
@@ -1008,48 +1008,61 @@
 
 (ert-deftest chirp-x-request-lifecycle-can-belong-to-an-exact-view ()
   "Killing a view should cancel its retrieval and suppress late callbacks."
-  (let ((chirp--app nil)
-        (view-buffer (generate-new-buffer " *chirp-x-owner-view*"))
-        (request-buffer (generate-new-buffer " *chirp-x-owner-request*"))
-        retrieval-callback
-        success
-        failure
-        view)
+  (let
+      ((chirp--app nil)
+       (view-buffer (generate-new-buffer " *chirp-x-owner-view*"))
+       (request-buffer
+        (generate-new-buffer " *chirp-x-owner-request*"))
+       retrieval-callback success failure view)
     (unwind-protect
         (progn
           (with-current-buffer view-buffer
             (chirp-view-mode)
             (setq view
-                  (appkit-attach-view
-                   :app (chirp-app)
-                   :id '(test transport-owner)
-                   :state '(:type test)
-                   :mode 'chirp-view-mode
-                   :sync-function #'ignore
-                   :parts nil)))
-          (cl-letf (((symbol-function 'chirp-x-credentials)
-                     (lambda ()
-                       '(:auth-token "auth" :ct0 "csrf"
-                         :bearer-token "bearer")))
-                    ((symbol-function 'chirp-x--retrieve)
-                     (lambda (_url callback &rest _args)
-                       (setq retrieval-callback callback)
-                       request-buffer)))
+                  (appkit-open-generated-surface
+                   (appkit-surface-type-create :name 'test :mode
+                                               'chirp-view-mode :init
+                                               (lambda
+                                                 (_context input)
+                                                 (appkit-next :model
+                                                              input
+                                                              :render
+                                                              appkit-render-none))
+                                               :update
+                                               #'chirp--surface-update
+                                               :renderer-factory
+                                               (lambda (_surface)
+                                                 (appkit-generated-renderer-create
+                                                  :mount #'ignore
+                                                  :render #'ignore
+                                                  :recover #'ignore
+                                                  :merge
+                                                  #'appkit-projection-change-merge
+                                                  :unmount #'ignore)))
+                   :app (chirp-app) :identity '(test transport-owner)
+                   :input '(:type test) :buffer (current-buffer))))
+          (cl-letf
+              (((symbol-function 'chirp-x-credentials)
+                (lambda ()
+                  '(:auth-token "auth" :ct0 "csrf" :bearer-token
+                    "bearer")))
+               ((symbol-function 'chirp-x--retrieve)
+                (lambda (_url callback &rest _args)
+                  (setq retrieval-callback callback)
+                  request-buffer)))
             (chirp-x-graphql-request
              '(:query-id "query-id" :name "HomeTimeline")
-             '(("count" . 1))
-             (lambda (_payload)
-               (setq success t))
-             :errback (lambda (message)
-                        (setq failure message))
-             :owner view))
-          (should (= (length (appkit-view-handles view)) 1))
+             '(("count" . 1)) (lambda (_payload) (setq success t))
+             :errback (lambda (message) (setq failure message)) :owner
+             view))
+          (should (= (length (appkit-surface-handles view)) 1))
           (should-not (appkit-app-handles (chirp-app)))
-          (appkit-kill-view view)
+          (kill-buffer (appkit-surface-buffer view))
           (should-not (buffer-live-p request-buffer))
-          (should-not (appkit-view-handles view))
-          (let ((late-buffer
-                 (generate-new-buffer " *chirp-x-late-response*")))
+          (should-not (appkit-surface-handles view))
+          (let
+              ((late-buffer
+                (generate-new-buffer " *chirp-x-late-response*")))
             (with-current-buffer late-buffer
               (funcall retrieval-callback nil))
             (should-not (buffer-live-p late-buffer)))
@@ -1057,8 +1070,7 @@
           (should (equal failure "X request was canceled")))
       (chirp-stop)
       (dolist (buffer (list view-buffer request-buffer))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest chirp-x-app-read-can-settle-its-continuation-on-cancel ()
   "An app-owned continuation GET should opt into cancellation settlement."
@@ -1325,10 +1337,10 @@
                        (let* ((request-url
                                (if (url-p url) (url-recreate-url url) url))
                               (request
-                               (list :url request-url
-                                     :method url-request-method
-                                     :data url-request-data
-                                     :headers url-request-extra-headers)))
+                                (list :url request-url
+                                      :method url-request-method
+                                      :data url-request-data
+                                      :headers url-request-extra-headers)))
                          (push request requests)
                          (cond
                           ((string-match-p "command=STATUS" request-url)
@@ -1403,7 +1415,7 @@
                        'timer))
                     ((symbol-function 'chirp-x--retrieve)
                      (lambda (_url callback _callback-args _silent
-                              _inhibit-cookies)
+                                   _inhibit-cookies)
                        (cond
                         ((string-prefix-p "command=INIT" url-request-data)
                          (chirp-x-test--response
@@ -1451,7 +1463,7 @@
                          :bearer-token "bearer")))
                     ((symbol-function 'chirp-x--retrieve)
                      (lambda (_url callback _callback-args _silent
-                              _inhibit-cookies)
+                                   _inhibit-cookies)
                        (setq request-count (1+ request-count))
                        (chirp-x-test--response
                         503 "{\"errors\":[{\"message\":\"Unavailable\"}]}"

@@ -24,50 +24,55 @@
     (should (equal (plist-get (cadr rows) :section) "Version history"))
     (should-not (plist-get (caddr rows) :section))))
 
-(ert-deftest chirp-edit-history-open-renders-versions-through-public-path ()
+(ert-deftest
+    chirp-edit-history-open-renders-versions-through-public-path ()
   "Opening edit history should create one reusable Appkit projection view."
-  (let ((chirp--app nil)
-        (tweet
-         '(:kind tweet :id "200" :text "Latest"
-           :edit-history-ids ("100" "200")
-           :edit-history-initial-id "100" :edited-p t))
-        buffers)
+  (let
+      ((chirp--app nil)
+       (tweet
+        '(:kind tweet :id "200" :text "Latest" :edit-history-ids
+          ("100" "200") :edit-history-initial-id "100" :edited-p t))
+       buffers)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-backend-edit-history)
-                   (lambda (_tweet-id callback &optional _errback)
-                     (funcall
-                      callback
-                      '((:kind tweet :id "200" :text "Latest"
-                         :author-name "Alice" :created-at "LATEST-TIME"
-                         :edited-p t :edit-history-ids ("100" "200"))
-                        (:kind tweet :id "100" :text "Initial"
-                         :author-name "Alice" :created-at "INITIAL-TIME"
-                         :edited-p t :edit-history-ids ("100" "200")))
-                      nil)))
-                  ((symbol-function 'chirp-media-avatar-image)
-                   (lambda (&rest _args) nil))
-                  ((symbol-function 'chirp-media-prefetch-tweets) #'ignore))
-          (let ((first (chirp-edit-history-open-tweet tweet))
-                second)
+        (cl-letf
+            (((symbol-function 'chirp-backend-edit-history)
+              (lambda (_tweet-id callback &optional _errback)
+                (funcall callback
+                         '((:kind tweet :id "200" :text "Latest"
+                            :author-name "Alice" :created-at
+                            "LATEST-TIME" :edited-p t
+                            :edit-history-ids ("100" "200"))
+                           (:kind tweet :id "100" :text "Initial"
+                            :author-name "Alice" :created-at
+                            "INITIAL-TIME" :edited-p t
+                            :edit-history-ids ("100" "200")))
+                         nil)))
+             ((symbol-function 'chirp-media-avatar-image)
+              (lambda (&rest _args) nil))
+             ((symbol-function 'chirp-media-prefetch-tweets) #'ignore))
+          (let ((first (chirp-edit-history-open-tweet tweet)) second)
             (push first buffers)
             (setq second (chirp-edit-history-open "100"))
-            (push second buffers)
-            (should (eq first second))
+            (push second buffers) (should (eq first second))
             (with-current-buffer first
+              (let ((loop (appkit-surface-loop (appkit-current-surface))))
+                (while (> (appkit-loop-pending-count loop) 0)
+                  (appkit-loop-run-pass loop)))
               (should (derived-mode-p 'chirp-view-mode))
               (should buffer-read-only)
               (should (string-match-p "Latest post" (buffer-string)))
               (should (string-match-p "Latest" (buffer-string)))
-              (should (string-match-p "Version history" (buffer-string)))
+              (should
+               (string-match-p "Version history" (buffer-string)))
               (should (string-match-p "Initial" (buffer-string)))
               (should-not (string-match-p "Edited" (buffer-string)))
-              (let ((view (appkit-current-view)))
-                (should (equal (appkit-view-id view)
-                               '(edit-history "100")))))))
+              (let ((view (appkit-current-surface)))
+                (should
+                 (equal (appkit-surface-identity view)
+                        '(edit-history "100")))))))
       (chirp-stop)
       (dolist (buffer buffers)
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest chirp-edit-history-open-at-point-routes-edited-tweet ()
   "The public point command should route an edited tweet to its view."

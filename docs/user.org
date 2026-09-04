@@ -232,6 +232,11 @@ The dedicated buffer uses video.el's reader model.  Chirp does not override
 ~video-display-buffer-function~: the default placement is the selected window,
 while users may globally choose another window or a presentation frame.
 
+Cold-cache photos are acquired asynchronously before the reader opens.  The
+request belongs to the exact Chirp source buffer: closing that buffer,
+replacing its feed, or canceling pending reader navigation prevents a late
+download from opening another viewer.
+
 The buffer presents the current source; every window displaying it owns an
 independent absolute scale and viewport origin.  A video's Appkit session may
 also retain the same player for an inline surface.  The virtual media plane may
@@ -251,9 +256,10 @@ presentation against its containing entry, so every dedicated-media action
 reuses the same player even after point leaves the media hot spot.  The reader
 preserves the exact position, play/pause and canonical mute state, buffered
 ranges, and in-flight sparse network cache without issuing a second media
-request.  Closing either surface leaves the other running; closing the last
-lease lets video.el retire the player and any incomplete session cache.
-Explicit download remains separate.
+request.  Closing either video presentation leaves the other lease running;
+closing the last lease lets video.el retire the player and any incomplete
+session cache.  Closing the owning Chirp source also closes its managed
+dedicated reader.  Explicit external playback and download remain separate.
 
 ** Configuration
 

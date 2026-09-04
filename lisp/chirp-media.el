@@ -18,11 +18,14 @@
 (require 'warnings)
 (require 'plz)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-surface)
+
 (require 'appkit-projection)
 (require 'appkit-media-image)
 (require 'appkit-media-video)
 (require 'appkit-media-resource)
+(require 'appkit-media-effect)
+(require 'appkit-resource)
 (require 'video)
 (require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
@@ -59,7 +62,6 @@ Condensed cards use this as their cell scale.  Normal posts use twice this
 value as the reference width for a large single item or media carousel."
   :type 'integer
   :group 'chirp)
-
 
 (defcustom chirp-media-view-max-width 1200
   "Maximum image width in the media viewer."
@@ -162,7 +164,7 @@ When non-nil and `chirp-video-player-command' points to `mpv', Chirp adds
 `--geometry=WIDTHxHEIGHT' when launching external playback.  Other players
 ignore this setting."
   :type '(choice (const :tag "Player default" nil)
-                 (cons :tag "Width x Height" integer integer))
+          (cons :tag "Width x Height" integer integer))
   :group 'chirp)
 
 (defcustom chirp-video-playback-max-bitrate 2176000
@@ -276,7 +278,6 @@ media values happen to be equal."
 
 (defconst chirp-media--link-card-source-limit (* 256 1024)
   "Maximum bytes accepted from one background link-card response.")
-
 
 (defun chirp-media--curl-protocols (url)
   "Return curl's allowed protocols for uncredentialed URL."
@@ -475,89 +476,37 @@ Use FALLBACK-EXT when URL has no recognizable extension."
 
 ;;; Image Resources
 
-(defun chirp-media--finish-image-resource
-    (app resource-key entry status &optional file)
-  "Finish APP image ENTRY for RESOURCE-KEY with STATUS and optional FILE."
-  (when (appkit-app-live-p app)
-    (when-let* ((handle (plist-get entry :handle)))
-      (appkit-retire-handle handle)
-      (setf (plist-get entry :handle) nil))
-    (when (eq entry (gethash resource-key
-                             (appkit-app-resource-store app)))
-      (when (and (eq status 'ready)
-                 (not (chirp-media--valid-cache-file-p file)))
-        (when (and (stringp file) (file-exists-p file))
-          (ignore-errors (delete-file file)))
-        (setq status 'failed
-              file nil))
-      (setf (plist-get entry :status) status
-            (plist-get entry :file) file)
-      (dolist (view (plist-get entry :views))
-        (when (appkit-view-live-p view)
-          (appkit-request-sync view :resource resource-key :position t))))))
+(defun chirp-media--load-image-resource (context input resolve reject)
+  "Acquire INPUT with validated cache bytes and transport cancellation."
+  (let* ((cache-base (appkit-media-image-acquisition-cache-base input))
+         (cached (appkit-media-image-cache-existing-file cache-base))
+         (plz-curl-program chirp-media-prefetch-command)
+         (plz-curl-default-args chirp-media--safe-curl-default-args))
+    (if (and cached (chirp-media--valid-cache-file-p cached))
+        (progn (funcall resolve cached) nil)
+      (when (and cached (file-exists-p cached)) (delete-file cached))
+      (appkit-media-image-resource-load
+       context input
+       (lambda (file)
+         (if (chirp-media--valid-cache-file-p file)
+             (funcall resolve file)
+           (when (and (stringp file) (file-exists-p file)) (delete-file file))
+           (funcall reject "Downloaded image has invalid content")))
+       reject))))
 
-(cl-defun chirp-media-request-image-resource
-    (view resource-key source &key name)
-  "Acquire image SOURCE for RESOURCE-KEY on behalf of Appkit VIEW.
-
-The view's app owns and shares the transfer.  Completion invalidates only
-requesting live views.  A later request retries a failed acquisition.  NAME
-optionally supplies the source filename used for media type hints."
-  (when (and (appkit-view-live-p view)
-             resource-key
-             (stringp source)
-             (not (string-empty-p source))
+(cl-defun chirp-media-image-demand
+    (_view resource-key source &key name)
+  "Return a shared image demand for RESOURCE-KEY and SOURCE, without I/O."
+  (when (and resource-key (stringp source) (not (string-empty-p source))
              (chirp-media--prefetch-enabled-p))
-    (let* ((app (appkit-view-app view))
-           (store (appkit-app-resource-store app))
-           (current (gethash resource-key store)))
-      (cond
-       ((and (eq (plist-get current :status) 'ready)
-             (equal (plist-get current :source) source)
-             (chirp-media--valid-cache-file-p
-              (plist-get current :file)))
-        current)
-       ((and (eq (plist-get current :status) 'pending)
-             (equal (plist-get current :source) source))
-        (cl-pushnew view (plist-get current :views) :test #'eq)
-        current)
-       (t
-        (when (eq (plist-get current :status) 'pending)
-          (remhash resource-key store)
-          (when-let* ((handle (plist-get current :handle)))
-            (setf (plist-get current :handle) nil)
-            (appkit-cancel-handle handle)))
-        (let* ((cache-base (chirp-media-cache-base source "media"))
-               (cached (appkit-media-image-cache-existing-file cache-base))
-               (entry (list :source source :status 'pending :file nil
-                            :handle nil
-                            :views (cl-adjoin view (plist-get current :views)
-                                              :test #'eq)))
-               transfer)
-          (puthash resource-key entry store)
-          (if (and cached (chirp-media--valid-cache-file-p cached))
-              (setf (plist-get entry :status) 'ready
-                    (plist-get entry :file) cached)
-            (when (and cached (file-exists-p cached))
-              (ignore-errors (delete-file cached)))
-            (let ((plz-curl-program chirp-media-prefetch-command)
-                  (plz-curl-default-args chirp-media--safe-curl-default-args))
-              (setq transfer
-                    (appkit-media-cache-image-resource-async
-                     (appkit-media-resource-create :url source :name name)
-                     cache-base
-                     (lambda (file)
-                       (chirp-media--finish-image-resource
-                        app resource-key entry 'ready file))
-                     (lambda (_message)
-                       (chirp-media--finish-image-resource
-                        app resource-key entry 'failed))))))
-          (when (and (eq (plist-get entry :status) 'pending)
-                     (appkit-media-transfer-p transfer))
-            (setf (plist-get entry :handle)
-                  (appkit-register-handle
-                   app 'function transfer #'appkit-media-cancel-transfer)))
-          entry))))))
+    (appkit-resource-demand-create
+     :key resource-key
+     :input (appkit-media-image-acquisition-create
+             (appkit-media-resource-create :url source :name name)
+             (chirp-media-cache-base source "media"))
+     :loader #'chirp-media--load-image-resource
+     :acquisition-identity (list 'chirp-image source)
+     :sharing-policy 'shared :cache-policy 'while-interested)))
 
 (defun chirp-media--xchat-attachment-extension (attachment)
   "Return a safe cache extension hint for verified ATTACHMENT."
@@ -584,113 +533,93 @@ optionally supplies the source filename used for media type hints."
       (when (file-exists-p temporary)
         (delete-file temporary)))))
 
-(defun chirp-media--finish-xchat-attachment
-    (app resource-key entry attachment encrypted)
-  "In APP, finish RESOURCE-KEY's ENTRY for ATTACHMENT from ENCRYPTED bytes."
-  (condition-case _err
-      (let* ((plaintext
-              (chirp-xchat-native-decrypt-media-bytes
-               (plist-get entry :conversation-id)
-               (plist-get entry :key-version)
-               encrypted))
-             (hint (chirp-media--xchat-attachment-extension attachment))
-             (extension
-              (if (memq (plist-get attachment :kind)
-                        '(image gif svg media))
-                  (appkit-media-bytes-to-extension plaintext hint)
-                hint))
-             (file (format "%s.%s" (plist-get entry :cache-base) extension)))
-        (unwind-protect
-            (progn
-              (chirp-media--write-xchat-attachment plaintext file)
-              (chirp-media--finish-image-resource
-               app resource-key entry 'ready file))
-          (clear-string plaintext)))
-    (error
-     (chirp-media--finish-image-resource
-      app resource-key entry 'failed))))
+(defun chirp-media--load-xchat-attachment (_context input resolve reject)
+  "Acquire and decrypt INPUT with revocable transport ownership."
+  (let* ((app (plist-get input :app))
+         (source (plist-get input :source))
+         (attachment (plist-get input :attachment))
+         (cache-base (plist-get input :cache-base))
+         (hint (chirp-media--xchat-attachment-extension attachment))
+         (hint-file (format "%s.%s" cache-base hint))
+         (cached (or (and (chirp-media--valid-cache-file-p hint-file) hint-file)
+                     (appkit-media-image-cache-existing-file cache-base)))
+         (active t)
+         request)
+    (if (and cached (chirp-media--valid-cache-file-p cached))
+        (funcall resolve cached)
+      (setq request
+            (chirp-backend-dm-media
+             (nth 0 source) (nth 2 source)
+             (lambda (encrypted)
+               (unwind-protect
+                   (when active
+                     (if (not (and (appkit-app-live-p app)
+                                   (equal (plist-get input :epoch)
+                                          (chirp--session-xchat-native-epoch
+                                           (appkit-app-model app)))))
+                         (funcall reject "XChat media session changed")
+                       (condition-case err
+                           (let* ((chirp--app app)
+                                  (plaintext
+                                   (chirp-xchat-native-decrypt-media-bytes
+                                    (nth 0 source) (nth 1 source) encrypted)))
+                             (unwind-protect
+                                 (let* ((extension
+                                         (if (memq (plist-get attachment :kind)
+                                                   '(image gif svg media))
+                                             (appkit-media-bytes-to-extension plaintext hint)
+                                           hint))
+                                        (file (format "%s.%s" cache-base extension)))
+                                   (chirp-media--write-xchat-attachment plaintext file)
+                                   (funcall resolve file))
+                               (clear-string plaintext)))
+                         (error (funcall reject (error-message-string err))))))
+                 (clear-string encrypted)))
+             :errback (lambda (reason) (when active (funcall reject reason)))
+             :owner app)))
+    (appkit-cancellation-create
+     :kind 'transport
+     :cancel (lambda ()
+               (setq active nil)
+               (if (appkit-handle-p request)
+                   (appkit-cancel-handle request)
+                 (when request (chirp-x-cancel-request request)))))))
 
-(cl-defun chirp-media-request-xchat-attachment-resource
+(cl-defun chirp-media-xchat-attachment-demand
     (view resource-key attachment &key conversation-id key-version)
-  "Acquire encrypted XChat ATTACHMENT for RESOURCE-KEY in VIEW.
-
-CONVERSATION-ID and KEY-VERSION select the native media decryption key.
-Return RESOURCE-KEY only when the verified media metadata is usable."
+  "Return a demand for verified encrypted ATTACHMENT, without I/O."
   (let ((media-hash (plist-get attachment :media-hash)))
-    (when (and (appkit-view-live-p view)
-               resource-key
-               (stringp conversation-id)
-               (stringp key-version)
-               (stringp media-hash)
-               (not (string-empty-p media-hash))
+    (when (and (appkit-surface-p view) resource-key
+               (stringp conversation-id) (stringp key-version)
+               (stringp media-hash) (not (string-empty-p media-hash))
                (chirp-media--prefetch-enabled-p))
-      (let* ((app (appkit-view-app view))
-             (store (appkit-app-resource-store app))
-             (source (list conversation-id key-version media-hash))
-             (current (gethash resource-key store))
-             (cache-base
-              (chirp-media-cache-base
-               (mapconcat #'identity source ":") "xchat"))
-             (hint-file
-              (format "%s.%s" cache-base
-                      (chirp-media--xchat-attachment-extension attachment)))
-             (cached
-              (or (and (chirp-media--valid-cache-file-p hint-file) hint-file)
-                  (appkit-media-image-cache-existing-file cache-base))))
-        (cond
-         ((and (eq (plist-get current :status) 'ready)
-               (equal (plist-get current :source) source)
-               (chirp-media--valid-cache-file-p
-                (plist-get current :file))))
-         ((and (eq (plist-get current :status) 'pending)
-               (equal (plist-get current :source) source))
-          (cl-pushnew view (plist-get current :views) :test #'eq))
-         ((and (eq (plist-get current :status) 'failed)
-               (equal (plist-get current :source) source)))
-         (t
-          (let ((entry
-                 (list :source source :status 'pending :file nil :handle nil
-                       :conversation-id conversation-id
-                       :key-version key-version :cache-base cache-base
-                       :views (cl-adjoin view (plist-get current :views)
-                                         :test #'eq))))
-            (puthash resource-key entry store)
-            (if cached
-                (setf (plist-get entry :status) 'ready
-                      (plist-get entry :file) cached)
-              (chirp-backend-dm-media
-               conversation-id media-hash
-               (lambda (encrypted)
-                 (unwind-protect
-                     (chirp-media--finish-xchat-attachment
-                      app resource-key entry attachment encrypted)
-                   (clear-string encrypted)))
-               :errback
-               (lambda (_message)
-                 (chirp-media--finish-image-resource
-                  app resource-key entry 'failed))
-               :owner app)))))
-        resource-key))))
+      (let* ((app (appkit-surface-app view))
+             (epoch (chirp--session-xchat-native-epoch (appkit-app-model app)))
+             (source (list conversation-id key-version media-hash)))
+        (appkit-resource-demand-create
+         :key resource-key
+         :input (list :app app :epoch epoch :source source :attachment attachment
+                      :cache-base (chirp-media-cache-base
+                                   (mapconcat #'identity source ":") "xchat"))
+         :loader #'chirp-media--load-xchat-attachment
+         :acquisition-identity (list 'chirp-xchat
+                                     (appkit-loop-incarnation (appkit-app-loop app))
+                                     epoch source)
+         :sharing-policy 'shared :cache-policy 'while-interested)))))
 
 (defun chirp-media-xchat-resource-status (view resource-key)
-  "Return RESOURCE-KEY's XChat media status in VIEW, or nil."
-  (when (appkit-view-live-p view)
-    (plist-get
-     (gethash resource-key
-              (appkit-app-resource-store (appkit-view-app view)))
-     :status)))
+  "Return RESOURCE-KEY's coordinated status in VIEW, or nil."
+  (when-let* ((state (appkit-resource-state view resource-key)))
+    (appkit-resource-state-status state)))
 
 (defun chirp-media-xchat-resource (view resource-key attachment)
-  "Return RESOURCE-KEY as a canonical Appkit resource for ATTACHMENT in VIEW."
+  "Return only a ready, valid local RESOURCE-KEY file for ATTACHMENT."
   (appkit-media-resource-create
-   :file
-   (when (appkit-view-live-p view)
-     (let ((file
-            (plist-get
-             (gethash resource-key
-                      (appkit-app-resource-store (appkit-view-app view)))
-             :file)))
-       (and (stringp file) (chirp-media--valid-cache-file-p file) file)))
+   :file (when-let* ((state (appkit-resource-state view resource-key))
+                     ((eq (appkit-resource-state-status state) 'ready))
+                     (file (appkit-resource-state-value state))
+                     ((chirp-media--valid-cache-file-p file)))
+           file)
    :name (plist-get attachment :name)))
 
 (defun chirp-media--trusted-xchat-media-url-p (value)
@@ -709,42 +638,39 @@ Return RESOURCE-KEY only when the verified media metadata is usable."
                       (string-suffix-p ".twimg.com" host))))
          (error nil))))
 
-(cl-defun chirp-media-request-xchat-image-resource
+(cl-defun chirp-media-xchat-image-demand
     (view resource-key source &key name)
-  "Acquire allowlisted XChat image SOURCE for RESOURCE-KEY in VIEW.
-
-NAME optionally supplies the filename used for media type hints."
+  "Return VIEW's allowlisted image demand for RESOURCE-KEY, SOURCE and NAME."
   (when (chirp-media--trusted-xchat-media-url-p source)
-    (chirp-media-request-image-resource
-     view resource-key source :name name)
-    resource-key))
+    (chirp-media-image-demand
+     view resource-key source :name name)))
 
 (cl-defun chirp-media-insert-image-resource
     (view resource-key &key alternate-text help-echo)
-  "Insert VIEW's cached image RESOURCE-KEY and return its display status.
-
-Return `rendered', `pending', `failed', or `missing'.  ALTERNATE-TEXT and
-HELP-ECHO customize the accessible image action."
-  (let* ((entry (and (appkit-view-live-p view)
-                     (gethash resource-key
-                              (appkit-app-resource-store
-                               (appkit-view-app view)))))
-         (status (plist-get entry :status))
-         (file (plist-get entry :file))
-         (image (and (eq status 'ready)
-                     (chirp-media--valid-cache-file-p file)
-                     (appkit-media-preview-image-from-file file))))
+  "Insert VIEW's cached image RESOURCE-KEY and return its display status.\n\nReturn `rendered', `pending', `failed', or `missing'.  ALTERNATE-TEXT and\nHELP-ECHO customize the accessible image action."
+  (let*
+      ((entry
+        (appkit-resource-state view resource-key))
+       (status (and entry (appkit-resource-state-status entry)))
+       (file (and entry (appkit-resource-state-value entry)))
+       (image
+        (and (eq status 'ready) (chirp-media--valid-cache-file-p file)
+             (appkit-media-preview-image-from-file file))))
     (cond
      (image
-      (appkit-media-insert-image-slices
-       image (lambda () (appkit-media-open-file file))
-       nil (or alternate-text "[image]")
-       (or help-echo "Open image in Emacs"))
+      (appkit-media-insert-image-slices image
+                                        (lambda ()
+                                          (progn
+                                            (require 'chirp-media-view)
+                                            (chirp-media-open-local
+                                             view file 'image)))
+                                        nil
+                                        (or alternate-text "[image]")
+                                        (or help-echo
+                                            "Open image in Emacs"))
       'rendered)
-     ((eq status 'pending) 'pending)
-     ((eq status 'ready) 'failed)
-     (status status)
-     (t 'missing))))
+     ((eq status 'pending) 'pending) ((eq status 'ready) 'failed)
+     (status status) (t 'missing))))
 
 ;;; Task Scheduling
 
@@ -764,14 +690,12 @@ HELP-ECHO customize the accessible image action."
       :warning))))
 
 (defun chirp-media--invalidate-resource (resource)
-  "Invalidate live Appkit projections that depend on RESOURCE."
+  "Request dependent-row rendering for RESOURCE in live Chirp Surfaces."
   (when (appkit-app-live-p chirp--app)
-    (maphash
-     (lambda (_id view)
-       (when (and (appkit-projection-view-p view)
-                  (appkit-projection-dependent-keys view (list resource)))
-         (appkit-request-sync view :resource resource :position t)))
-     (appkit-app-view-registry chirp--app))))
+    (dolist (surface (appkit-app--surface-snapshot chirp--app))
+      (when (appkit-surface-live-p surface)
+        (appkit-surface-post surface
+                             (appkit-projection-change-create :resources (list resource)))))))
 
 (defun chirp-media--prefetch-finish (path success resource)
   "Finish a background prefetch for PATH with SUCCESS and RESOURCE."
@@ -1407,30 +1331,23 @@ When ANIMATED-GIF-P is non-nil, add a subtle GIF label to the badge."
              (not (string-empty-p url)))
     (list 'xchat-avatar identity)))
 
-(defun chirp-media-request-xchat-avatar-resource (view identity url)
-  "Request IDENTITY's avatar URL resource on behalf of VIEW.
-
-Return its stable resource key, or nil when IDENTITY or URL is unavailable."
+(defun chirp-media-xchat-avatar-demand (view identity url)
+  "Return VIEW's avatar demand for IDENTITY and URL without starting work."
   (when-let* ((resource-key
                (chirp-media-xchat-avatar-resource-key identity url)))
-    (chirp-media-request-image-resource
-     view resource-key url :name "avatar.jpg")
-    resource-key))
+    (chirp-media-image-demand
+     view resource-key url :name "avatar.jpg")))
 
-(defun chirp-media-avatar-resource-image (view resource-key &optional pixel-size)
-  "Return VIEW's cached avatar RESOURCE-KEY as an image descriptor.
-
-PIXEL-SIZE defaults to the current one-line avatar size."
-  (when-let* ((entry
-               (and (appkit-view-live-p view)
-                    (gethash resource-key
-                             (appkit-app-resource-store
-                              (appkit-view-app view)))))
-              ((eq (plist-get entry :status) 'ready))
-              (file (plist-get entry :file))
-              ((chirp-media--valid-cache-file-p file))
-              (size (max 1 (or pixel-size
-                               (chirp-media--avatar-pixel-size)))))
+(defun chirp-media-avatar-resource-image
+    (view resource-key &optional pixel-size)
+  "Return VIEW's cached avatar RESOURCE-KEY as an image descriptor.\n\nPIXEL-SIZE defaults to the current one-line avatar size."
+  (when-let*
+      ((entry
+        (appkit-resource-state view resource-key))
+       ((eq (appkit-resource-state-status entry) 'ready))
+       (file (appkit-resource-state-value entry))
+       ((chirp-media--valid-cache-file-p file))
+       (size (max 1 (or pixel-size (chirp-media--avatar-pixel-size)))))
     (or (appkit-media-circular-image-from-file file size)
         (chirp-media--scaled-image file size size))))
 
@@ -1444,6 +1361,7 @@ and slice metadata come from `appkit-media-preview-image-from-file'."
      file
      (or max-width chirp-media-thumbnail-size)
      (or max-height chirp-media-thumbnail-size))))
+
 (defun chirp-media--preview-image-from-file
     (file crop-spec max-width max-height)
   "Return a preview for FILE within MAX-WIDTH and MAX-HEIGHT.
@@ -1748,9 +1666,9 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
               (copy-sequence (plist-get media :variants)))))
       (let* ((sorted
               (sort variants
-                     (lambda (left right)
-                       (< (chirp-media--variant-bitrate left)
-                          (chirp-media--variant-bitrate right)))))
+                    (lambda (left right)
+                      (< (chirp-media--variant-bitrate left)
+                         (chirp-media--variant-bitrate right)))))
              (capped
               (and chirp-video-playback-max-bitrate
                    (cl-remove-if
@@ -1819,37 +1737,17 @@ overrides item widths; FIT may be `cover' to crop into those boxes."
     (user-error "Current media is not a video or GIF")))
 
 (defun chirp-media-play-video (media &optional external)
-  "Play video-like MEDIA.
-
-Use the configured external player when EXTERNAL is non-nil or internal
-playback is disabled.  Otherwise open a dedicated `video-mode' buffer.  Fall
-back to external playback if the internal player cannot start."
+  "Play video-like MEDIA externally or through its source Surface.
+Internal startup failure retains the configured external-player fallback."
   (unless (chirp-media-video-like-p media)
     (user-error "Current media is not a video or GIF"))
   (if (or external (not chirp-video-use-internal-player))
       (chirp-media--play-external media)
-    (if-let* ((session (chirp-media-video-session-create media)))
-        (condition-case error-data
-            (let (opened-p)
-              (unwind-protect
-                  (prog1
-                      (appkit-media-present-video-session
-                       session "Chirp" :start t)
-                    (setq opened-p t))
-                (unless opened-p
-                  (appkit-media-video-session-close session))))
-          (error
-           (display-warning
-            'chirp-media
-            (format "Internal video playback failed: %s"
-                    (error-message-string error-data))
-            :warning)
-           (chirp-media--play-external media)))
-      (user-error "Current media has no playable URL"))))
-
-(defun chirp-media--photo-file (media)
-  "Return a local file path for photo MEDIA."
-  (chirp-media-local-file (plist-get media :url) "media" "jpg"))
+    (unless (chirp-media-playback-url media)
+      (user-error "Current media has no playable URL"))
+    (require 'chirp-media-view)
+    (chirp-media-open-dedicated
+     (chirp-media-selection-create (list media) 0) "Chirp" nil t)))
 
 (defun chirp-media--video-file (media)
   "Return a local file path for video-like MEDIA."

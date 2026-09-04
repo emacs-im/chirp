@@ -21,7 +21,8 @@
 (require 'appkit-chat-timeline)
 (require 'appkit-scroll)
 (require 'appkit-evil)
-(require 'appkit-invalidation)
+(require 'appkit-surface)
+
 (require 'appkit-markup-codec)
 (require 'appkit-markup-codecs)
 (require 'appkit-markup-compose)
@@ -48,7 +49,7 @@
 Set this to nil to disable automatic pagination.  Manual loading with
 `chirp-dm-load-older-messages' remains available."
   :type '(choice (const :tag "Disable automatic pagination" nil)
-                 integer)
+          integer)
   :group 'chirp)
 
 (defcustom chirp-dm-attach-commands
@@ -67,7 +68,6 @@ Set this to nil to disable automatic pagination.  Manual loading with
   "Monotonic identity source for fresh direct-message views.")
 
 ;;; Constants
-
 
 (defconst chirp-dm-conversation--decrypt-request-key 'dm-decrypt
   "Operation key for one conversation view's signing-key retrieval.")
@@ -110,21 +110,21 @@ Set this to nil to disable automatic pagination.  Manual loading with
 
 (defun chirp-dm-conversation--state (view)
   "Return VIEW's validated XChat conversation state."
-  (let ((state (appkit-view-state view)))
-    (unless (and (listp state)
-                 (eq (plist-get state :type) 'dm-conversation)
-                 (plist-get state :instance)
-                 (listp (plist-get state :conversation)))
+  (let ((state (appkit-surface-model view)))
+    (unless
+        (and (listp state)
+             (eq (plist-get state :type) 'dm-conversation)
+             (plist-get state :instance)
+             (listp (plist-get state :conversation)))
       (error "Invalid Chirp direct-message conversation state"))
-    (chirp-dm-conversation--conversation state)
-    state))
+    (chirp-dm-conversation--conversation state) state))
 
 (defun chirp-dm-conversation--current-view ()
   "Return the current live direct-message conversation view, or nil."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
-              ((eq (plist-get state :type) 'dm-conversation)))
+  (when-let*
+      ((view (appkit-current-surface)) ((appkit-surface-live-p view))
+       (state (appkit-surface-model view))
+       ((eq (plist-get state :type) 'dm-conversation)))
     view))
 
 (defun chirp-dm-conversation--append-unique-events (current fetched)
@@ -144,7 +144,6 @@ Set this to nil to disable automatic pagination.  Manual loading with
           (push event additions))))
     (append current (nreverse additions))))
 
-
 (defun chirp-dm-conversation--events-overlap-p (left right)
   "Return non-nil when event lists LEFT and RIGHT share an identity."
   (let ((ids (make-hash-table :test #'equal)))
@@ -161,7 +160,6 @@ Set this to nil to disable automatic pagination.  Manual loading with
        (lambda (encoded)
          (list :id encoded :encoded-event encoded))
        (or (chirp-get envelope "encodedKeyEvents") nil))))
-
 
 ;;; Decryption and Recovery
 
@@ -371,80 +369,83 @@ CONVERSATION-ID and MESSAGE-ID identify their owning message."
      (chirp-dm-conversation--settle-decrypt-error
       state (error-message-string err)))))
 
-
-(defun chirp-dm-conversation--decrypt-view (view &optional key-history-loaded-p)
-  "Decrypt encrypted events in conversation VIEW.
-
-Unless KEY-HISTORY-LOADED-P is non-nil, fetch one older page first when the
-view has no conversation-key event."
-  (when (appkit-view-live-p view)
-    (let* ((state (chirp-dm-conversation--state view))
-           (input (chirp-dm-conversation--decrypt-input state))
-           (encoded (plist-get input :events))
-           (user-ids (plist-get input :user-ids))
-           (key-event-p
-            (cl-some
-             (lambda (event)
-               (eq (plist-get event :kind) 'conversation-key-change))
-             (append (plist-get state :recovery-key-events)
-                     (chirp-dm-conversation--events state)))))
+(defun chirp-dm-conversation--decrypt-view
+    (view &optional key-history-loaded-p)
+  "Decrypt encrypted events in conversation VIEW.\n\nUnless KEY-HISTORY-LOADED-P is non-nil, fetch one older page first when the\nview has no conversation-key event."
+  (when (appkit-surface-live-p view)
+    (let*
+        ((state (chirp-dm-conversation--state view))
+         (input (chirp-dm-conversation--decrypt-input state))
+         (encoded (plist-get input :events))
+         (user-ids (plist-get input :user-ids))
+         (key-event-p
+          (cl-some
+           (lambda (event)
+             (eq (plist-get event :kind) 'conversation-key-change))
+           (append (plist-get state :recovery-key-events)
+                   (chirp-dm-conversation--events state)))))
       (cond
        ((null encoded)
         (message "This conversation has no encoded XChat events"))
-       ((and (not key-event-p)
-             (not key-history-loaded-p)
+       ((and (not key-event-p) (not key-history-loaded-p)
              (plist-get state :older-available-p)
              (plist-get state :older-cursor)
-             (not (with-current-buffer (appkit-view-buffer view)
-                    (appkit-chat-history-loading-p))))
+             (not
+              (with-current-buffer (appkit-surface-buffer view)
+                (appkit-chat-history-loading-p))))
         (message "Loading XChat conversation-key history...")
         (chirp-dm-conversation--request view 'older))
        ((null user-ids)
-        (display-warning 'chirp "XChat signing-key users are unavailable" :warning))
+        (display-warning 'chirp
+                         "XChat signing-key users are unavailable"
+                         :warning))
        ((> (length user-ids) 100)
-        (display-warning 'chirp "XChat conversation has too many signing-key users" :warning))
+        (display-warning 'chirp
+                         "XChat conversation has too many signing-key users"
+                         :warning))
        (t
-        (let ((operation
-               (appkit-view-operation-begin
-                view chirp-dm-conversation--decrypt-request-key)))
+        (let ((operation view))
           (setf (plist-get state :decrypt-loading-p) t)
-          (chirp-backend-dm-signing-keys
-           user-ids
-           (lambda (signing-keys _envelope)
-             (when (appkit-view-operation-finish operation)
-               (chirp-dm-conversation--settle-decrypt-success
-                view state encoded signing-keys)))
-           :errback
-           (lambda (message)
-             (when (appkit-view-operation-finish operation)
-               (chirp-dm-conversation--settle-decrypt-error
-                state message)))
-           :owner operation)))))))
+          (chirp-backend-dm-signing-keys user-ids
+                                         (lambda
+                                           (signing-keys _envelope)
+                                           (when
+                                               (appkit-surface-live-p
+                                                operation)
+                                             (chirp-dm-conversation--settle-decrypt-success
+                                              view state encoded
+                                              signing-keys)))
+                                         :errback
+                                         (lambda (message)
+                                           (when
+                                               (appkit-surface-live-p
+                                                operation)
+                                             (chirp-dm-conversation--settle-decrypt-error
+                                              state message)))
+                                         :owner operation)))))))
 
 (defun chirp-dm-conversation-accept-live-event (view conversation)
-  "Process a canonical live update for CONVERSATION through matching VIEW.
-
-Return non-nil when VIEW represents CONVERSATION.  At most one decryption
-request remains active; a later live event is picked up after it settles."
-  (when (appkit-view-live-p view)
-    (let ((state (appkit-view-state view)))
-      (when (and (eq (plist-get state :type) 'dm-conversation)
-                 (eq (plist-get state :conversation) conversation))
-        (when (and (chirp-dm-conversation--decryption-needed-p state)
-                   (not (plist-get state :decrypt-loading-p)))
+  "Process a canonical live update for CONVERSATION through matching VIEW.\n\nReturn non-nil when VIEW represents CONVERSATION.  At most one decryption\nrequest remains active; a later live event is picked up after it settles."
+  (when (appkit-surface-live-p view)
+    (let ((state (appkit-surface-model view)))
+      (when
+          (and (eq (plist-get state :type) 'dm-conversation)
+               (eq (plist-get state :conversation) conversation))
+        (when
+            (and (chirp-dm-conversation--decryption-needed-p state)
+                 (not (plist-get state :decrypt-loading-p)))
           (chirp-dm-conversation--decrypt-view view t))
         t))))
 
 (defun chirp-dm-conversation-refresh-live-view (view)
-  "Start a fallback live refresh for conversation VIEW when it is idle.
-
-Return non-nil when the refresh was accepted."
-  (when (and (appkit-view-live-p view)
-             (eq (plist-get (appkit-view-state view) :type) 'dm-conversation)
-             (with-current-buffer (appkit-view-buffer view)
-               (not (appkit-chat-history-loading-p))))
-    (chirp-dm-conversation--request view 'refresh)
-    t))
+  "Start a fallback live refresh for conversation VIEW when it is idle.\n\nReturn non-nil when the refresh was accepted."
+  (when
+      (and (appkit-surface-live-p view)
+           (eq (plist-get (appkit-surface-model view) :type)
+               'dm-conversation)
+           (with-current-buffer (appkit-surface-buffer view)
+             (not (appkit-chat-history-loading-p))))
+    (chirp-dm-conversation--request view 'refresh) t))
 
 ;;; Conversation
 
@@ -460,10 +461,10 @@ Return non-nil when the refresh was accepted."
           :older-stalled-p nil
           :status (list :phase 'idle :message nil)
           :decrypt-loading-p nil
-          :send-error nil)))
+          :send-error nil
+          :pending-reactions (make-hash-table :test #'equal))))
 
 ;;;; Rendering
-
 
 ;;;; Composer
 
@@ -576,63 +577,93 @@ Return non-nil when the refresh was accepted."
     (view window position start)
   "Load older events for VIEW when WINDOW's POSITION approaches START."
   (ignore window)
-  (when (appkit-view-live-p view)
-    (with-current-buffer (appkit-view-buffer view)
-      (let* ((state (chirp-dm-conversation--state view))
-             (status (chirp-dm-conversation--status state)))
-        (when (and (eq (plist-get status :phase) 'idle)
-                   (plist-get state :older-cursor)
-                   (not (plist-get state :older-stalled-p))
-                   (appkit-chat-history-autoload-older-p
-                    position start chirp-dm-history-auto-load-threshold))
+  (when (appkit-surface-live-p view)
+    (with-current-buffer (appkit-surface-buffer view)
+      (let*
+          ((state (chirp-dm-conversation--state view))
+           (status (chirp-dm-conversation--status state)))
+        (when
+            (and (eq (plist-get status :phase) 'idle)
+                 (plist-get state :older-cursor)
+                 (not (plist-get state :older-stalled-p))
+                 (appkit-chat-history-autoload-older-p position start
+                                                       chirp-dm-history-auto-load-threshold))
           (chirp-dm-conversation--request view 'older))))))
 
-(defun chirp-dm-conversation--sync (view invalidations _events)
-  "Synchronize conversation VIEW for pending INVALIDATIONS."
-  (let* ((state (chirp-dm-conversation--state view))
-         (conversation (chirp-dm-conversation--conversation state))
-         (title
-          (chirp-dm-conversation--one-line
-           (plist-get conversation :title)))
-         (diff
-          (appkit-projection-diff-derive
-           invalidations
-           :existing-keys
-           (and (appkit-chat-timeline-live-p)
-                (appkit-chat-timeline-keys))
-           :reconcile-parts '(timeline)))
-         (slice
-          (appkit-chat-history-window-slice
-           (plist-get conversation :events)
-           (lambda (event) (plist-get event :id))))
-         (rows
-          (and (appkit-projection-diff-reconcile-p diff)
-               (plist-get slice :valid-p)
-               (chirp-dm-render-project-events
-                view conversation (plist-get slice :entries)))))
+(defun chirp-dm-conversation--sync (view _app state change)
+  "Render committed conversation STATE using projection CHANGE."
+  (let*
+      ((conversation (chirp-dm-conversation--conversation state))
+       (title
+        (chirp-dm-conversation--one-line
+         (plist-get conversation :title)))
+       (slice
+        (appkit-chat-history-window-slice
+         (plist-get conversation :events)
+         (lambda (event) (plist-get event :id))))
+       (resources (appkit-projection-change-resources change)))
     (unless (plist-get slice :valid-p)
-      (error "Invalid XChat history window: %s" (plist-get slice :reason)))
+      (error "Invalid XChat history window: %s"
+             (plist-get slice :reason)))
     (setq-local chirp--view-title
                 (format "DM: %s"
-                        (if (string-empty-p title) "Conversation" title)))
+                        (if (string-empty-p title) "Conversation"
+                          title)))
     (appkit-chat-timeline-run-preserving-position
      (lambda ()
-       (when (appkit-projection-diff-reconcile-p diff)
+       (when
+           (or (appkit-projection-change-full-p change)
+               (appkit-projection-change-geometry-p change)
+               (appkit-projection-change-resources change)
+               (appkit-projection-change-keys change))
          (appkit-chat-timeline-sync
-          rows
-          :force-keys (appkit-projection-diff-force-keys diff)
-          :changed-resources
-          (appkit-projection-diff-changed-dependencies diff)))
+          (chirp-dm-render-project-events view conversation
+                                          (plist-get slice :entries))
+          :force-keys
+          (if
+              (or (appkit-projection-change-geometry-p change)
+                  (memq 'all resources))
+              (appkit-chat-timeline-keys)
+            (appkit-projection-change-keys change))
+          :changed-resources resources))
        (appkit-chat-timeline-set-frame
         (chirp-dm-render-header conversation)
         (concat (chirp-dm-render-footer state)
-                (chirp-dm-conversation--reply-context-text state))
+                (chirp-dm-conversation--reply-context-text state)
+                (when-let* ((text (plist-get state :media-error)))
+                  (format "Media: %s\n" text)))
         :bind-input-function
         (lambda () (chirp-dm-conversation--bind-composer state))
         :composer-visible-p t)
        (chirp-dm-conversation--sync-composer-state state)))
     (when-let* ((observer (appkit-chat-timeline-scroll-observer)))
-      (appkit-scroll-observer-check observer))))
+      (appkit-scroll-observer-check observer))
+    (let (demands interests)
+      (dolist (event (chirp-dm-state-visible-events
+                      (plist-get slice :entries)))
+        (when (eq (plist-get event :kind) 'message)
+          (let* ((participant
+                  (chirp-dm-render--event-participant
+                   view (plist-get state :conversation) event))
+                 (avatar (chirp-media-xchat-avatar-demand
+                          view (plist-get participant :id)
+                          (plist-get participant :avatar-url)))
+                 (row-demands (append (and avatar (list avatar))
+                                      (chirp-dm-render--event-media-demands view event))))
+            (dolist (demand row-demands)
+              (push demand demands)
+              (let* ((key (appkit-resource-demand-key demand))
+                     (interest (cl-find key interests
+                                        :key #'appkit-resource-interest-key :test #'equal)))
+                (if interest
+                    (push (plist-get event :id) (appkit-resource-interest-row-keys interest))
+                  (push (appkit-resource-interest-create
+                         :key key :row-keys (list (plist-get event :id))) interests)))))))
+      (appkit-render-result-create
+       :resource-demands (cl-delete-duplicates demands :key #'appkit-resource-demand-key
+                                               :test #'equal)
+       :resource-interest-update
+       (appkit-resource-interest-update-create :mode 'replace :entries interests)))))
 
 (defun chirp-dm-conversation--establish-window (state)
   "Establish Appkit's exact history window from conversation STATE."
@@ -659,53 +690,43 @@ Return non-nil when the refresh was accepted."
    :footer ""))
 
 (defun chirp-dm-conversation--setup (view)
-  "Initialize Appkit chat controllers for conversation VIEW."
-  (appkit-view-enable-responsive-geometry view)
+  "Mount Appkit chat presentation for conversation VIEW."
   (let ((state (chirp-dm-conversation--state view)))
     (appkit-chatbuf-reset-state)
     (appkit-chat-history-reset-state)
     (chirp-dm-conversation--establish-window state)
-    (chirp-dm-conversation--ensure-timeline)
-    (appkit-chat-timeline-install-history-observer
-     view
-     :start-function
-     (lambda (window position start)
-       (chirp-dm-conversation--maybe-auto-load-older
-        view window position start)))
-    (appkit-invalidate view :structure t :parts '(frame timeline) :position t)
-    (appkit-sync-invalidations view)))
+    (chirp-dm-conversation--ensure-timeline)))
 
 ;;;; Requests
 
 (defun chirp-dm-conversation--history-current-p (view owner)
   "Return non-nil when OWNER owns VIEW's active history request."
-  (and (appkit-view-live-p view)
-       (with-current-buffer (appkit-view-buffer view)
+  (and (appkit-surface-live-p view)
+       (with-current-buffer (appkit-surface-buffer view)
          (appkit-chat-history-request-current-p owner))))
-
-
 
 (defun chirp-dm-conversation--settle-older-success
     (view state owner events envelope)
   "Settle OWNER's older request with EVENTS and ENVELOPE in VIEW STATE."
-  (when (with-current-buffer (appkit-view-buffer view)
-          (appkit-chat-history-request-end owner))
-    (let* ((conversation (chirp-dm-conversation--conversation state))
-           (current (plist-get conversation :events))
-           (old-first (and current (plist-get (car current) :id)))
-           (old-cursor (plist-get state :older-cursor))
-           (merged (chirp-dm-state-merge-events current events))
-           (new-first (and merged (plist-get (car merged) :id)))
-           (next-cursor (chirp-backend-envelope-next-cursor envelope))
-           (recovery-key-events
-            (chirp-dm-conversation--history-key-events envelope))
-           (complete (and (chirp-get-in envelope
-                                        '("pagination" "complete"))
-                          t))
-           (progressed (or (not (equal old-first new-first))
-                           (and next-cursor
-                                (not (equal old-cursor next-cursor)))))
-           (status (chirp-dm-conversation--status state)))
+  (when
+      (with-current-buffer (appkit-surface-buffer view)
+        (appkit-chat-history-request-end owner))
+    (let*
+        ((conversation (chirp-dm-conversation--conversation state))
+         (current (plist-get conversation :events))
+         (old-first (and current (plist-get (car current) :id)))
+         (old-cursor (plist-get state :older-cursor))
+         (merged (chirp-dm-state-merge-events current events))
+         (new-first (and merged (plist-get (car merged) :id)))
+         (next-cursor (chirp-backend-envelope-next-cursor envelope))
+         (recovery-key-events
+          (chirp-dm-conversation--history-key-events envelope))
+         (complete
+          (and (chirp-get-in envelope '("pagination" "complete")) t))
+         (progressed
+          (or (not (equal old-first new-first))
+              (and next-cursor (not (equal old-cursor next-cursor)))))
+         (status (chirp-dm-conversation--status state)))
       (chirp-dm-state-set-events conversation merged)
       (setf (plist-get state :recovery-key-events)
             (chirp-dm-conversation--append-unique-events
@@ -719,9 +740,9 @@ Return non-nil when the refresh was accepted."
               (copy-tree next-cursor)
               (plist-get conversation :has-more) t))
       (when (and new-first (not (equal old-first new-first)))
-        (with-current-buffer (appkit-view-buffer view)
+        (with-current-buffer (appkit-surface-buffer view)
           (appkit-chat-history-window-set new-first nil)))
-      (with-current-buffer (appkit-view-buffer view)
+      (with-current-buffer (appkit-surface-buffer view)
         (when complete
           (setf (plist-get conversation :older-cursor) nil
                 (plist-get conversation :has-more) nil)
@@ -733,28 +754,25 @@ Return non-nil when the refresh was accepted."
         (chirp-dm-conversation--decrypt-view view t)))))
 
 (cl-defun chirp-dm-conversation--settle-refresh-success
-    (view state owner conversation
-          &key recovery-key-events history-first-key history-cursor
-          older-complete-p)
-  "Settle refreshed CONVERSATION for OWNER in VIEW STATE.
-
-RECOVERY-KEY-EVENTS came from any history pages used to prove continuity.
-HISTORY-FIRST-KEY and HISTORY-CURSOR describe that bridge's older edge.
-OLDER-COMPLETE-P means those pages also reached the oldest remote edge."
-  (when (with-current-buffer (appkit-view-buffer view)
-          (appkit-chat-history-request-end owner))
-    (let* ((canonical (chirp-dm-conversation--conversation state))
-           (current (plist-get canonical :events))
-           (merged
-            (chirp-dm-state-merge-events
-             current (plist-get conversation :events)))
-           (first (and merged (plist-get (car merged) :id)))
-           (status (chirp-dm-conversation--status state)))
+    (view state owner conversation &key recovery-key-events
+          history-first-key history-cursor older-complete-p)
+  "Settle refreshed CONVERSATION for OWNER in VIEW STATE.\n\nRECOVERY-KEY-EVENTS came from any history pages used to prove continuity.\nHISTORY-FIRST-KEY and HISTORY-CURSOR describe that bridge's older edge.\nOLDER-COMPLETE-P means those pages also reached the oldest remote edge."
+  (when
+      (with-current-buffer (appkit-surface-buffer view)
+        (appkit-chat-history-request-end owner))
+    (let*
+        ((canonical (chirp-dm-conversation--conversation state))
+         (current (plist-get canonical :events))
+         (merged
+          (chirp-dm-state-merge-events current
+                                       (plist-get conversation :events)))
+         (first (and merged (plist-get (car merged) :id)))
+         (status (chirp-dm-conversation--status state)))
       (setf (plist-get conversation :title)
-            (chirp-dm-conversation--title
-             conversation (plist-get canonical :title)))
-      (chirp-dm-state-merge-snapshot
-       canonical conversation :events merged)
+            (chirp-dm-conversation--title conversation
+                                          (plist-get canonical :title)))
+      (chirp-dm-state-merge-snapshot canonical conversation :events
+                                     merged)
       (setf (plist-get state :recovery-key-events)
             (chirp-dm-conversation--append-unique-events
              (plist-get state :recovery-key-events)
@@ -768,16 +786,19 @@ OLDER-COMPLETE-P means those pages also reached the oldest remote edge."
               (plist-get state :older-stalled-p) nil
               (plist-get canonical :older-cursor) nil
               (plist-get canonical :has-more) nil)
-        (with-current-buffer (appkit-view-buffer view)
+        (with-current-buffer (appkit-surface-buffer view)
           (appkit-chat-history-window-set first nil)
           (appkit-chat-history-older-loaded-set t)))
        ((and history-first-key (equal first history-first-key))
-        (setf (plist-get state :older-cursor) (copy-tree history-cursor)
-              (plist-get state :older-available-p) (and history-cursor t)
+        (setf (plist-get state :older-cursor)
+              (copy-tree history-cursor)
+              (plist-get state :older-available-p)
+              (and history-cursor t)
               (plist-get state :older-stalled-p) nil
-              (plist-get canonical :older-cursor) (copy-tree history-cursor)
+              (plist-get canonical :older-cursor)
+              (copy-tree history-cursor)
               (plist-get canonical :has-more) (and history-cursor t))
-        (with-current-buffer (appkit-view-buffer view)
+        (with-current-buffer (appkit-surface-buffer view)
           (appkit-chat-history-window-set first nil)
           (appkit-chat-history-older-loaded-set (null history-cursor))))
        ((and (null current) first)
@@ -786,7 +807,7 @@ OLDER-COMPLETE-P means those pages also reached the oldest remote edge."
               (plist-get state :older-available-p)
               (plist-get conversation :has-more)
               (plist-get state :older-stalled-p) nil)
-        (with-current-buffer (appkit-view-buffer view)
+        (with-current-buffer (appkit-surface-buffer view)
           (unless (appkit-chat-history-window-seed-live first)
             (appkit-chat-history-window-set first nil))
           (appkit-chat-history-older-loaded-set
@@ -798,15 +819,21 @@ OLDER-COMPLETE-P means those pages also reached the oldest remote edge."
 (defun chirp-dm-conversation--settle-error
     (view state owner phase message)
   "Settle OWNER for PHASE with error MESSAGE in VIEW STATE."
-  (when (with-current-buffer (appkit-view-buffer view)
-          (appkit-chat-history-request-end owner))
+  (when
+      (with-current-buffer (appkit-surface-buffer view)
+        (appkit-chat-history-request-end owner))
     (let ((status (chirp-dm-conversation--status state)))
       (setf (plist-get status :phase) 'error
             (plist-get status :message) message)
-      (appkit-request-sync view :part 'frame :position t)
-      (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))
-      (when (and (eq phase 'refresh)
-                 (chirp-dm-conversation--decryption-needed-p state))
+      (appkit-surface-post view
+                           (appkit-projection-change-create :full-p t
+                                                            :frame-p t
+                                                            :position
+                                                            'preserve))
+      (message "%s" (replace-regexp-in-string "[\n]+" "  " message))
+      (when
+          (and (eq phase 'refresh)
+               (chirp-dm-conversation--decryption-needed-p state))
         (chirp-dm-conversation--decrypt-view view)))))
 
 (cl-defun chirp-dm-conversation--request-refresh-bridge
@@ -818,55 +845,61 @@ OLDER-COMPLETE-P means those pages also reached the oldest remote edge."
 CURSOR selects the next older history page, RECOVERY-KEY-EVENTS accumulates
 its key history, and REMAINING bounds the automatic page count."
   (when (chirp-dm-conversation--history-current-p view owner)
-    (chirp-backend-dm-history
-     (chirp-dm-conversation--id state)
-     cursor
-     (lambda (events envelope)
-       (when (chirp-dm-conversation--history-current-p view owner)
-         (let* ((bridged (copy-sequence conversation))
-                (bridged-events
-                 (chirp-dm-state-merge-events
-                  (plist-get conversation :events) events))
-                (key-events
-                 (chirp-dm-conversation--append-unique-events
-                  recovery-key-events
-                  (chirp-dm-conversation--history-key-events envelope)))
-                (next-cursor
-                 (chirp-backend-envelope-next-cursor envelope))
-                (complete
-                 (and (chirp-get-in envelope
-                                    '("pagination" "complete"))
-                      t)))
-           (setf (plist-get bridged :events) bridged-events)
-           (cond
-            ((chirp-dm-conversation--events-overlap-p
-              (chirp-dm-conversation--events state) bridged-events)
-             (chirp-dm-conversation--settle-refresh-success
-              view state owner bridged
-              :recovery-key-events key-events
-              :history-first-key
-              (plist-get (car bridged-events) :id)
-              :history-cursor next-cursor
-              :older-complete-p complete))
-            ((and (not complete)
-                  next-cursor
-                  (not (equal cursor next-cursor))
-                  (> remaining 1))
-             (chirp-dm-conversation--request-refresh-bridge
-              view state owner bridged
-              :cursor next-cursor
-              :recovery-key-events key-events
-              :remaining (1- remaining)))
-            (t
-             (chirp-dm-conversation--settle-error
-              view state owner 'refresh
-              "XChat history could not bridge the visible timeline"))))))
-     :max-results chirp-dm-history-page-size
-     :errback
-     (lambda (text)
-       (chirp-dm-conversation--settle-error
-        view state owner 'refresh text))
-     :owner owner)))
+    (let ((request
+            (chirp-backend-dm-history
+             (chirp-dm-conversation--id state)
+             cursor
+             (lambda (events envelope)
+               (when (chirp-dm-conversation--history-current-p view owner)
+                 (let* ((bridged (copy-sequence conversation))
+                        (bridged-events
+                         (chirp-dm-state-merge-events
+                          (plist-get conversation :events) events))
+                        (key-events
+                         (chirp-dm-conversation--append-unique-events
+                          recovery-key-events
+                          (chirp-dm-conversation--history-key-events envelope)))
+                        (next-cursor
+                         (chirp-backend-envelope-next-cursor envelope))
+                        (complete
+                         (and (chirp-get-in envelope
+                                            '("pagination" "complete"))
+                              t)))
+                   (setf (plist-get bridged :events) bridged-events)
+                   (cond
+                    ((chirp-dm-conversation--events-overlap-p
+                      (chirp-dm-conversation--events state) bridged-events)
+                     (chirp-dm-conversation--settle-refresh-success
+                      view state owner bridged
+                      :recovery-key-events key-events
+                      :history-first-key
+                      (plist-get (car bridged-events) :id)
+                      :history-cursor next-cursor
+                      :older-complete-p complete))
+                    ((and (not complete)
+                          next-cursor
+                          (not (equal cursor next-cursor))
+                          (> remaining 1))
+                     (chirp-dm-conversation--request-refresh-bridge
+                      view state owner bridged
+                      :cursor next-cursor
+                      :recovery-key-events key-events
+                      :remaining (1- remaining)))
+                    (t
+                     (chirp-dm-conversation--settle-error
+                      view state owner 'refresh
+                      "XChat history could not bridge the visible timeline"))))))
+             :max-results chirp-dm-history-page-size
+             :errback
+             (lambda (text)
+               (chirp-dm-conversation--settle-error
+                view state owner 'refresh text))
+             :owner view)))
+      (when-let* ((handle (if (appkit-handle-p request) request
+                            (and (buffer-live-p request)
+                                 (buffer-local-value 'chirp-x--request-handle request))))
+                  ((appkit-handle-alive-p handle)))
+        (appkit-chat-history-request-bind-handle owner handle)))))
 
 (defun chirp-dm-conversation--accept-refresh-success
     (view state owner conversation)
@@ -894,73 +927,95 @@ Disjoint focused fragments are bridged through older history before merging."
     (error "Unknown XChat conversation request phase: %S" phase))
   (let* ((state (chirp-dm-conversation--state view))
          (status (chirp-dm-conversation--status state))
-         owner)
-    (setf (plist-get status :phase) 'idle
-          (plist-get status :message) nil)
-    (with-current-buffer (appkit-view-buffer view)
+         owner request)
+    (setf (plist-get status :phase) 'idle (plist-get status :message) nil)
+    (with-current-buffer (appkit-surface-buffer view)
       (setq owner (appkit-chat-history-request-start view phase)))
-    (appkit-request-sync view :part 'frame :position t)
-    (pcase phase
-      ('older
-       (chirp-backend-dm-history
-        (chirp-dm-conversation--id state)
-        (plist-get state :older-cursor)
-        (lambda (events envelope)
-          (chirp-dm-conversation--settle-older-success
-           view state owner events envelope))
-        :max-results chirp-dm-history-page-size
-        :errback
-        (lambda (text)
-          (chirp-dm-conversation--settle-error
-           view state owner phase text))
-        :owner owner))
-      ('refresh
-       (chirp-backend-dm-conversation-data
-        (chirp-dm-conversation--id state)
-        (lambda (conversation _envelope)
-          (chirp-dm-conversation--accept-refresh-success
-           view state owner conversation))
-        :errback
-        (lambda (text)
-          (chirp-dm-conversation--settle-error
-           view state owner phase text))
-        :owner owner)))))
+    (appkit-surface-post
+     view (appkit-projection-change-create :full-p t :frame-p t :position 'preserve))
+    (setq request
+          (pcase phase
+            ('older
+             (chirp-backend-dm-history
+              (chirp-dm-conversation--id state) (plist-get state :older-cursor)
+              (lambda (events envelope)
+                (chirp-dm-conversation--settle-older-success view state owner events envelope))
+              :max-results chirp-dm-history-page-size
+              :errback (lambda (text)
+                         (chirp-dm-conversation--settle-error view state owner phase text))
+              :owner view))
+            ('refresh
+             (chirp-backend-dm-conversation-data
+              (chirp-dm-conversation--id state)
+              (lambda (conversation _envelope)
+                (chirp-dm-conversation--accept-refresh-success view state owner conversation))
+              :errback (lambda (text)
+                         (chirp-dm-conversation--settle-error view state owner phase text))
+              :owner view))))
+    (when-let* ((handle (if (appkit-handle-p request) request
+                          (and (buffer-live-p request)
+                               (buffer-local-value 'chirp-x--request-handle request))))
+                ((appkit-handle-alive-p handle)))
+      (appkit-chat-history-request-bind-handle owner handle))
+    request))
 
 ;;;; Sending
 
-(defun chirp-dm-conversation--settle-send-error (view state owner message)
+(defun chirp-dm-conversation--settle-send-error
+    (view state owner message)
   "Settle Appkit send OWNER in VIEW and STATE with error MESSAGE."
   (when
-      (appkit-with-live-view view
-        (when (and (bound-and-true-p appkit-compose-session-mode)
-                   (appkit-compose-operation-finish owner))
-          (setq buffer-read-only nil)
-          (setf (plist-get state :send-error) message)
-          t))
-    (appkit-request-sync view :part 'frame :position t)
-    (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
+      (and (appkit-surface-live-p view)
+           (eq state (appkit-surface-model view))
+           (with-current-buffer (appkit-surface-buffer view)
+             (when
+                 (and
+                  (bound-and-true-p
+                   appkit-compose-session-mode)
+                  (appkit-compose-operation-finish
+                   owner))
+               (setq buffer-read-only nil)
+               (setf (plist-get state :send-error)
+                     message)
+               t)))
+    (appkit-surface-post view
+                         (appkit-projection-change-create :full-p t
+                                                          :frame-p t
+                                                          :position
+                                                          'preserve))
+    (message "%s" (replace-regexp-in-string "[\n]+" "  " message))))
 
 (defun chirp-dm-conversation--settle-send-success
     (view state owner text reply-p)
-  "Settle acknowledged Appkit send OWNER for TEXT in VIEW and STATE.
-
-When REPLY-P is non-nil, clear the reply context owned by the acknowledged
-composer capture."
+  "Settle acknowledged Appkit send OWNER for TEXT in VIEW and STATE.\n\nWhen REPLY-P is non-nil, clear the reply context owned by the acknowledged\ncomposer capture."
   (when
-      (appkit-with-live-view view
-        (when (and (bound-and-true-p appkit-compose-session-mode)
-                   (appkit-compose-operation-finish owner))
-          (setq buffer-read-only nil)
-          (setf (plist-get state :send-error) nil)
-          (unless (string-empty-p (string-trim text))
-            (appkit-chatbuf-input-history-push text))
-          (appkit-chatbuf-input-set-text "")
-          (when reply-p
-            (appkit-chatbuf-aux-reset))
-          t))
-    (appkit-request-sync view :part 'frame :position t)
+      (and (appkit-surface-live-p view)
+           (eq state (appkit-surface-model view))
+           (with-current-buffer (appkit-surface-buffer view)
+             (when
+                 (and
+                  (bound-and-true-p
+                   appkit-compose-session-mode)
+                  (appkit-compose-operation-finish
+                   owner))
+               (setq buffer-read-only nil)
+               (setf (plist-get state :send-error) nil)
+               (unless
+                   (string-empty-p (string-trim text))
+                 (appkit-chatbuf-input-history-push
+                  text))
+               (appkit-chatbuf-input-set-text "")
+               (when reply-p
+                 (appkit-chatbuf-aux-reset))
+               t)))
+    (appkit-surface-post view
+                         (appkit-projection-change-create :full-p t
+                                                          :frame-p t
+                                                          :position
+                                                          'preserve))
     (chirp-dm-conversation--request view 'refresh)
-    (message "%s sent" (if reply-p "Direct-message reply" "Direct message"))))
+    (message "%s sent"
+             (if reply-p "Direct-message reply" "Direct message"))))
 
 ;;;; Commands
 
@@ -1124,38 +1179,43 @@ composer capture."
   "Encrypt and send the current XChat composer input once."
   (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
-      (let* ((state (chirp-dm-conversation--state view))
-             (aux (appkit-chatbuf-aux-state))
-             (reply-p (eq (plist-get aux :aux-type) 'reply))
-             (reply-target (and reply-p
-                                (chirp-dm-conversation--reply-target state)))
-             request capture owner transport-operation text attachments)
+      (let*
+          ((state (chirp-dm-conversation--state view))
+           (aux (appkit-chatbuf-aux-state))
+           (reply-p (eq (plist-get aux :aux-type) 'reply))
+           (reply-target
+            (and reply-p (chirp-dm-conversation--reply-target state)))
+           request capture owner transport-operation text attachments)
         (unless (appkit-chatbuf-point-in-input-p)
           (user-error "Point is not in the direct-message composer"))
         (when (appkit-compose-operation-active-p)
           (user-error "A direct message is already being sent"))
         (when (and reply-p (null reply-target))
-          (user-error "Direct-message reply target is no longer available"))
-        (when (and reply-target
-                   (not (stringp (plist-get reply-target :encoded-event))))
-          (user-error "Direct-message reply target has no raw XChat event"))
+          (user-error
+           "Direct-message reply target is no longer available"))
+        (when
+            (and reply-target
+                 (not
+                  (stringp (plist-get reply-target :encoded-event))))
+          (user-error
+           "Direct-message reply target has no raw XChat event"))
         (setq capture
-              (condition-case nil
-                  (appkit-markup-compose-capture)
+              (condition-case nil (appkit-markup-compose-capture)
                 (appkit-markup-object-rejected
-                 (user-error "XChat composer contains an unsupported object")))
+                 (user-error
+                  "XChat composer contains an unsupported object")))
               text
               (appkit-markup-compose-output-source
                (appkit-markup-compose-output capture 'plain))
               attachments
               (chirp-dm-conversation--capture-attachments capture))
-        (when (and (string-empty-p (string-trim text))
-                   (null attachments))
+        (when
+            (and (string-empty-p (string-trim text))
+                 (null attachments))
           (user-error "Direct message is empty"))
         (setq owner
               (appkit-compose-operation-begin
-               (if reply-p 'dm-reply 'dm-send)
-               :generation
+               (if reply-p 'dm-reply 'dm-send) :generation
                (appkit-markup-compose-capture-generation capture)
                :label
                (cond
@@ -1167,64 +1227,75 @@ composer capture."
                :cancel-function
                (lambda ()
                  (when transport-operation
-                   (appkit-view-operation-cancel view 'dm-send))
-                 (chirp-dm-conversation--settle-send-error
-                  view state owner "Direct message send canceled"))))
-        (setq transport-operation
-              (appkit-view-operation-begin view 'dm-send))
+                   (cond
+                    ((appkit-handle-p request)
+                     (appkit-cancel-handle request))
+                    ((buffer-live-p request)
+                     (chirp-x-cancel-request request))))
+                 (chirp-dm-conversation--settle-send-error view state
+                                                           owner
+                                                           "Direct message send canceled"))))
+        (setq transport-operation view)
         (setf (plist-get state :send-error) nil)
         (setq buffer-read-only t)
-        (appkit-request-sync view :part 'frame :position t)
-        (let ((success
-               (lambda (_event _envelope)
-                 (when (appkit-view-operation-finish transport-operation)
-                   (chirp-dm-conversation--settle-send-success
-                    view state owner text reply-p))))
-              (failure
-               (lambda (message)
-                 (when (appkit-view-operation-finish transport-operation)
-                   (chirp-dm-conversation--settle-send-error
-                    view state owner message)))))
+        (appkit-surface-post view
+                             (appkit-projection-change-create :full-p
+                                                              t
+                                                              :frame-p
+                                                              t
+                                                              :position
+                                                              'preserve))
+        (let
+            ((success
+              (lambda (_event _envelope)
+                (when (appkit-surface-live-p transport-operation)
+                  (chirp-dm-conversation--settle-send-success view
+                                                              state
+                                                              owner
+                                                              text
+                                                              reply-p))))
+             (failure
+              (lambda (message)
+                (when (appkit-surface-live-p transport-operation)
+                  (chirp-dm-conversation--settle-send-error view state
+                                                            owner
+                                                            message)))))
           (condition-case err
               (setq request
                     (cond
                      (attachments
                       (chirp-backend-dm-send-attachments
-                       (chirp-dm-conversation--id state)
-                       text attachments success
-                       :target-event
+                       (chirp-dm-conversation--id state) text
+                       attachments success :target-event
                        (and reply-p
                             (plist-get reply-target :encoded-event))
                        :key-events
                        (and reply-p
                             (chirp-dm-conversation--reply-key-events
                              state reply-target))
-                       :errback failure
-                       :owner transport-operation))
+                       :errback failure :owner transport-operation))
                      (reply-p
                       (chirp-backend-dm-send-reply
-                       (chirp-dm-conversation--id state)
-                       text
+                       (chirp-dm-conversation--id state) text
                        (plist-get reply-target :encoded-event)
-                       (chirp-dm-conversation--reply-key-events
-                        state reply-target)
-                       success
-                       :errback failure
-                       :owner transport-operation))
+                       (chirp-dm-conversation--reply-key-events state
+                                                                reply-target)
+                       success :errback failure :owner
+                       transport-operation))
                      (t
                       (chirp-backend-dm-send-text
                        (chirp-dm-conversation--id state) text success
-                       :errback failure
-                       :owner transport-operation))))
+                       :errback failure :owner transport-operation))))
             ((error quit)
-             (when (appkit-view-operation-finish transport-operation)
-               (chirp-dm-conversation--settle-send-error
-                view state owner (error-message-string err)))
+             (when (appkit-surface-live-p transport-operation)
+               (chirp-dm-conversation--settle-send-error view state
+                                                         owner
+                                                         (error-message-string
+                                                          err)))
              (signal (car err) (cdr err)))))
-        (when (appkit-view-operation-current-p transport-operation)
+        (when (appkit-compose-operation-current-p owner)
           (message "%s..."
-                   (if reply-p
-                       "Sending direct-message reply"
+                   (if reply-p "Sending direct-message reply"
                      "Sending direct message")))
         request)
     (user-error "Current view is not a direct-message conversation")))
@@ -1263,27 +1334,30 @@ composer capture."
   "Set the message at point as the next direct-message reply target."
   (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
-      (let* ((state (chirp-dm-conversation--state view))
-             (event
-              (chirp-dm-conversation--target-event-at-point
-               state "be replied to"))
-             (message-id
-              (or (plist-get event :sequence-id)
-                  (plist-get event :id))))
+      (let*
+          ((state (chirp-dm-conversation--state view))
+           (event
+            (chirp-dm-conversation--target-event-at-point state
+                                                          "be replied to"))
+           (message-id
+            (or (plist-get event :sequence-id) (plist-get event :id))))
         (when (appkit-compose-operation-active-p)
           (user-error "A direct message is already being sent"))
         (appkit-chatbuf-aux-set
-         (list :aux-type 'reply
-               :aux-msg event
-               :message-id message-id))
-        (appkit-request-sync view :part 'frame :position t)
+         (list :aux-type 'reply :aux-msg event :message-id message-id))
+        (appkit-surface-post view
+                             (appkit-projection-change-create :full-p
+                                                              t
+                                                              :frame-p
+                                                              t
+                                                              :position
+                                                              'preserve))
         (appkit-chatbuf-focus-input)
         (message "Next direct message will reply to %s" message-id))
     (user-error "Current view is not a direct-message conversation")))
 
 (defun chirp-dm-cancel-reply ()
-  "Cancel the current direct-message reply context."
-  (interactive)
+  "Cancel the current direct-message reply context." (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
       (progn
         (when (appkit-compose-operation-active-p)
@@ -1291,7 +1365,10 @@ composer capture."
         (if (eq (appkit-chatbuf-aux-type) 'reply)
             (progn
               (appkit-chatbuf-aux-reset)
-              (appkit-request-sync view :part 'frame :position t)
+              (appkit-surface-post view
+                                   (appkit-projection-change-create
+                                    :full-p t :frame-p t :position
+                                    'preserve))
               (message "Direct-message reply cancelled"))
           (message "No direct-message reply is active")))
     (user-error "Current view is not a direct-message conversation")))
@@ -1319,77 +1396,84 @@ composer capture."
       (plist-get (car (plist-get event :reactions)) :emoji)
       "👍"))
 
-(defun chirp-dm-conversation--settle-reaction-error (operation message)
+(defun chirp-dm-conversation--settle-reaction-error
+    (operation message)
   "Settle reaction OPERATION with error MESSAGE."
-  (when (appkit-view-operation-finish operation)
-    (message "%s" (replace-regexp-in-string "[\r\n]+" "  " message))))
+  (when (chirp-dm-conversation--finish-reaction operation)
+    (message "%s" (replace-regexp-in-string "[\n]+" "  " message))))
 
 (defun chirp-dm-conversation--settle-reaction-success
     (view state operation event emoji remove-p)
-  "Settle acknowledged reaction OPERATION with EVENT in VIEW and STATE.
-
-EMOJI and REMOVE-P describe the acknowledged operation."
-  (when (appkit-view-operation-finish operation)
+  "Settle acknowledged reaction OPERATION with EVENT in VIEW and STATE.\n\nEMOJI and REMOVE-P describe the acknowledged operation."
+  (when (chirp-dm-conversation--finish-reaction operation)
     (let ((conversation (chirp-dm-conversation--conversation state)))
-      (chirp-dm-state-set-events
-       conversation
-       (chirp-dm-state-merge-events
-        (plist-get conversation :events) (list event)))
+      (chirp-dm-state-set-events conversation
+                                 (chirp-dm-state-merge-events
+                                  (plist-get conversation :events)
+                                  (list event)))
       (chirp-dm-state-publish conversation)
-      (when (and (chirp-dm-conversation--decryption-needed-p state)
-                 (not (plist-get state :decrypt-loading-p)))
+      (when
+          (and (chirp-dm-conversation--decryption-needed-p state)
+               (not (plist-get state :decrypt-loading-p)))
         (chirp-dm-conversation--decrypt-view view t)))
-    (message "Reaction %s: %s"
-             (if remove-p "removed" "added") emoji)))
+    (message "Reaction %s: %s" (if remove-p "removed" "added") emoji)))
 
 (defun chirp-dm-toggle-reaction (&optional emoji)
   "Toggle the current user's EMOJI reaction on the message at point."
   (interactive)
   (if-let* ((view (chirp-dm-conversation--current-view)))
-      (let* ((state (chirp-dm-conversation--state view))
-             (event
-              (chirp-dm-conversation--target-event-at-point
-               state "receive a reaction"))
-             (default (chirp-dm-conversation--default-reaction event))
-             (emoji
-              (string-trim
-               (or emoji
-                   (read-string (format-prompt "Reaction" default)
-                                nil nil default))))
-             (target-id
-              (or (plist-get event :sequence-id)
-                  (plist-get event :id)))
-             (key (list 'dm-reaction target-id emoji))
-             (remove-p
-              (and (chirp-dm-conversation--reaction-selected-p event emoji)
-                   t))
-             operation request)
+      (let*
+          ((state (chirp-dm-conversation--state view))
+           (event
+            (chirp-dm-conversation--target-event-at-point state
+                                                          "receive a reaction"))
+           (default (chirp-dm-conversation--default-reaction event))
+           (emoji
+            (string-trim
+             (or emoji
+                 (read-string (format-prompt "Reaction" default) nil
+                              nil default))))
+           (target-id
+            (or (plist-get event :sequence-id) (plist-get event :id)))
+           (key (list 'dm-reaction target-id emoji))
+           (remove-p
+            (and
+             (chirp-dm-conversation--reaction-selected-p event emoji)
+             t))
+           operation request)
         (when (string-empty-p emoji)
           (user-error "Reaction emoji cannot be empty"))
-        (when (gethash key (appkit-view-request-table view))
+        (when
+            (gethash key
+                     (plist-get state :pending-reactions))
           (user-error "This reaction operation is already running"))
-        (setq operation (appkit-view-operation-begin view key))
+        (setq operation (list :surface view :state state :key key))
         (condition-case err
             (setq request
-                  (chirp-backend-dm-send-reaction
-                   (chirp-dm-conversation--id state)
-                   (plist-get event :encoded-event)
-                   emoji remove-p
-                   (lambda (acknowledged _envelope)
-                     (chirp-dm-conversation--settle-reaction-success
-                      view state operation acknowledged emoji remove-p))
-                   :errback
-                   (lambda (text)
-                     (chirp-dm-conversation--settle-reaction-error
-                      operation text))
-                   :owner operation))
+                  (progn
+                    (puthash key operation
+                             (plist-get state :pending-reactions))
+                    (chirp-backend-dm-send-reaction
+                     (chirp-dm-conversation--id state)
+                     (plist-get event :encoded-event) emoji remove-p
+                     (lambda (acknowledged _envelope)
+                       (chirp-dm-conversation--settle-reaction-success
+                        view state operation acknowledged emoji
+                        remove-p))
+                     :errback
+                     (lambda (text)
+                       (chirp-dm-conversation--settle-reaction-error
+                        operation text))
+                     :owner view)))
           ((error quit)
-           (chirp-dm-conversation--settle-reaction-error
-            operation (error-message-string err))
+           (chirp-dm-conversation--settle-reaction-error operation
+                                                         (error-message-string
+                                                          err))
            (signal (car err) (cdr err))))
-        (when (appkit-view-operation-current-p operation)
-          (message "%s reaction..."
-                   (if remove-p "Removing" "Adding")))
+        (when
+            (eq operation
+                (gethash key (plist-get state :pending-reactions)))
+          (message "%s reaction..." (if remove-p "Removing" "Adding")))
         request)
     (user-error "Current view is not a direct-message conversation")))
 
@@ -1510,38 +1594,61 @@ EMOJI and REMOVE-P describe the acknowledged operation."
   (appkit-chatbuf-use-timeline-mode #'chirp-dm-conversation--timeline-mode))
 
 (cl-defun chirp-dm-conversation-open (conversation &key refresh-p)
-  "Open a fresh chat view for normalized CONVERSATION.
-
-When REFRESH-P is non-nil, fetch focused conversation data before decryption."
-  (unless (and (listp conversation)
-               (stringp (plist-get conversation :id)))
+  "Open a fresh chat view for normalized CONVERSATION.\n\nWhen REFRESH-P is non-nil, fetch focused conversation data before decryption."
+  (unless
+      (and (listp conversation) (stringp (plist-get conversation :id)))
     (user-error "Direct-message conversation is invalid"))
-  (let* ((instance (cl-incf chirp-dm-conversation--next-instance))
-         (title
-          (chirp-dm-conversation--one-line
-           (plist-get conversation :title)))
-         (view
-          (appkit-open-view
-           :app (chirp-app)
-           :id (list 'dm-conversation instance)
-           :mode 'chirp-dm-conversation--mode
-           :buffer-name
-           (chirp--format-buffer-name
-            (format "DM: %s"
-                    (if (string-empty-p title) "Conversation" title)))
-           :state
-           (chirp-dm-conversation--make-state instance conversation)
-           :sync-function #'chirp-dm-conversation--sync
-           :parts '(frame timeline composer geometry)
-           :position-policy 'chirp-dm-message-id
-           :setup #'chirp-dm-conversation--setup
-           :select t)))
-    (if refresh-p
-        (chirp-dm-conversation--request view 'refresh)
-      (when (chirp-dm-conversation--decryption-needed-p
-             (appkit-view-state view))
+  (let*
+      ((instance (cl-incf chirp-dm-conversation--next-instance))
+       (title
+        (chirp-dm-conversation--one-line
+         (plist-get conversation :title)))
+       (view
+        (chirp-open-projection-view :id
+                                    (list 'dm-conversation instance)
+                                    :mode 'chirp-dm-conversation--mode
+                                    :title
+                                    (format "DM: %s"
+                                            (if (string-empty-p title)
+                                                "Conversation"
+                                              title))
+                                    :state
+                                    (chirp-dm-conversation--make-state
+                                     instance conversation)
+                                    :render-function
+                                    #'chirp-dm-conversation--sync
+                                    :anchor-property
+                                    'chirp-dm-message-id :setup
+                                    #'chirp-dm-conversation--setup
+                                    :select t :ready
+                                    #'chirp-dm-conversation--surface-ready)))
+    (if refresh-p (chirp-dm-conversation--request view 'refresh)
+      (when
+          (chirp-dm-conversation--decryption-needed-p
+           (appkit-surface-model view))
         (chirp-dm-conversation--decrypt-view view)))
-    (appkit-view-buffer view)))
+    (appkit-surface-buffer view)))
+
+(defun chirp-dm-conversation--surface-ready (surface)
+  "Install live chat observers after SURFACE finishes mounting."
+  (appkit-surface-post surface
+                       (appkit-projection-change-create :full-p t :frame-p t))
+  (appkit-chat-timeline-install-history-observer
+   surface :start-function
+   (lambda (window position start)
+     (chirp-dm-conversation--maybe-auto-load-older surface window position start))))
+
+(defun chirp-dm-conversation--finish-reaction (operation)
+  "Consume exact pending reaction OPERATION and return its live Surface."
+  (let* ((surface (plist-get operation :surface))
+         (state (plist-get operation :state))
+         (key (plist-get operation :key))
+         (pending (plist-get state :pending-reactions)))
+    (when (and (appkit-surface-live-p surface)
+               (eq state (appkit-surface-model surface))
+               (eq operation (gethash key pending)))
+      (remhash key pending)
+      surface)))
 
 (provide 'chirp-dm-conversation)
 

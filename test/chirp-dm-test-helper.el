@@ -274,6 +274,15 @@
              (list :sequence-id (plist-get (car events) :sequence-id)
                    :key-version "0"))))
 
+(defun chirp-dm-test--drain (surface)
+  "Commit queued Surface and Resource coordinator deliveries for SURFACE."
+  (let ((surface-loop (appkit-surface-loop surface))
+        (app-loop (appkit-app-loop (appkit-surface-app surface))))
+    (while (> (+ (appkit-loop-pending-count surface-loop)
+                 (appkit-loop-pending-count app-loop)) 0)
+      (appkit-loop-run-pass app-loop)
+      (appkit-loop-run-pass surface-loop))))
+
 (provide 'chirp-dm-test-helper)
 
 ;;; chirp-dm-test-helper.el ends here

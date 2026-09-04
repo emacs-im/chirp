@@ -378,19 +378,19 @@ When RESTART-RUNNING is non-nil, permit one supported browser restart."
     (message "Opening X login window...")
     (condition-case error
         (let ((request
-               (browser-session-capture
-                :url chirp-x--browser-session-url
-                :cookies chirp-x--browser-session-cookie-names
-                :output-file capture-file
-                :profile-root chirp-x-browser-session-profile-root
-                :restart-running restart-running
-                :callback (lambda (_metadata)
-                            (setq settled t)
-                            (chirp-x--finish-browser-session-capture capture-file))
-                :errorback (lambda (browser-error)
+                (browser-session-capture
+                 :url chirp-x--browser-session-url
+                 :cookies chirp-x--browser-session-cookie-names
+                 :output-file capture-file
+                 :profile-root chirp-x-browser-session-profile-root
+                 :restart-running restart-running
+                 :callback (lambda (_metadata)
                              (setq settled t)
-                             (chirp-x--finish-browser-session-error
-                              capture-file restart-running browser-error)))))
+                             (chirp-x--finish-browser-session-capture capture-file))
+                 :errorback (lambda (browser-error)
+                              (setq settled t)
+                              (chirp-x--finish-browser-session-error
+                               capture-file restart-running browser-error)))))
           (unless settled
             (setq chirp-x--browser-session-request request))
           request)
@@ -952,23 +952,23 @@ Return either `(:success PAYLOAD)' or `(:error MESSAGE)'."
 
 (defun chirp-x--cancel-request (request)
   "Cancel the X retrieval described by REQUEST and settle its error callback."
-  (let* ((buffer (plist-get request :buffer))
-         (method (plist-get request :method))
-         (owner (plist-get request :owner))
-         (settle-on-cancel (plist-get request :settle-on-cancel))
-         (timed-out-p
-          (and (buffer-live-p buffer)
-               (buffer-local-value 'chirp-x--request-timed-out-p buffer)))
-         (cancel-message
-          (if timed-out-p
-              (plist-get request :timeout-message)
-            (plist-get request :cancel-message)))
-         (error-fn (plist-get request :errback)))
+  (let*
+      ((buffer (plist-get request :buffer))
+       (method (plist-get request :method))
+       (owner (plist-get request :owner))
+       (settle-on-cancel (plist-get request :settle-on-cancel))
+       (timed-out-p
+        (and (buffer-live-p buffer)
+             (buffer-local-value 'chirp-x--request-timed-out-p buffer)))
+       (cancel-message
+        (if timed-out-p (plist-get request :timeout-message)
+          (plist-get request :cancel-message)))
+       (error-fn (plist-get request :errback)))
     (chirp-x--discard-request-buffer buffer)
-    (when (and (functionp error-fn)
-               (or settle-on-cancel
-                   (eq method 'post)
-                   (appkit-view-p owner)))
+    (when
+        (and (functionp error-fn)
+             (or settle-on-cancel (eq method 'post)
+                 (appkit-surface-p owner)))
       (funcall error-fn
                (or cancel-message
                    (if (eq method 'post)
@@ -1509,7 +1509,6 @@ request is retried automatically."
        (funcall error-fn (error-message-string err))
        nil))))
 
-
 (cl-defun chirp-x-chat-live-open
     (token on-open on-message on-close on-error)
   "Open XChat's authenticated live websocket with TOKEN.
@@ -1776,7 +1775,6 @@ MEDIA-ID identifies the upload and SEGMENT-INDEX is its zero-based part."
     (if code
         (format "%s (%s)" message code)
       message)))
-
 
 (defun chirp-x--cancel-upload-poll (poll)
   "Cancel the upload timer described by POLL and settle its workflow."
