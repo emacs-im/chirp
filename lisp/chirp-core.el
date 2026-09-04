@@ -21,7 +21,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'chirp-url)
 
 (declare-function appkit-compose-cancel-operation "appkit-compose" ())

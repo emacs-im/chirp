@@ -13,7 +13,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-core)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-dm-conversation)

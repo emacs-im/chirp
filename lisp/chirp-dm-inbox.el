@@ -16,7 +16,7 @@
 (require 'appkit-name-color)
 (require 'appkit-invalidation)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-media)
@@ -278,8 +278,8 @@
   "Insert one XChat inbox directory ENTRY."
   (let* ((conversation (appkit-directory-entry-payload entry))
          (view (appkit-current-view)))
-    (appkit-view-insert-one-line-row
-     (appkit-view-one-line-row-create
+    (appkit-presentation-insert-one-line-row
+     (appkit-presentation-one-line-row-create
       :icon-inserter
       (lambda () (chirp-dm-inbox--insert-avatar view conversation))
       :context (appkit-directory-entry-label entry)

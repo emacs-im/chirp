@@ -25,7 +25,7 @@
 (require 'appkit-markup-codec)
 (require 'appkit-markup-codecs)
 (require 'appkit-markup-compose)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'chirp-backend)
 (require 'chirp-core)
 (require 'chirp-dm-render)
