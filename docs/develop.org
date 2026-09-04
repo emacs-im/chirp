@@ -3,24 +3,54 @@
 
 * Tests
 
-Eask owns package activation, local Appkit and browser-session
-dependencies, byte compilation, and ERT load paths:
+Use Emacs directly; Chirp does not use Eask. Install the dependencies declared in ~lisp/chirp.el~ and Evil for the keymap tests with your usual package manager. With Appkit, browser-session, and video checked out alongside Chirp, evaluate the following in Emacs through ~emacsclient --eval~ (adjust the checkout path):
 
-#+begin_src sh
-eask run script test-local
+#+begin_src emacs-lisp
+(require 'jka-compr)
+(let* ((default-directory (expand-file-name "~/Workspaces/appkit-apps/chirp/"))
+       (load-prefer-newer t)
+       (load-suffixes '(".el"))
+       (load-path (append (mapcar #'expand-file-name
+                                 '("lisp" "test" "../appkit.el"
+                                   "../browser-session" "../video.el"))
+                          load-path)))
+  (require 'chirp)
+  (require 'ert)
+  (dolist (file (directory-files "test" t "-test\\.el\\'"))
+    (load file nil t))
+  (ert-run-tests-batch "^chirp-"))
 #+end_src
 
 Automated tests cover request shaping and response adaptation without
 sending live X writes.
+
+Use a fresh daemon when testing changes to libraries already loaded in your regular session. Make the installed dependency directories available on that daemon's ~load-path~ before evaluating the form. Source-only loading avoids stale ~.elc~ files; ~jka-compr~ is loaded first so Emacs can read its compressed built-in sources.
+
+* Byte compilation
+
+Through ~emacsclient --eval~, use the same ~let*~ and paths above, replacing the ERT forms with:
+
+#+begin_src emacs-lisp
+(require 'chirp)
+(require 'bytecomp)
+(let ((byte-compile-error-on-warn t))
+  (dolist (file (directory-files "lisp" t "\\.el\\'"))
+    (unless (byte-compile-file file)
+      (error "Byte compilation failed: %s" file))))
+#+end_src
 
 * Write smoke
 
 Live publishing checks are excluded from ERT.  With disposable
 credentials:
 
-#+begin_src sh
-CHIRP_ALLOW_WRITE_SMOKE=1 emacs -Q --batch -L . -L lisp \
-  -l test/chirp-write-smoke.el --eval '(chirp-write-smoke-run)'
+Evaluate through ~emacsclient~ in an explicitly authorized disposable-account session, inside the source-loading ~let*~ above:
+
+#+begin_src emacs-lisp
+(load (expand-file-name "test/chirp-write-smoke.el") nil t)
+(let ((process-environment (copy-sequence process-environment)))
+  (setenv "CHIRP_ALLOW_WRITE_SMOKE" "1")
+  (chirp-write-smoke-run))
 #+end_src
 
 The smoke creates a root post, reply, quote, long-form post, and

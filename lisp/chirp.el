@@ -16,13 +16,6 @@
 
 ;;; Code:
 
-(eval-and-compile
-  (let ((dir (file-name-directory
-              (or load-file-name
-                  (buffer-file-name)
-                  default-directory))))
-    (add-to-list 'load-path (expand-file-name "lisp" dir))))
-
 (require 'chirp-url)
 (require 'chirp-core)
 (require 'chirp-backend)
