@@ -300,9 +300,10 @@
          (open-action
           (and file
                (lambda ()
-                 (appkit-media-open-resource
-                  resource :kind open-kind :owner view
-                  :client-label "Chirp XChat"))))
+                 (if (eq open-kind 'video)
+                     (appkit-media-play-video-file
+                      file "Chirp XChat" :owner view)
+                   (appkit-media-open-file file)))))
          (context
           (appkit-media-card-context-create
            :payload attachment

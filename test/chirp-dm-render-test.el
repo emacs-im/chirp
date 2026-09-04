@@ -211,9 +211,9 @@
               (if (equal resource-key '(xchat-media "gif"))
                   'pending
                 'ready)))
-           ((symbol-function 'appkit-media-open-resource)
-            (lambda (resource &rest options)
-              (setq opened (list resource options))))
+           ((symbol-function 'appkit-media-open-file)
+            (lambda (file)
+              (setq opened file)))
            ((symbol-function 'browse-url)
             (lambda (url &rest _arguments)
               (setq browsed url))))
@@ -242,8 +242,7 @@
           :open-action))
         (should (eq (key-binding (kbd "RET")) #'appkit-ui-activate))
         (call-interactively (key-binding (kbd "RET")))
-        (should
-         (equal (alist-get 'file (car opened)) "/tmp/d.cpp"))
+        (should (equal opened "/tmp/d.cpp"))
         (goto-char (point-min))
         (search-forward "Attached post")
         (goto-char (match-beginning 0))
