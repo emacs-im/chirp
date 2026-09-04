@@ -23,7 +23,7 @@
 (require 'appkit-markup)
 (require 'appkit-markup-ui)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'chirp-core)
 (require 'chirp-backend)
 (require 'chirp-dm-state)

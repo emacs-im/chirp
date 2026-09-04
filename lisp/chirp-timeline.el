@@ -14,7 +14,7 @@
 (require 'appkit-projection)
 (require 'appkit-invalidation)
 (require 'appkit-position)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'appkit-scroll)
 (require 'chirp-core)
 (require 'chirp-backend)
