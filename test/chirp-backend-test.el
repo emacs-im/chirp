@@ -135,23 +135,21 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
 
 (ert-deftest chirp-stop-destroys-session-owned-native-state ()
   "Stopping Chirp should destroy and forget its native XChat session."
-  (let ((chirp--app nil)
-        (destroy-count 0)
-        observed-state)
+  (let ((chirp--app nil) (destroy-count 0) observed-state)
     (unwind-protect
-        (let* ((app (chirp-app))
-               (state (appkit-app-state app)))
-          (setf (chirp--session-xchat-native-session state) 'native-session
+        (let* ((app (chirp-app)) (state (appkit-app-model app)))
+          (setf (chirp--session-xchat-native-session state)
+                'native-session
                 (chirp--session-xchat-native-epoch state) 7)
-          (cl-letf (((symbol-function 'chirp-xchat-native-session-destroy)
-                     (lambda (session)
-                       (setq destroy-count (1+ destroy-count)
-                             observed-state
-                             (list
-                              (chirp--session-xchat-native-session state)
-                              (chirp--session-xchat-native-epoch state)))
-                       (should (eq session 'native-session))
-                       t)))
+          (cl-letf
+              (((symbol-function 'chirp-xchat-native-session-destroy)
+                (lambda (session)
+                  (setq destroy-count (1+ destroy-count)
+                        observed-state
+                        (list
+                         (chirp--session-xchat-native-session state)
+                         (chirp--session-xchat-native-epoch state)))
+                  (should (eq session 'native-session)) t)))
             (chirp-stop))
           (should (= destroy-count 1))
           (should (equal observed-state '(nil nil)))
@@ -953,7 +951,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
           (cl-letf
               (((symbol-function 'chirp-x-graphql-request)
                 (lambda (request-operation request-variables callback
-                         &rest _options)
+                                           &rest _options)
                   (setq request-count (1+ request-count)
                         operation request-operation
                         variables request-variables)
@@ -1182,7 +1180,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
                          (funcall callback "media-1")))
                       ((symbol-function 'chirp-x-graphql-request)
                        (lambda (_operation request-variables callback
-                                &rest _options)
+                                           &rest _options)
                          (setq variables request-variables)
                          (funcall
                           callback
@@ -1220,7 +1218,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
   (let (operation variables result)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback
-                        &rest _options)
+                                          &rest _options)
                  (setq operation request-operation
                        variables request-variables)
                  (funcall
@@ -1280,7 +1278,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
   (let (operation variables result)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback
-                        &rest _options)
+                                          &rest _options)
                  (setq operation request-operation
                        variables request-variables)
                  (funcall callback
@@ -1308,7 +1306,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
   (let (operation variables)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback
-                        &rest _options)
+                                          &rest _options)
                  (setq operation request-operation
                        variables request-variables)
                  (funcall callback '(("data" . nil))))))
@@ -1357,7 +1355,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
                        (funcall callback "media-1")))
                     ((symbol-function 'chirp-x-graphql-request)
                      (lambda (_operation request-variables callback
-                              &rest _options)
+                                         &rest _options)
                        (setq variables request-variables)
                        (funcall callback
                                 (chirp-backend-test--tweet-id-payload "1")))))
@@ -1399,7 +1397,7 @@ NESTED-ENTRY-ID identifies the tweet's occurrence inside the module."
   (let (operation variables result)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback
-                        &rest _options)
+                                          &rest _options)
                  (setq operation request-operation
                        variables request-variables)
                  (funcall callback

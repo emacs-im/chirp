@@ -324,11 +324,11 @@ Use RULES instead of `chirp-thread-spam-keywords' when it is non-nil."
                "\n")))
          (cl-labels
              ((matches
-               (keyword)
-               (when (stringp keyword)
-                 (let ((trimmed (string-trim keyword)))
-                   (and (not (string-empty-p trimmed))
-                        (string-match-p (regexp-quote trimmed) content))))))
+                (keyword)
+                (when (stringp keyword)
+                  (let ((trimmed (string-trim keyword)))
+                    (and (not (string-empty-p trimmed))
+                         (string-match-p (regexp-quote trimmed) content))))))
            (cl-some
             (lambda (rule)
               (if (listp rule)
@@ -419,47 +419,54 @@ protected."
       (_ (and (null (plist-get state :items))
               "No thread data returned.\n")))))
 
-(defun chirp-thread--sync (view invalidations events)
-  "Synchronize thread VIEW from INVALIDATIONS and EVENTS."
-  (let ((state (appkit-view-state view)))
-    (chirp-sync-projection
-     view invalidations events
-     (chirp-thread--project-rows
-      (plist-get state :items)
-      (plist-get (plist-get state :query) :focus-id))
-     (chirp-thread--frame-text state))))
+(defun chirp-thread--sync (surface _app state change)
+  "Render committed STATE in SURFACE using native projection CHANGE."
+  (chirp-render-projection
+      surface change
+    (chirp-thread--project-rows (plist-get state :items)
+                                (plist-get (plist-get state :query) :focus-id))
+    (chirp-thread--frame-text state)))
 
 (defun chirp-thread--ensure-view (title refresh focus-id &optional id)
-  "Open or reuse a thread view titled TITLE focused on FOCUS-ID.
-REFRESH reloads the thread; optional ID overrides its Appkit identity."
-  (chirp-open-projection-view
-   :id (or id (list 'thread title focus-id))
-   :title title
-   :state (list :type 'thread
-                :query (list :focus-id focus-id)
-                :items nil
-                :title title
-                :refresh refresh
-                :status (list :phase 'initial :message nil)
-                :expanded-tweet-ids (make-hash-table :test #'equal))
-   :sync-function #'chirp-thread--sync
-   :printer #'chirp-thread--print-row
-   :select t))
+  "Open or reuse a thread view titled TITLE focused on FOCUS-ID.\nREFRESH reloads the thread; optional ID overrides its Appkit identity."
+  (chirp-open-projection-view :id
+                              (or id (list 'thread title focus-id))
+                              :title title :state
+                              (list :type 'thread :query
+                                    (list :focus-id focus-id) :items
+                                    nil :title title :refresh refresh
+                                    :status
+                                    (list :phase 'initial :message nil)
+                                    :expanded-tweet-ids
+                                    (make-hash-table :test #'equal))
+                              :render-function #'chirp-thread--sync
+                              :printer #'chirp-thread--print-row
+                              :select t))
 
 (defun chirp-thread--present (view tweets &optional position)
   "Install TWEETS into thread VIEW and request a projection sync."
-  (let ((state (appkit-view-state view))
-        (buffer (appkit-view-buffer view)))
+  (let
+      ((state (appkit-surface-model view))
+       (buffer (appkit-surface-buffer view)))
     (setf (plist-get state :items) tweets
           (plist-get (plist-get state :status) :phase) 'idle
           (plist-get (plist-get state :status) :message) nil)
-    (appkit-view-enqueue-event
-     view (list :position (or position 'first)))
-    (appkit-invalidate view :structure t :part 'frame :position t)
-    (appkit-sync-invalidations view)
-    (chirp-media-prefetch-tweets tweets buffer)
+    (appkit-surface-post view
+                         (appkit-projection-change-create :position
+                                                          (plist-get
+                                                           (list
+                                                            :position
+                                                            (or
+                                                             position
+                                                             'first))
+                                                           :position)))
+    (appkit-surface-post view
+                         (appkit-projection-change-create :full-p t
+                                                          :frame-p t
+                                                          :position
+                                                          'preserve))
+    nil (chirp-media-prefetch-tweets tweets buffer)
     (chirp-enrich-quoted-tweets tweets buffer)))
-
 
 ;;; Commands
 
@@ -476,70 +483,78 @@ REFRESH reloads the thread; optional ID overrides its Appkit identity."
 
 (defun chirp-thread--open (tweet-id &optional seed-tweet)
   "Open TWEET-ID, optionally rendering normalized SEED-TWEET first."
-  (let* ((title (chirp-thread--title tweet-id))
-         (refresh (lambda ()
-                    (chirp-backend-invalidate-thread tweet-id)
-                    (chirp-thread-open tweet-id)))
-         (view (chirp-thread--ensure-view
-                title refresh tweet-id
-                (list 'thread tweet-id)))
-         (buffer (appkit-view-buffer view))
-         (saved-ordered nil)
-         (prefetched-article nil)
-         (article-requested-p nil)
-         (token nil))
+  (let*
+      ((title (chirp-thread--title tweet-id))
+       (refresh
+        (lambda () (chirp-backend-invalidate-thread tweet-id)
+          (chirp-thread-open tweet-id)))
+       (view
+        (chirp-thread--ensure-view title refresh tweet-id
+                                   (list 'thread tweet-id)))
+       (buffer (appkit-surface-buffer view)) (saved-ordered nil)
+       (prefetched-article nil) (article-requested-p nil) (token nil))
     (cl-labels
         ((present-current (&optional position)
            (chirp-thread--present view saved-ordered position))
-         (apply-prefetched-article ()
+         (apply-prefetched-article nil
            (setq saved-ordered
-                 (chirp-thread--maybe-apply-article
-                  saved-ordered
-                  prefetched-article)))
+                 (chirp-thread--maybe-apply-article saved-ordered
+                                                    prefetched-article)))
          (handle-article-success (article-tweet _envelope)
            (when (chirp-request-current-p buffer token)
              (setq prefetched-article article-tweet)
              (when saved-ordered
-               (apply-prefetched-article)
-               (present-current 'preserve)
+               (apply-prefetched-article) (present-current 'preserve)
                (chirp-clear-status buffer))))
          (maybe-request-article (tweet)
-           (when (and (not article-requested-p)
-                      (chirp-thread--article-fetch-needed-p tweet))
+           (when
+               (and (not article-requested-p)
+                    (chirp-thread--article-fetch-needed-p tweet))
              (setq article-requested-p t)
-             (chirp-set-status buffer "Thread ready · loading article...")
-             (chirp-backend-article
-              (plist-get tweet :id)
-              #'handle-article-success
-              (lambda (_message)
-                (when (chirp-request-current-p buffer token)
-                  (chirp-clear-status buffer)))))))
+             (chirp-set-status buffer
+                               "Thread ready · loading article...")
+             (chirp-backend-article (plist-get tweet :id)
+                                    #'handle-article-success
+                                    (lambda (_message)
+                                      (when
+                                          (chirp-request-current-p
+                                           buffer token)
+                                        (chirp-clear-status buffer)))))))
       (setq token (chirp-begin-background-request buffer title))
       (when-let* ((seed (chirp-thread--seed-tweets seed-tweet)))
         (setq saved-ordered seed)
         (present-current (list 'tweet tweet-id)))
-      (when seed-tweet
-        (maybe-request-article seed-tweet))
-      (chirp-backend-thread
-       tweet-id
-       (lambda (tweets _envelope)
-         (when (chirp-request-current-p buffer token)
-           (setq saved-ordered
-                 (chirp-thread--filter-spam-replies
-                  (chirp-thread--reorder tweets tweet-id)
-                  tweet-id))
-           (apply-prefetched-article)
-           (present-current (list 'tweet tweet-id))
-           (if-let* ((focus (or (chirp-thread--find-tweet saved-ordered tweet-id)
-                                (car saved-ordered))))
-               (progn
-                 (maybe-request-article focus)
-                 (unless article-requested-p
-                   (chirp-clear-status buffer)))
-             (chirp-clear-status buffer))))
-       (lambda (message)
-         (when (chirp-request-current-p buffer token)
-           (chirp-show-error buffer title refresh message))))
+      (when seed-tweet (maybe-request-article seed-tweet))
+      (chirp-backend-thread tweet-id
+                            (lambda (tweets _envelope)
+                              (when
+                                  (chirp-request-current-p buffer
+                                                           token)
+                                (setq saved-ordered
+                                      (chirp-thread--filter-spam-replies
+                                       (chirp-thread--reorder tweets
+                                                              tweet-id)
+                                       tweet-id))
+                                (apply-prefetched-article)
+                                (present-current
+                                 (list 'tweet tweet-id))
+                                (if-let*
+                                    ((focus
+                                      (or
+                                       (chirp-thread--find-tweet
+                                        saved-ordered tweet-id)
+                                       (car saved-ordered))))
+                                    (progn
+                                      (maybe-request-article focus)
+                                      (unless article-requested-p
+                                        (chirp-clear-status buffer)))
+                                  (chirp-clear-status buffer))))
+                            (lambda (message)
+                              (when
+                                  (chirp-request-current-p buffer
+                                                           token)
+                                (chirp-show-error buffer title refresh
+                                                  message))))
       buffer)))
 
 (provide 'chirp-thread)

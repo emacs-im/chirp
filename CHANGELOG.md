@@ -7,6 +7,8 @@ history remains available in Git.
 
 ### Added
 
+- Dedicated media readers now acquire cold-cache photos asynchronously through their exact source Surface. Closing or replacing that source revokes pending viewer opens; reader navigation retains the source viewport, and moving an active inline video to a dedicated reader borrows its existing player state. XChat attachment actions remain unavailable until verified decryption produces local content.
+
 - Direct-message composers now support typed photo, GIF, video, audio, and document attachments through `C-c C-a`. Drafts preserve type-specific previews, native staging encrypts local files without exposing keys, and only a validated message acknowledgement clears the captured text, reply context, and attachments.
 - Added `M-x chirp-open-url` and an opt-in `browse-url-handlers` regexp for opening supported HTTPS X and legacy Twitter links directly in their owning Chirp views. Tweet, list, profile, search, and account-collection URL parsing now share one trusted-host parser.
 - Visible Home and Following timelines now follow X web's foreground-polling model: a view-owned 30-second check stages unseen posts behind a centered, clickable `Show N posts` header-line button, preserves the current row, and inserts the pending posts only when the button or `.` is activated.  `g` performs the same check immediately, and `chirp-timeline-poll-interval` can change or disable automatic checks.
@@ -55,6 +57,9 @@ history remains available in Git.
 - Chirp now requires GNU Emacs 31.1 and Appkit 0.3.0 for semantic markup codecs, gapless inline image slices, action spans, compose lifecycle ownership, stable-key projections, and shared discussion and chat geometry.
 
 ### Fixed
+
+- XChat avatar, image, encrypted-attachment, and embedded-post acquisition now follows committed reader resource interests. Closing the last interested reader cancels transport, stale native-session deliveries cannot decrypt, and resource completion redraws dependent rows without rendering from transport callbacks.
+- Direct-message acknowledgement and failure settlement now target the exact live composer Surface, preserving draft editability and reaction ownership. Superseded timeline and history requests retain cancellation and stale-result fences.
 
 - Fixed XChat attachment sends that failed before dispatch because a transport upload UUID was incorrectly required from native staging metadata. Upload identity now belongs to the Lisp transport layer, which follows X web's authenticated GraphQL initialize, cookie-authenticated bounded TON upload, and GraphQL finalize flow.
 - Chirp inline and dedicated video views now retain one video.el `video-session` through Appkit's canonical resource wrapper. Opening the dedicated reader adds a presentation lease to the existing player, preserving position, play/pause, canonical mute, buffering ranges, and the in-flight sparse cache without a second request. Chirp retains the active presentation by rendered-entry identity across every media action; video.el closes the player after the last surface disappears, while Appkit supplies stable persistent-cache policy.

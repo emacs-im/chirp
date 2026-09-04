@@ -120,9 +120,9 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 (defun chirp-xchat-native--session ()
   "Return the native session owned by Chirp's current Appkit session."
   (chirp-xchat-native-load)
-  (let* ((app (chirp-app))
-         (state (appkit-app-state app))
-         (session (chirp--session-xchat-native-session state)))
+  (let*
+      ((app (chirp-app)) (state (appkit-app-model app))
+       (session (chirp--session-xchat-native-session state)))
     (if (and session (chirp-xchat-native-session-live-p session))
         session
       (setq session (chirp-xchat-native-session-create))
@@ -363,10 +363,10 @@ set this option explicitly, and then unlock encrypted XChat support on demand."
 (defun chirp-xchat-native-unlocked-p ()
   "Return non-nil when the current Chirp session has recovered XChat keys."
   (and (appkit-app-live-p chirp--app)
-       (let* ((state (appkit-app-state chirp--app))
-              (session (chirp--session-xchat-native-session state)))
-         (and session
-              (chirp-xchat-native-session-live-p session)
+       (let*
+           ((state (appkit-app-model chirp--app))
+            (session (chirp--session-xchat-native-session state)))
+         (and session (chirp-xchat-native-session-live-p session)
               (chirp-xchat-native-session-unlocked-p session)))))
 
 (defun chirp-xchat-native-decrypt-events
@@ -597,70 +597,62 @@ when REMOVE-P is non-nil, prepare a removal instead of an addition."
 (defun chirp-xchat-native-recovery-active-p ()
   "Return non-nil when the current Chirp session is recovering XChat keys."
   (and (appkit-app-live-p chirp--app)
-       (chirp--session-xchat-recovery (appkit-app-state chirp--app))))
+       (chirp--session-xchat-recovery (appkit-app-model chirp--app))))
 
 (cl-defun chirp-xchat-native-recover (pin input callback &key errback)
-  "Consume PIN and normalized INPUT to start one XChat key recovery.
-
-CALLBACK receives one non-sensitive terminal status plist.  ERRBACK receives
-setup or worker failures.  PIN and INPUT's Juicebox realm tokens are erased
-before this function returns."
+  "Consume PIN and normalized INPUT to start one XChat key recovery.\n\nCALLBACK receives one non-sensitive terminal status plist.  ERRBACK receives\nsetup or worker failures.  PIN and INPUT's Juicebox realm tokens are erased\nbefore this function returns."
   (unless (functionp callback)
     (error "XChat recovery callback is not callable"))
-  (let ((error-fn (or errback (lambda (message) (message "%s" message))))
-        input-json job-id)
+  (let
+      ((error-fn
+        (or errback (lambda (message) (message "%s" message))))
+       input-json job-id)
     (unless (functionp error-fn)
       (error "XChat recovery error callback is not callable"))
     (condition-case err
-        (let* ((app (chirp-app))
-               (state (appkit-app-state app))
-               (session (chirp-xchat-native--session))
-               (epoch (chirp--session-xchat-native-epoch state)))
+        (let*
+            ((app (chirp-app)) (state (appkit-app-model app))
+             (session (chirp-xchat-native--session))
+             (epoch (chirp--session-xchat-native-epoch state)))
           (when (chirp--session-xchat-recovery state)
             (error "XChat key recovery is already active"))
           (unwind-protect
               (progn
-                (setq input-json (json-encode input)
-                      job-id
-                      (chirp-xchat-native-recovery-start
-                       session epoch pin input-json)))
-            (when (stringp pin)
-              (clear-string pin))
-            (when (stringp input-json)
-              (clear-string input-json))
+                (setq input-json (json-encode input) job-id
+                      (chirp-xchat-native-recovery-start session epoch
+                                                         pin
+                                                         input-json)))
+            (when (stringp pin) (clear-string pin))
+            (when (stringp input-json) (clear-string input-json))
             (chirp-xchat-native-discard-recovery-input input))
-          (let ((recovery
-                 (list :app app :state state :session session
-                       :epoch epoch :job-id job-id :timer nil
-                       :handle nil :callback callback :errback error-fn)))
-            (plist-put
-             recovery :handle
-             (appkit-register-handle
-              app 'function recovery #'chirp-xchat-native--cancel-resource))
+          (let
+              ((recovery
+                (list :app app :state state :session session :epoch
+                      epoch :job-id job-id :timer nil :handle nil
+                      :callback callback :errback error-fn)))
+            (plist-put recovery :handle
+                       (appkit-register-handle app 'function recovery
+                                               #'chirp-xchat-native--cancel-resource))
             (setf (chirp--session-xchat-recovery state) recovery)
-            (plist-put
-             recovery :timer
-             (run-at-time 0.05 nil
-                          #'chirp-xchat-native--poll-recovery recovery))
+            (plist-put recovery :timer
+                       (run-at-time 0.05 nil
+                                    #'chirp-xchat-native--poll-recovery
+                                    recovery))
             job-id))
-      (error
-       (when (stringp pin)
-         (clear-string pin))
-       (when (stringp input-json)
-         (clear-string input-json))
-       (chirp-xchat-native-discard-recovery-input input)
-       (funcall error-fn (error-message-string err))
-       nil))))
+      (error (when (stringp pin) (clear-string pin))
+             (when (stringp input-json) (clear-string input-json))
+             (chirp-xchat-native-discard-recovery-input input)
+             (funcall error-fn (error-message-string err)) nil))))
 
 (defun chirp-xchat-native-cancel-recovery ()
   "Request cancellation of the current Chirp session's XChat recovery."
-  (when-let* (((appkit-app-live-p chirp--app))
-              (state (appkit-app-state chirp--app))
-              (recovery (chirp--session-xchat-recovery state)))
-    (chirp-xchat-native-recovery-cancel
-     (plist-get recovery :session)
-     (plist-get recovery :job-id)
-     (plist-get recovery :epoch))))
+  (when-let*
+      (((appkit-app-live-p chirp--app))
+       (state (appkit-app-model chirp--app))
+       (recovery (chirp--session-xchat-recovery state)))
+    (chirp-xchat-native-recovery-cancel (plist-get recovery :session)
+                                        (plist-get recovery :job-id)
+                                        (plist-get recovery :epoch))))
 
 (provide 'chirp-xchat-native)
 

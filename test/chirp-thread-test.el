@@ -11,20 +11,23 @@
 (require 'chirp-thread)
 
 (defun chirp-thread-test--render-view
-    (scratch title refresh tweets &optional anchor-id display-p focus-id)
+    (scratch title refresh tweets &optional anchor-id display-p
+             focus-id)
   "Render TWEETS through the production thread view for one test SCRATCH."
-  (let* ((view
-          (chirp-thread--ensure-view
-           title refresh focus-id
-           (list 'thread 'test (buffer-name scratch))))
-         (position
-          (or (and (stringp anchor-id) (list 'tweet anchor-id))
-              (and (stringp focus-id) (list 'tweet focus-id))
-              'first)))
+  (let*
+      ((view
+        (chirp-thread--ensure-view title refresh focus-id
+                                   (list 'thread 'test
+                                         (buffer-name scratch))))
+       (position
+        (or (and (stringp anchor-id) (list 'tweet anchor-id))
+            (and (stringp focus-id) (list 'tweet focus-id)) 'first)))
     (chirp-thread--present view tweets position)
+    (while (> (appkit-loop-pending-count (appkit-surface-loop view)) 0)
+      (appkit-loop-run-pass (appkit-surface-loop view)))
     (when display-p
-      (chirp-display-buffer (appkit-view-buffer view)))
-    (appkit-view-buffer view)))
+      (chirp-display-buffer (appkit-surface-buffer view)))
+    (appkit-surface-buffer view)))
 
 (ert-deftest chirp-thread-open-tweet-renders-seed-before-network-thread-load ()
   "Opening a thread from a visible tweet should render that tweet immediately."
@@ -109,26 +112,25 @@
       (should (= (plist-get row :depth) 0))
       (should-not (plist-get row :parent-key)))))
 
-
 (ert-deftest chirp-thread-projection-preserves-discussion-properties ()
   "Thread rendering should expose Appkit and Chirp entry properties."
-  (let ((scratch (generate-new-buffer " *chirp-thread-discussion-test*"))
+  (let ((chirp--app nil) (scratch (generate-new-buffer " *chirp-thread-discussion-test*"))
         buffer)
     (unwind-protect
         (cl-letf (((symbol-function 'chirp-media-avatar-image)
                    (lambda (&rest _args) nil)))
           (setq buffer
                 (chirp-thread-test--render-view scratch
-                "Thread"
-                #'ignore
-                '((:kind tweet :id "root" :text "Root"
-                   :author-name "Alice" :author-handle "alice"
-                   :created-at "ROOT-TIME")
-                  (:kind tweet :id "reply" :text "Reply"
-                   :reply-to-id "root"
-                   :reply-to-handle "Alice"
-                   :author-name "Bob"))
-                nil))
+                                                "Thread"
+                                                #'ignore
+                                                '((:kind tweet :id "root" :text "Root"
+                                                   :author-name "Alice" :author-handle "alice"
+                                                   :created-at "ROOT-TIME")
+                                                  (:kind tweet :id "reply" :text "Reply"
+                                                   :reply-to-id "root"
+                                                   :reply-to-handle "Alice"
+                                                   :author-name "Bob"))
+                                                nil))
           (with-current-buffer buffer
             (goto-char (point-min))
             (let ((heading-line
@@ -183,7 +185,7 @@
 
 (ert-deftest chirp-thread-focus-uses-full-time-and-replies-use-compact-time ()
   "Thread focus should show an exact time while replies stay compact."
-  (let* ((chirp-language "zh-CN")
+  (let* ((chirp--app nil) (chirp-language "zh-CN")
          (now (encode-time 0 0 12 13 8 2026))
          (created-at
           (format-time-string
@@ -197,14 +199,14 @@
                    (lambda (&rest _args) nil)))
           (setq buffer
                 (chirp-thread-test--render-view scratch
-                "Thread"
-                #'ignore
-                `((:kind tweet :id "root" :text "Root"
-                   :author-name "Alice" :created-at ,created-at)
-                  (:kind tweet :id "reply" :text "Reply"
-                   :reply-to-id "root" :author-name "Bob"
-                   :created-at ,created-at))
-                nil nil "root"))
+                                                "Thread"
+                                                #'ignore
+                                                `((:kind tweet :id "root" :text "Root"
+                                                   :author-name "Alice" :created-at ,created-at)
+                                                  (:kind tweet :id "reply" :text "Reply"
+                                                   :reply-to-id "root" :author-name "Bob"
+                                                   :created-at ,created-at))
+                                                nil nil "root"))
           (with-current-buffer buffer
             (goto-char (point-min))
             (should (search-forward
@@ -218,30 +220,34 @@
 
 (ert-deftest chirp-thread-rerender-preserves-text-scale ()
   "A cached thread redraw should keep text scale."
-  (let ((scratch (generate-new-buffer " *chirp-thread-scale*"))
-        buffer)
+  (let
+      ((scratch (generate-new-buffer " *chirp-thread-scale*")) buffer)
     (unwind-protect
-        (cl-letf (((symbol-function 'chirp-media-avatar-image)
-                   (lambda (&rest _args) nil)))
+        (cl-letf
+            (((symbol-function 'chirp-media-avatar-image)
+              (lambda (&rest _args) nil)))
           (setq buffer
-                (chirp-thread-test--render-view scratch "Thread" #'ignore
-                '((:kind tweet :id "1" :text "Hello"
-                   :author-name "Alice" :author-handle "alice"))))
+                (chirp-thread-test--render-view scratch "Thread"
+                                                #'ignore
+                                                '((:kind tweet :id "1"
+                                                   :text "Hello"
+                                                   :author-name
+                                                   "Alice"
+                                                   :author-handle
+                                                   "alice"))))
           (with-current-buffer buffer
             (text-scale-increase 2)
-            (let ((amount text-scale-mode-amount)
-                  (view (appkit-current-view)))
-              (should (> amount 0))
-              (chirp--on-text-scale-change)
-              (appkit-sync-invalidations view)
+            (let
+                ((amount text-scale-mode-amount)
+                 (view (appkit-current-surface)))
+              (should (> amount 0)) (chirp--on-text-scale-change)
+              (appkit-loop-run-pass (appkit-surface-loop view))
               (should (equal amount text-scale-mode-amount))
               (should (bound-and-true-p text-scale-mode))
               (should (string-match-p "Hello" (buffer-string))))))
       (chirp-stop)
-      (when (buffer-live-p scratch)
-        (kill-buffer scratch))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+      (when (buffer-live-p scratch) (kill-buffer scratch))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest chirp-thread-projection-draws-ancestor-chain-prefix ()
   "Ancestors should share a prefix spine and keep replies nested under the focus."
@@ -253,17 +259,17 @@
                    (lambda (&rest _args) nil)))
           (setq buffer
                 (chirp-thread-test--render-view scratch
-                "Thread"
-                #'ignore
-                '((:kind tweet :id "root" :text "Root"
-                   :author-name "Alice" :author-handle "alice")
-                  (:kind tweet :id "focus" :text "Focus"
-                   :reply-to-id "root"
-                   :author-name "Bob" :author-handle "bob")
-                  (:kind tweet :id "reply" :text "Reply"
-                   :reply-to-id "focus"
-                   :author-name "Carol" :author-handle "carol"))
-                nil nil "focus"))
+                                                "Thread"
+                                                #'ignore
+                                                '((:kind tweet :id "root" :text "Root"
+                                                   :author-name "Alice" :author-handle "alice")
+                                                  (:kind tweet :id "focus" :text "Focus"
+                                                   :reply-to-id "root"
+                                                   :author-name "Bob" :author-handle "bob")
+                                                  (:kind tweet :id "reply" :text "Reply"
+                                                   :reply-to-id "focus"
+                                                   :author-name "Carol" :author-handle "carol"))
+                                                nil nil "focus"))
           (with-current-buffer buffer
             (should (equal (plist-get (chirp-entry-at-point) :id) "focus"))
             (should (string-prefix-p

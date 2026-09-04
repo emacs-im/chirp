@@ -76,7 +76,6 @@ cancelled, the attachment is removed, or the send completes."
 (defvar-local chirp-compose-temp-attachments nil
   "Temporary attachment paths owned by the current compose buffer.")
 
-
 (defvar-local chirp-compose--submit-temps nil
   "Temporary attachment paths held for the current in-flight submit.")
 
@@ -199,11 +198,11 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
         (setq chirp-compose--mention-pending
               (delete query chirp-compose--mention-pending))
         (let ((candidates
-             (delete-dups
-              (delq nil
-                    (mapcar (lambda (user)
-                              (plist-get user :handle))
-                            users)))))
+               (delete-dups
+                (delq nil
+                      (mapcar (lambda (user)
+                                (plist-get user :handle))
+                              users)))))
           (setq chirp-compose--mention-cache
                 (cons (cons query candidates)
                       (assoc-delete-all
@@ -582,20 +581,32 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
       (user-error "Operation canceled"))
     (setq-local chirp-compose-write-outcome nil)))
 
-(defun chirp-compose--ensure-view ()
-  "Attach a lifecycle view to the current compose buffer and return it."
-  (or (and (appkit-view-live-p (appkit-current-view))
-           (appkit-current-view))
-      (appkit-attach-view
-       :app (chirp-app)
-       :id (list 'compose
-                 (intern (format "b%x" (sxhash-eq (current-buffer)))))
-       :mode major-mode
-       :sync-function #'ignore)))
-
 (defun chirp-compose--owner ()
-  "Return the Appkit owner for compose transport."
-  (or (chirp-compose--ensure-view) (chirp-app)))
+  "Return the generated Surface owning this exact compose buffer."
+  (or (appkit-current-surface)
+      (appkit-open-generated-surface
+       (appkit-surface-type-create
+        :name 'chirp-compose
+        :mode (lambda ()
+                (unless (derived-mode-p 'appkit-chat-compose-mode)
+                  (error "Chirp compose Surface requires an initialized composer")))
+        :init (lambda (_context _input)
+                (appkit-next :model (list :type 'compose :media-intent nil
+                                          :media-phase 'idle :media-error nil)
+                             :render appkit-render-none))
+        :update #'chirp--surface-update
+        :renderer-factory
+        (lambda (_surface)
+          (appkit-generated-renderer-create
+           :mount (lambda (_surface _app _model) (appkit-chat-compose-refresh))
+           :merge #'appkit-projection-change-merge
+           :render (lambda (_surface _app _model _change)
+                     (appkit-chat-compose-refresh) nil)
+           :recover (lambda (_surface _app _model _condition)
+                      (appkit-chat-compose-refresh) nil)
+           :unmount (lambda (_surface) (appkit-compose-cancel-operation)))))
+       :app (chirp-app) :identity (list 'compose (current-buffer))
+       :buffer (current-buffer))))
 
 (defun chirp-compose--operation-current-p (buffer owner)
   "Return non-nil when OWNER still owns compose BUFFER."
@@ -623,36 +634,15 @@ Adjust COUNT-KEY and display SUCCESS-ON or SUCCESS-OFF for the resulting state."
         t)))
    (t nil)))
 
-(defun chirp-compose--abort-operation (buffer owner)
-  "Cancel asynchronous work and resources formerly owned by OWNER in BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (let ((temp-attachments chirp-compose--submit-temps))
-        (when-let* ((view (appkit-current-view))
-                    ((appkit-view-live-p view)))
-          (ignore-errors (appkit-cancel-handles view)))
-        (cond
-         ((appkit-compose-operation-current-p owner)
-          (chirp-compose--settle-editable
-           buffer owner temp-attachments 'unknown))
-         ((equal temp-attachments chirp-compose--submit-temps)
-          ;; Session shutdown invalidates its owner before invoking the cancel
-          ;; hook.  No editable draft remains to reclaim these private files.
-          (setq-local chirp-compose--submit-temps nil)
-          (chirp-compose--cleanup-files temp-attachments)))))))
+(defun chirp-compose--abort-operation (buffer owner) "Cancel asynchronous work and resources formerly owned by OWNER in BUFFER." (when (buffer-live-p buffer) (with-current-buffer buffer (let ((temp-attachments chirp-compose--submit-temps)) (when-let* ((view (appkit-current-surface)) ((appkit-surface-live-p view))) (ignore-errors (appkit-cancel-handles view))) (cond ((appkit-compose-operation-current-p owner) (chirp-compose--settle-editable buffer owner temp-attachments 'unknown)) ((equal temp-attachments chirp-compose--submit-temps) (setq-local chirp-compose--submit-temps nil) (chirp-compose--cleanup-files temp-attachments)))))))
 
 (defun chirp-compose--begin-operation (kind label &optional generation)
   "Begin a compose operation of KIND with LABEL at source GENERATION."
+  (chirp-compose--owner)
   (let* ((buffer (current-buffer))
-         (owner
-          (appkit-compose-operation-begin
-           kind :label label :generation generation)))
-    (chirp-compose--ensure-view)
+         (owner (appkit-compose-operation-begin kind :label label :generation generation)))
     (appkit-compose-operation-update
-     owner
-     :cancel-function
-     (lambda ()
-       (chirp-compose--abort-operation buffer owner)))
+     owner :cancel-function (lambda () (chirp-compose--abort-operation buffer owner)))
     (setq-local buffer-read-only t)
     (appkit-chat-compose-refresh)
     owner))
@@ -886,7 +876,6 @@ When called interactively, prompt for AUDIENCE."
                    :help-echo "Edit alt text"))
            attachments))))
 
-
 (defun chirp-compose--parts ()
   "Return Appkit compose parts for the current draft."
   (let* ((items (appkit-chat-compose-items))
@@ -1088,7 +1077,7 @@ When TEMPORARY is non-nil, PATH is owned by the current compose buffer."
                 (expand-file-name "chirp-compose-"
                                   (chirp-compose--temp-directory))
                 nil
-                               (plist-get backend :extension)))
+                (plist-get backend :extension)))
     (unwind-protect
         (progn
           (unless (chirp-compose--paste-image-to-file backend file)

@@ -1348,7 +1348,6 @@ ERRBACK handles failures, and OWNER owns the transport lifecycle."
        :errback error-fn
        :owner owner))))
 
-
 (cl-defun chirp-backend-dm-live-token
     (callback &key errback owner)
   "Fetch one short-lived XChat websocket token and call CALLBACK.
@@ -1494,99 +1493,114 @@ older target.  CALLBACK, ERRBACK, and OWNER follow
        callback :errback errback :owner owner)))))
 
 (cl-defun chirp-backend-dm-send-attachments
-    (conversation-id text attachments callback
-                     &key target-event key-events errback owner progress)
-  "Encrypt, upload, and send typed ATTACHMENTS with TEXT to CONVERSATION-ID.
-
-Each attachment supplies `:path' and `:attachment-kind'.  TARGET-EVENT and
-KEY-EVENTS select reply semantics.  CALLBACK receives the acknowledged
-normalized event and a nil envelope.  ERRBACK and OWNER own the complete
-staged-media, upload, and non-retrying send lifecycle.  PROGRESS receives
-upload phase plists."
-  (let ((error-fn (or errback (lambda (message) (message "%s" message))))
-        (attachment-count (and (listp attachments) (length attachments)))
-        stages workflow-handle settled-p)
+    (conversation-id text attachments callback &key target-event
+                     key-events errback owner progress)
+  "Encrypt, upload, and send typed ATTACHMENTS with TEXT to CONVERSATION-ID.\n\nEach attachment supplies `:path' and `:attachment-kind'.  TARGET-EVENT and\nKEY-EVENTS select reply semantics.  CALLBACK receives the acknowledged\nnormalized event and a nil envelope.  ERRBACK and OWNER own the complete\nstaged-media, upload, and non-retrying send lifecycle.  PROGRESS receives\nupload phase plists."
+  (let
+      ((error-fn
+        (or errback (lambda (message) (message "%s" message))))
+       (attachment-count
+        (and (listp attachments) (length attachments)))
+       stages workflow-handle settled-p)
     (cl-labels
-        ((release-stages
-           ()
+        ((release-stages nil
            (dolist (stage stages)
              (when-let* ((stage-id (plist-get stage :stage-id)))
                (ignore-errors
                  (chirp-xchat-native-release-media-stage stage-id))))
            (setq stages nil))
-         (retire-workflow
-           ()
-           (when (and (appkit-handle-p workflow-handle)
-                      (appkit-handle-alive-p workflow-handle))
+         (retire-workflow nil
+           (when
+               (and (appkit-handle-p workflow-handle)
+                    (appkit-handle-alive-p workflow-handle))
              (appkit-retire-handle workflow-handle)
              (setq workflow-handle nil)))
-         (fail
-           (message)
+         (fail (message)
            (unless settled-p
-             (setq settled-p t)
-             (release-stages)
-             (retire-workflow)
+             (setq settled-p t) (release-stages) (retire-workflow)
              (funcall error-fn message)))
-         (finish-send
-           (uploaded)
+         (finish-send (uploaded)
            (unless settled-p
-             (release-stages)
-             (retire-workflow)
-             (let ((prepare
-                    (if target-event
-                        (lambda ()
-                          (chirp-xchat-native-prepare-reply
-                           conversation-id text target-event key-events
-                           uploaded))
-                      (lambda ()
-                        (chirp-xchat-native-prepare-text
-                         conversation-id text uploaded)))))
-               (chirp-backend--dm-send-prepared
-                conversation-id prepare
-                (lambda (event envelope)
-                  (unless settled-p
-                    (setq settled-p t)
-                    (funcall callback event envelope)))
-                :errback #'fail :owner owner))))
-         (upload-next
-           (remaining uploaded index)
+             (release-stages) (retire-workflow)
+             (let
+                 ((prepare
+                   (if target-event
+                       (lambda ()
+                         (chirp-xchat-native-prepare-reply
+                          conversation-id text target-event key-events
+                          uploaded))
+                     (lambda ()
+                       (chirp-xchat-native-prepare-text
+                        conversation-id text uploaded)))))
+               (chirp-backend--dm-send-prepared conversation-id
+                                                prepare
+                                                (lambda
+                                                  (event envelope)
+                                                  (unless settled-p
+                                                    (setq settled-p t)
+                                                    (funcall callback
+                                                             event
+                                                             envelope)))
+                                                :errback #'fail :owner
+                                                owner))))
+         (upload-next (remaining uploaded index)
            (unless settled-p
-             (if (null remaining)
-                 (finish-send (nreverse uploaded))
+             (if (null remaining) (finish-send (nreverse uploaded))
                (let ((stage (car remaining)))
-                 (chirp-x-upload-chat-media
-                  conversation-id
-                  (plist-get stage :encrypted-file)
-                  (plist-get stage :encrypted-bytes)
-                  (lambda (media-hash)
-                    (when-let* ((stage-id (plist-get stage :stage-id)))
-                      (ignore-errors
-                        (chirp-xchat-native-release-media-stage stage-id))
-                      (setq stages (delq stage stages)))
-                    (upload-next
-                     (cdr remaining)
-                     (cons
-                      (list :media-hash-key media-hash
-                            :width (plist-get stage :width)
-                            :height (plist-get stage :height)
-                            :plaintext-bytes
-                            (plist-get stage :plaintext-bytes)
-                            :key-version (plist-get stage :key-version)
-                            :filename (plist-get stage :filename)
-                            :media-type (plist-get stage :media-type))
-                      uploaded)
-                     (1+ index)))
-                  :errback #'fail
-                  :owner owner
-                  :progress
-                  (and progress
-                       (lambda (event)
-                         (funcall
-                          progress
-                          (append
-                           (list :attachment-index (1+ index)
-                                 :attachment-count attachment-count)
-                           event))))))))))
+                 (chirp-x-upload-chat-media conversation-id
+                                            (plist-get stage
+                                                       :encrypted-file)
+                                            (plist-get stage
+                                                       :encrypted-bytes)
+                                            (lambda (media-hash)
+                                              (when-let*
+                                                  ((stage-id
+                                                    (plist-get stage
+                                                               :stage-id)))
+                                                (ignore-errors
+                                                  (chirp-xchat-native-release-media-stage
+                                                   stage-id))
+                                                (setq stages
+                                                      (delq stage
+                                                            stages)))
+                                              (upload-next
+                                               (cdr remaining)
+                                               (cons
+                                                (list :media-hash-key
+                                                      media-hash
+                                                      :width
+                                                      (plist-get stage
+                                                                 :width)
+                                                      :height
+                                                      (plist-get stage
+                                                                 :height)
+                                                      :plaintext-bytes
+                                                      (plist-get stage
+                                                                 :plaintext-bytes)
+                                                      :key-version
+                                                      (plist-get stage
+                                                                 :key-version)
+                                                      :filename
+                                                      (plist-get stage
+                                                                 :filename)
+                                                      :media-type
+                                                      (plist-get stage
+                                                                 :media-type))
+                                                uploaded)
+                                               (1+ index)))
+                                            :errback #'fail :owner
+                                            owner :progress
+                                            (and progress
+                                                 (lambda (event)
+                                                   (funcall progress
+                                                            (append
+                                                             (list
+                                                              :attachment-index
+                                                              (1+
+                                                               index)
+                                                              :attachment-count
+                                                              attachment-count)
+                                                             event))))))))))
       (condition-case err
           (progn
             (unless (functionp callback)
@@ -1598,67 +1612,73 @@ upload phase plists."
                      (<= 1 (length attachments) 10)
                      (cl-every
                       (lambda (attachment)
-                        (let ((file (plist-get attachment :path))
-                              (kind (plist-get attachment :attachment-kind)))
+                        (let
+                            ((file (plist-get attachment :path))
+                             (kind
+                              (plist-get attachment :attachment-kind)))
                           (and (listp attachment)
-                               (memq kind '(photo video audio file gif))
-                               (stringp file)
-                               (file-regular-p file)
+                               (memq kind
+                                     '(photo video audio file gif))
+                               (stringp file) (file-regular-p file)
                                (file-readable-p file))))
                       attachments))
-              (error "XChat attachments must be 1 to 10 typed readable files"))
-            (unless (and (stringp text)
-                         (<= (string-bytes text) (* 16 1024))
-                         (or (not (string-empty-p (string-trim text)))
-                             attachments))
+              (error
+               "XChat attachments must be 1 to 10 typed readable files"))
+            (unless
+                (and (stringp text)
+                     (<= (string-bytes text) (* 16 1024))
+                     (or (not (string-empty-p (string-trim text)))
+                         attachments))
               (error "XChat attachment caption is invalid"))
             (when target-event
-              (unless (and (stringp target-event)
-                           (not (string-empty-p target-event))
-                           (listp key-events)
-                           (<= (length key-events) 64)
-                           (cl-every #'stringp key-events))
+              (unless
+                  (and (stringp target-event)
+                       (not (string-empty-p target-event))
+                       (listp key-events) (<= (length key-events) 64)
+                       (cl-every #'stringp key-events))
                 (error "XChat attachment reply target is invalid")))
             (require 'chirp-xchat-native)
             (dolist (attachment attachments)
-              (let* ((kind (plist-get attachment :attachment-kind))
-                     (stage
-                      (append
-                       (chirp-xchat-native-prepare-media-file
-                        conversation-id (plist-get attachment :path))
-                       (list :attachment-kind kind))))
+              (let*
+                  ((kind (plist-get attachment :attachment-kind))
+                   (stage
+                    (append
+                     (chirp-xchat-native-prepare-media-file
+                      conversation-id (plist-get attachment :path))
+                     (list :attachment-kind kind))))
                 (push stage stages)
-                (let ((actual (plist-get stage :media-type))
-                      (expected
-                       (pcase kind
-                         ('photo 1)
-                         ('gif 2)
-                         ('video 3)
-                         ('audio 4)
-                         ('file 5))))
+                (let
+                    ((actual (plist-get stage :media-type))
+                     (expected
+                      (pcase kind
+                        ('photo 1) ('gif 2) ('video 3) ('audio 4)
+                        ('file 5))))
                   (unless (or (eq kind 'file) (= actual expected))
                     (error
                      "XChat %s attachment content does not match the selected type"
                      kind))
                   (setf (plist-get stage :media-type) expected))))
             (setq stages (nreverse stages))
-            (when (and (> (length stages) 1)
-                       (cl-some
-                        (lambda (stage)
-                          (not (memq (plist-get stage :media-type) '(1 2 3))))
-                        stages))
+            (when
+                (and (> (length stages) 1)
+                     (cl-some
+                      (lambda (stage)
+                        (not
+                         (memq (plist-get stage :media-type) '(1 2 3))))
+                      stages))
               (error
                "Multiple XChat attachments must all be images, GIFs, or videos"))
             (setq workflow-handle
-                  (appkit-register-handle
-                   (or owner (chirp-app)) 'function
-                   (lambda () (fail "XChat attachment send was canceled"))))
-            (upload-next stages nil 0))
+                  (appkit-register-handle (or owner (chirp-app))
+                                          'function
+                                          (lambda ()
+                                            (fail
+                                             "XChat attachment send was canceled"))))
+            (progn (upload-next stages nil 0) workflow-handle))
         ((error quit)
          (let ((message (error-message-string err)))
            (fail message)
-           (when (eq (car err) 'quit)
-             (signal (car err) (cdr err))))
+           (when (eq (car err) 'quit) (signal (car err) (cdr err))))
          nil)))))
 
 (cl-defun chirp-backend-dm-send-reaction

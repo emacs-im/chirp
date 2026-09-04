@@ -92,7 +92,7 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
                      (setq result
                            (chirp-xchat-native-test-recovery-poll
                             session job-id epoch))
-                    :status)
+                     :status)
                     'pending))
       (sleep-for 0.005))
     (when (eq (plist-get result :status) 'pending)
@@ -718,18 +718,19 @@ When BUSY is non-nil, abandon it with one pending synthetic recovery."
           (should-not (chirp-xchat-native-recovery-active-p)))
       (chirp-stop))))
 
-(ert-deftest chirp-stop-destroys-an-app-owned-pending-native-session ()
+(ert-deftest chirp-stop-destroys-an-app-owned-pending-native-session
+    ()
   (skip-unless (chirp-xchat-native-test--load))
   (let ((chirp--app nil))
     (unwind-protect
-        (let* ((session (chirp-xchat-native--session))
-               (state (appkit-app-state chirp--app))
-               (epoch (chirp--session-xchat-native-epoch state)))
+        (let*
+            ((session (chirp-xchat-native--session))
+             (state (appkit-app-model chirp--app))
+             (epoch (chirp--session-xchat-native-epoch state)))
           (should (eq session (chirp-xchat-native--session)))
-          (chirp-xchat-native-test-recovery-start
-           session epoch "2580" 1000)
-          (chirp-stop)
-          (should-not chirp--app)
+          (chirp-xchat-native-test-recovery-start session epoch "2580"
+                                                  1000)
+          (chirp-stop) (should-not chirp--app)
           (should-not (chirp-xchat-native-session-live-p session)))
       (chirp-stop))))
 

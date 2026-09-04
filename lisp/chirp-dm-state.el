@@ -57,10 +57,10 @@ not replaced by a later encrypted snapshot."
   "Return non-nil when EVENT adds or removes a message reaction."
   (memq (plist-get event :content-kind) '(reaction reaction-removed)))
 
-
 (defun chirp-dm-state-visible-events (events)
   "Return ordered EVENTS excluding message-targeted reaction operations."
   (cl-remove-if #'chirp-dm-state--reaction-event-p events))
+
 (defun chirp-dm-state--apply-reaction-event (target event)
   "Apply one normalized reaction EVENT to its TARGET message."
   (let* ((emoji (plist-get event :text))
@@ -105,7 +105,6 @@ not replaced by a later encrypted snapshot."
         (chirp-dm-state--apply-reaction-event target event)))
     events))
 
-
 (defun chirp-dm-state--refresh-derived-fields (conversation)
   "Refresh event-derived fields on canonical CONVERSATION."
   (let* ((events (plist-get conversation :events))
@@ -127,35 +126,31 @@ not replaced by a later encrypted snapshot."
   (chirp-dm-state--refresh-derived-fields conversation))
 
 (defun chirp-dm-state-accept-live-event (event)
-  "Merge normalized websocket EVENT into its canonical conversation.
-
-Return the canonical conversation, or nil when its metadata has not been
-loaded.  Existing inboxes promote the changed conversation to the recent edge."
-  (let* ((conversation-id (and (listp event)
-                               (plist-get event :conversation-id)))
-         (conversation
-          (and (stringp conversation-id)
-               (gethash conversation-id (chirp-dm-state--table)))))
+  "Merge normalized websocket EVENT into its canonical conversation.\n\nReturn the canonical conversation, or nil when its metadata has not been\nloaded.  Existing inboxes promote the changed conversation to the recent edge."
+  (let*
+      ((conversation-id
+        (and (listp event) (plist-get event :conversation-id)))
+       (conversation
+        (and (stringp conversation-id)
+             (gethash conversation-id (chirp-dm-state--table)))))
     (when conversation
       (chirp-dm-state--event-id event)
-      (chirp-dm-state-set-events
-       conversation
-       (chirp-dm-state-merge-events
-        (plist-get conversation :events) (list event)))
+      (chirp-dm-state-set-events conversation
+                                 (chirp-dm-state-merge-events
+                                  (plist-get conversation :events)
+                                  (list event)))
       (when (appkit-app-live-p chirp--app)
-        (maphash
-         (lambda (_id view)
-           (when (appkit-view-live-p view)
-             (let ((state (appkit-view-state view)))
-               (when (eq (plist-get state :type) 'dm-inbox)
-                 (setf (plist-get state :items)
-                       (cons conversation
-                             (delq conversation
-                                   (copy-sequence
-                                    (plist-get state :items)))))))))
-         (appkit-app-view-registry chirp--app)))
-      (chirp-dm-state-publish conversation)
-      conversation)))
+        (dolist (view (appkit-app--surface-snapshot chirp--app))
+          (progn
+            (when (appkit-surface-live-p view)
+              (let ((state (appkit-surface-model view)))
+                (when (eq (plist-get state :type) 'dm-inbox)
+                  (setf (plist-get state :items)
+                        (cons conversation
+                              (delq conversation
+                                    (copy-sequence
+                                     (plist-get state :items)))))))))))
+      (chirp-dm-state-publish conversation) conversation)))
 
 (defun chirp-dm-state--copy-field (target source property)
   "Copy PROPERTY from SOURCE to TARGET when SOURCE carries it."
@@ -201,20 +196,23 @@ Otherwise preserve canonical events while adding events from SNAPSHOT."
 (defun chirp-dm-state-publish (conversation)
   "Synchronize every live DM view that references canonical CONVERSATION."
   (when (appkit-app-live-p chirp--app)
-    (maphash
-     (lambda (_id view)
-       (when (appkit-view-live-p view)
-         (let ((state (appkit-view-state view)))
-           (pcase (plist-get state :type)
-             ('dm-conversation
-              (when (eq (plist-get state :conversation) conversation)
-                (appkit-request-sync
-                 view :structure t :parts '(frame timeline) :position t)))
-             ('dm-inbox
-              (when (memq conversation (plist-get state :items))
-                (appkit-request-sync
-                 view :structure t :part 'entries :position t)))))))
-     (appkit-app-view-registry chirp--app))))
+    (dolist (view (appkit-app--surface-snapshot chirp--app))
+      (progn
+        (when (appkit-surface-live-p view)
+          (let ((state (appkit-surface-model view)))
+            (pcase (plist-get state :type)
+              ('dm-conversation
+               (when (eq (plist-get state :conversation) conversation)
+                 (appkit-surface-post view
+                                      (appkit-projection-change-create
+                                       :full-p t :frame-p t :position
+                                       'preserve))))
+              ('dm-inbox
+               (when (memq conversation (plist-get state :items))
+                 (appkit-surface-post view
+                                      (appkit-projection-change-create
+                                       :full-p t :frame-p t :position
+                                       'preserve)))))))))))
 
 (provide 'chirp-dm-state)
 

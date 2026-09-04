@@ -18,7 +18,7 @@
 (require 'warnings)
 (require 'appkit-core)
 (require 'appkit-evil)
-(require 'appkit-invalidation)
+(require 'appkit-surface)
 (require 'appkit-projection)
 (require 'appkit-ui)
 (require 'appkit-presentation)
@@ -80,7 +80,7 @@ tags use the English timestamp forms."
 
 (defun chirp--view-width ()
   "Return the current Chirp view's responsive width in columns."
-  (or (appkit-view-responsive-width) fill-column))
+  (or (window-body-width nil) fill-column))
 
 (defcustom chirp-timeline-refresh-max-results 10
   "Number of head posts requested when refreshing a timeline with `g'.
@@ -89,7 +89,7 @@ Refreshing only needs a recent head window to detect and merge newer posts, so
 this can stay smaller than `chirp-default-max-results' for better latency.
 Set it to nil to refresh using the current timeline size instead."
   :type '(choice (const :tag "Use current timeline size" nil)
-                 integer)
+          integer)
   :group 'chirp)
 
 (defcustom chirp-rerender-idle-delay 0.2
@@ -139,64 +139,55 @@ commands still work, and displays alt text when the backend provides it."
 
 ;;; Session
 
-(appkit-define-app-kind chirp :shutdown #'chirp--shutdown-app)
+(require 'appkit-app)
 
 (cl-defstruct (chirp--session (:constructor chirp--session-create))
   "State owned by one Chirp application session."
-  tweet-state-overrides
-  quoted-tweet-cache
-  quoted-tweet-pending
-  backend-read-cache
-  backend-pending-reads
-  primary-feed-states
-  dm-conversations
-  dm-live
-  media-runtime
-  xchat-native-session
-  xchat-native-epoch
-  xchat-recovery
-  xchat-user
-  xchat-user-id)
+  tweet-state-overrides quoted-tweet-cache quoted-tweet-pending
+  backend-read-cache backend-pending-reads primary-feed-states
+  dm-conversations dm-live media-runtime xchat-native-session
+  xchat-native-epoch xchat-recovery xchat-user xchat-user-id)
 
-(defun chirp--shutdown-app (app)
-  "Destroy native state owned by stopped Chirp APP."
-  (let* ((state (appkit-app-state app))
-         (native-session
-          (and (chirp--session-p state)
-               (chirp--session-xchat-native-session state))))
-    (when native-session
-      (setf (chirp--session-xchat-native-session state) nil
-            (chirp--session-xchat-native-epoch state) nil
-            (chirp--session-xchat-recovery state) nil)
-      (unless (fboundp 'chirp-xchat-native-session-destroy)
-        (error "Chirp lost the loaded XChat native module"))
-      (chirp-xchat-native-session-destroy native-session))))
+(defun chirp--shutdown-app (app) "Destroy native state owned by stopped Chirp APP." (let* ((state (appkit-app-model app)) (native-session (and (chirp--session-p state) (chirp--session-xchat-native-session state)))) (when native-session (setf (chirp--session-xchat-native-session state) nil (chirp--session-xchat-native-epoch state) nil (chirp--session-xchat-recovery state) nil) (unless (fboundp 'chirp-xchat-native-session-destroy) (error "Chirp lost the loaded XChat native module")) (chirp-xchat-native-session-destroy native-session))))
 
 (defvar chirp--app nil
   "Lazy Appkit application session owned by Chirp.")
 
 (defun chirp--make-session ()
   "Return initialized state for a new Chirp application session."
-  (chirp--session-create
-   :tweet-state-overrides (make-hash-table :test #'equal)
-   :quoted-tweet-cache (make-hash-table :test #'equal)
-   :quoted-tweet-pending (make-hash-table :test #'equal)
-   :backend-read-cache (make-hash-table :test #'equal)
-   :backend-pending-reads (make-hash-table :test #'equal)
-   :dm-conversations (make-hash-table :test #'equal)
-   :primary-feed-states (make-hash-table :test #'eq)))
+  (chirp--session-create :tweet-state-overrides
+                         (make-hash-table :test #'equal)
+                         :quoted-tweet-cache
+                         (make-hash-table :test #'equal)
+                         :quoted-tweet-pending
+                         (make-hash-table :test #'equal)
+                         :backend-read-cache
+                         (make-hash-table :test #'equal)
+                         :backend-pending-reads
+                         (make-hash-table :test #'equal)
+                         :dm-conversations
+                         (make-hash-table :test #'equal)
+                         :primary-feed-states
+                         (make-hash-table :test #'eq)))
 
 (defun chirp-app ()
-  "Return Chirp's live Appkit application session, creating it when needed."
+  "Return the live canonical Chirp App."
   (unless (appkit-app-live-p chirp--app)
     (setq chirp--app
           (appkit-app-start
-           'chirp :id 'default :state (chirp--make-session))))
+           (appkit-app-type-create
+            :name 'chirp
+            :init (lambda (_context _input)
+                    (appkit-next :model (chirp--make-session) :render appkit-render-none))
+            :update (lambda (_context _model message)
+                      (error "Unsupported Chirp App message: %S" message))
+            :shutdown #'chirp--shutdown-app)
+           :identity 'chirp)))
   chirp--app)
 
 (defun chirp--session ()
   "Return state for Chirp's current application session."
-  (appkit-app-state (chirp-app)))
+  (appkit-app-model (chirp-app)))
 
 (defun chirp-stop ()
   "Stop Chirp's runtime and cancel its owned asynchronous work."
@@ -458,9 +449,10 @@ commands still work, and displays alt text when the backend provides it."
   (let ((target (or buffer (current-buffer))))
     (when (buffer-live-p target)
       (with-current-buffer target
-        (when-let* ((view (appkit-current-view))
-                    (state (appkit-view-state view))
-                    ((eq (plist-get state :type) 'timeline)))
+        (when-let*
+            ((view (appkit-current-surface))
+             (state (appkit-surface-model view))
+             ((eq (plist-get state :type) 'timeline)))
           state)))))
 
 (defun chirp--persistent-timeline-buffer-p (&optional buffer)
@@ -500,115 +492,108 @@ revisited later."
        (with-current-buffer buffer
          (eq chirp--request-token token))))
 
-(defun chirp-view-state-token-current-p (view state token &optional property)
-  "Return non-nil when TOKEN still owns PROPERTY in VIEW and STATE.
-
-PROPERTY defaults to `:generation'."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
+(defun chirp-view-state-token-current-p
+    (view state token &optional property)
+  "Return non-nil when TOKEN still owns PROPERTY in VIEW and STATE.\n\nPROPERTY defaults to `:generation'."
+  (and (appkit-surface-live-p view)
+       (eq state (appkit-surface-model view))
        (eq token (plist-get state (or property :generation)))))
 
 ;;; Projection Views
 
 (defun chirp--live-projection-view (&optional buffer)
-  "Return BUFFER's live Appkit projection view, or nil."
-  (let ((target (or buffer (current-buffer))))
-    (when (buffer-live-p target)
-      (with-current-buffer target
-        (when-let* ((view (appkit-current-view))
-                    ((appkit-view-live-p view))
-                    ((appkit-projection-view-p view)))
-          view)))))
+  "Return BUFFER's live Chirp generated Surface."
+  (when (buffer-live-p (or buffer (current-buffer)))
+    (with-current-buffer (or buffer (current-buffer))
+      (let ((surface (appkit-current-surface)))
+        (and (appkit-surface-live-p surface) surface)))))
 
 (defun chirp--projection-state (&optional buffer)
   "Return BUFFER's Appkit projection state, or nil."
   (when-let* ((view (chirp--live-projection-view buffer)))
-    (appkit-view-state view)))
-
-(defun chirp-projection-position-intent (events)
-  "Return the effective semantic position intent from EVENTS."
-  (or (cl-loop for event in events
-               when (eq (plist-get event :position) 'first)
-               return 'first)
-      (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when position return position)
-      'preserve))
+    (appkit-surface-model view)))
 
 (cl-defun chirp--setup-projection-view
-    (view title printer anchor-property &optional (no-separator-p t))
-  "Initialize VIEW's read-only projection titled TITLE.
-
-PRINTER renders one row.  ANCHOR-PROPERTY carries stable row identity.
-NO-SEPARATOR-P suppresses EWOC's automatic newlines between rows."
-  (let* ((buffer (appkit-view-buffer view))
-         (state (appkit-view-state view)))
-    (setq-local chirp--view-title title)
-    (setq-local chirp--refresh-function (plist-get state :refresh))
-    (setq-local chirp--rerender-function nil)
-    (setq-local header-line-format nil)
-    (setq-local chirp--entry-wrap-navigation
+    (surface title printer anchor-property &optional (no-separator-p t))
+  "Mount the keyed presentation cache in SURFACE."
+  (let ((state (appkit-surface-model surface)))
+    (setq-local chirp--view-title title
+                chirp--refresh-function (plist-get state :refresh)
+                chirp--rerender-function nil
+                header-line-format nil
+                chirp--entry-wrap-navigation
                 (if (plist-member state :wrap-navigation)
-                    (plist-get state :wrap-navigation)
-                  t))
-    (chirp--apply-buffer-name buffer title)
-    (appkit-projection-ensure
-     view
-     :printer printer
-     :anchor-property anchor-property
-     :no-separator-p no-separator-p)
-    (appkit-view-enqueue-event
-     view (list :position (or (plist-get state :position) 'first)))
-    (appkit-invalidate view :structure t :part 'frame :position t)
-    (appkit-sync-invalidations view)))
+                    (plist-get state :wrap-navigation) t))
+    (chirp--apply-buffer-name (current-buffer) title)
+    (setq-local chirp--projection
+                (appkit-projection-create printer anchor-property
+                                          :no-separator-p no-separator-p))))
 
 (cl-defun chirp-open-projection-view
-    (&key id title state sync-function printer
-          (mode 'chirp-view-mode)
-          (anchor-property 'chirp-entry-id)
-          (parts '(frame entries geometry))
-          setup select)
-  "Open or reuse a read-only Chirp projection view.
+    (&key id title state render-function printer (mode 'chirp-view-mode)
+          (anchor-property 'chirp-entry-id) setup ready select)
+  "Open or reuse the generated Chirp Surface identified by ID."
+  (dolist (pair '((:media-intent . nil) (:media-phase . idle) (:media-error . nil)))
+    (unless (plist-member state (car pair)) (nconc state (list (car pair) (cdr pair)))))
+  (let* ((app (chirp-app)) (existing (appkit-app-surface app id)))
+    (if (appkit-surface-live-p existing)
+        (progn
+          (appkit-surface-send existing (list 'chirp-model state))
+          (when select (pop-to-buffer (appkit-surface-buffer existing)))
+          existing)
+      (let ((surface
+             (appkit-open-generated-surface
+              (appkit-surface-type-create
+               :name 'chirp-reader :mode mode
+               :init (lambda (_context input)
+                       (appkit-next :model input
+                                    :render (appkit-projection-change-create
+                                             :full-p t :frame-p t
+                                             :position (or (plist-get input :position) 'first))))
+               :update #'chirp--surface-update
+               :renderer-factory
+               (lambda (_surface)
+                 (appkit-generated-renderer-create
+                  :mount (lambda (surface _app _model)
+                           (if setup (funcall setup surface)
+                             (chirp--setup-projection-view surface title printer anchor-property)))
+                  :merge #'appkit-projection-change-merge
+                  :resource-request (lambda (keys)
+                                      (appkit-projection-change-create :resources keys))
+                  :render render-function
+                  :recover (lambda (surface app model _condition)
+                             (let ((inhibit-read-only t)) (erase-buffer))
+                             (if setup (funcall setup surface)
+                               (chirp--setup-projection-view surface title printer anchor-property))
+                             (funcall render-function surface app model
+                                      (appkit-projection-change-create :full-p t :frame-p t)))
+                  :unmount (lambda (_surface) (setq chirp--projection nil)))))
+              :app app :identity id :input state
+              :buffer-name (chirp--format-buffer-name title) :select select)))
+        (with-current-buffer (appkit-surface-buffer surface)
+          (add-hook 'window-size-change-functions #'chirp--geometry-changed nil t)
+          (when ready (funcall ready surface)))
+        surface))))
 
-ID identifies the view.  TITLE names the buffer.  STATE is the canonical
-view plist.  SYNC-FUNCTION applies invalidations.  PRINTER renders one
-projected row.  MODE, ANCHOR-PROPERTY, PARTS, and SELECT are forwarded to
-`appkit-open-view'.  SETUP runs after responsive geometry is enabled."
-  (let ((view
-         (appkit-open-view
-          :app (chirp-app)
-          :id id
-          :mode mode
-          :buffer-name (chirp--format-buffer-name title)
-          :state state
-          :sync-function sync-function
-          :parts parts
-          :position-policy anchor-property
-          :setup
-          (lambda (live)
-            (appkit-view-enable-responsive-geometry live)
-            (if setup
-                (funcall setup live)
-              (chirp--setup-projection-view
-               live title printer anchor-property)))
-          :select select)))
-    (with-current-buffer (appkit-view-buffer view)
-      (setq-local chirp--view-title title)
-      (setq-local chirp--refresh-function (plist-get state :refresh))
-      (chirp--apply-buffer-name (current-buffer) title))
-    view))
-
-(defmacro chirp-sync-projection
-    (view invalidations events rows &optional header)
-  "Synchronize VIEW from INVALIDATIONS and EVENTS with lazily projected ROWS.
-
-HEADER updates the generated frame when supplied."
-  (declare (indent 3) (debug t))
-  `(appkit-projection-sync-invalidations
-       ,view ,invalidations ,rows
-     :reconcile-parts '(entries)
-     :header (or ,header "")
-     :position (chirp-projection-position-intent ,events)))
+(defmacro chirp-render-projection (surface change rows &optional header)
+  "Render lazy committed ROWS using native projection CHANGE."
+  (declare (indent 2) (debug t))
+  `(let* ((request ,change)
+          (resources (appkit-projection-change-resources request))
+          (reconcile (or (appkit-projection-change-full-p request)
+                         (appkit-projection-change-geometry-p request)
+                         (appkit-projection-change-keys request) resources)))
+     (appkit-projection-sync
+      ,surface chirp--projection (and reconcile ,rows)
+      :header (concat (or ,header "")
+                      (when-let* ((text (plist-get (appkit-surface-model ,surface) :media-error)))
+                        (format "Media: %s\n" text)))
+      :force-keys (if (or (appkit-projection-change-geometry-p request) (memq 'all resources))
+                      (appkit-projection-keys chirp--projection)
+                    (appkit-projection-change-keys request))
+      :changed-dependencies resources :reconcile-p reconcile
+      :position (or (appkit-projection-change-position request) 'preserve))
+     nil))
 
 (defun chirp--on-text-scale-change ()
   "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
@@ -621,40 +606,49 @@ current line metrics."
 
 (defun chirp-request-rerender (&optional buffer delay)
   "Schedule one coalesced projection update for BUFFER after DELAY."
-  (let ((target (or buffer (current-buffer)))
-        (wait (or delay chirp-rerender-idle-delay)))
+  (let
+      ((target (or buffer (current-buffer)))
+       (wait (or delay chirp-rerender-idle-delay)))
     (when (buffer-live-p target)
       (if-let* ((view (chirp--live-projection-view target)))
-          (appkit-request-sync
-           view :resources '(all) :position t :delay wait)
+          (appkit-surface-post view
+                               (appkit-projection-change-create
+                                :full-p t :frame-p t :position
+                                'preserve :resources '(all)))
         (with-current-buffer target
           (when (timerp chirp--rerender-timer)
             (cancel-timer chirp--rerender-timer))
-          (setq-local
-           chirp--rerender-timer
-           (run-with-idle-timer
-            wait nil
-            (lambda (buf)
-              (when (buffer-live-p buf)
-                (with-current-buffer buf
-                  (setq-local chirp--rerender-timer nil)
-                  (when chirp--rerender-function
-                    (let ((window-state (chirp-capture-window-state buf)))
-                      (funcall chirp--rerender-function)
-                      (chirp-restore-window-state window-state))))))
-            target)))))))
+          (setq-local chirp--rerender-timer
+                      (run-with-idle-timer wait nil
+                                           (lambda (buf)
+                                             (when (buffer-live-p buf)
+                                               (with-current-buffer
+                                                   buf
+                                                 (setq-local
+                                                  chirp--rerender-timer
+                                                  nil)
+                                                 (when
+                                                     chirp--rerender-function
+                                                   (let
+                                                       ((window-state
+                                                         (chirp-capture-window-state
+                                                          buf)))
+                                                     (funcall
+                                                      chirp--rerender-function)
+                                                     (chirp-restore-window-state
+                                                      window-state))))))
+                                           target)))))))
 
 (defun chirp-request-tweet-rerender (tweet-id &optional buffer delay)
   "Schedule a projection update for TWEET-ID in BUFFER after DELAY."
   (let ((target (or buffer (current-buffer))))
     (if (and tweet-id (buffer-live-p target))
         (if-let* ((view (chirp--live-projection-view target)))
-            (appkit-request-sync
-             view
-             :entry (list 'tweet tweet-id)
-             :resource (list 'tweet tweet-id)
-             :position t
-             :delay (or delay chirp-rerender-idle-delay))
+            (appkit-surface-post view
+                                 (appkit-projection-change-create
+                                  :full-p t :frame-p t :position
+                                  'preserve :resources
+                                  (list (list 'tweet tweet-id))))
           (chirp-request-rerender target delay))
       (chirp-request-rerender target delay))))
 
@@ -695,8 +689,9 @@ current line metrics."
   (with-current-buffer buffer
     (setq-local chirp--view-title title)
     (setq-local chirp--refresh-function refresh)
-    (if-let* ((view (chirp--live-projection-view buffer))
-              (state (appkit-view-state view)))
+    (if-let*
+        ((view (chirp--live-projection-view buffer))
+         (state (appkit-surface-model view)))
         (progn
           (when (plist-member state :status)
             (setf (plist-get state :status)
@@ -705,16 +700,15 @@ current line metrics."
             (setf (plist-get state :title) title))
           (when (plist-member state :refresh)
             (setf (plist-get state :refresh) refresh))
-          (appkit-request-sync view :part 'frame :position t))
-      (unless (derived-mode-p 'chirp-view-mode)
-        (chirp-view-mode))
+          (appkit-surface-post view
+                               (appkit-projection-change-create
+                                :full-p t :frame-p t :position
+                                'preserve)))
+      (unless (derived-mode-p 'chirp-view-mode) (chirp-view-mode))
       (chirp--apply-buffer-name buffer title)
       (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert "Unable to load data.\n\n")
-        (insert message)
-        (insert "\n")
-        (goto-char (point-min)))))
+        (erase-buffer) (insert "Unable to load data.\n\n")
+        (insert message) (insert "\n") (goto-char (point-min)))))
   (chirp-display-buffer buffer))
 
 (defun chirp-refresh ()
@@ -921,19 +915,27 @@ current line metrics."
 
 (defun chirp--expand-tweet (tweet-id)
   "Expand TWEET-ID inline and update the current view."
-  (if-let* ((view (chirp--live-projection-view))
-            (state (appkit-view-state view)))
-      (let ((table
-             (or (plist-get state :expanded-tweet-ids)
-                 (setf (plist-get state :expanded-tweet-ids)
-                       (make-hash-table :test #'equal)))))
+  (if-let*
+      ((view (chirp--live-projection-view))
+       (state (appkit-surface-model view)))
+      (let
+          ((table
+            (or (plist-get state :expanded-tweet-ids)
+                (setf (plist-get state :expanded-tweet-ids)
+                      (make-hash-table :test #'equal)))))
         (puthash tweet-id t table)
-        (appkit-request-sync
-         view :entry (list 'tweet tweet-id) :position t))
+        (appkit-surface-post view
+                             (appkit-projection-change-create :full-p
+                                                              t
+                                                              :frame-p
+                                                              t
+                                                              :position
+                                                              'preserve)))
     (unless (functionp chirp--rerender-function)
       (user-error "This Chirp view cannot expand tweet content"))
     (unless (hash-table-p chirp--expanded-tweet-ids)
-      (setq-local chirp--expanded-tweet-ids (make-hash-table :test #'equal)))
+      (setq-local chirp--expanded-tweet-ids
+                  (make-hash-table :test #'equal)))
     (puthash tweet-id t chirp--expanded-tweet-ids)
     (funcall chirp--rerender-function)))
 
@@ -1026,7 +1028,6 @@ current line metrics."
                     (throw 'missing nil))))
                (t
                 (throw 'missing nil))))))))
-
 
 (defun chirp-boolean-value (value)
   "Normalize VALUE into a Lisp boolean."
@@ -1452,7 +1453,6 @@ SPAN offsets are Emacs character positions in DISPLAY."
      "https://fixupx.com"
      url)))
 
-
 (defun chirp--tweet-permalink-p (url tweet)
   "Return non-nil when URL is a permalink for TWEET."
   (let ((id (plist-get tweet :id)))
@@ -1501,7 +1501,6 @@ CONTEXT is a plist containing the current tweet, quoted tweet, and media."
       (setq count (1+ count)
             start (match-end 0)))
     count))
-
 
 (defun chirp--entity-overlaps-p (left right)
   "Return non-nil when LEFT and RIGHT code-point ranges overlap."
@@ -1752,7 +1751,6 @@ Retweets use their wrapper ID so the wrapper and original remain distinct."
 
 ;;;; State Overrides
 
-
 (defun chirp-set-tweet-state-override (tweet-id prop value)
   "Store VALUE as local PROP override for TWEET-ID."
   (when tweet-id
@@ -1811,19 +1809,17 @@ Retweets use their wrapper ID so the wrapper and original remain distinct."
 
 (defun chirp--primary-feed-state-values (&optional extra-state)
   "Return retained primary feed states, including EXTRA-STATE once."
-  (let* ((session
-          (and (appkit-app-live-p chirp--app)
-               (appkit-app-state chirp--app)))
-         (table
-          (and (chirp--session-p session)
-               (chirp--session-primary-feed-states session)))
-         states)
+  (let*
+      ((session
+        (and (appkit-app-live-p chirp--app)
+             (appkit-app-model chirp--app)))
+       (table
+        (and (chirp--session-p session)
+             (chirp--session-primary-feed-states session)))
+       states)
     (when table
-      (maphash (lambda (_kind state)
-                 (push state states))
-               table))
-    (when extra-state
-      (cl-pushnew extra-state states :test #'eq))
+      (maphash (lambda (_kind state) (push state states)) table))
+    (when extra-state (cl-pushnew extra-state states :test #'eq))
     states))
 
 (defun chirp-update-tweet-by-id (buffer tweet-id fn &optional rerender)
@@ -1855,28 +1851,28 @@ updates for the owning top-level rows visible in BUFFER."
     changed-p))
 
 (defun chirp--remove-tweet-from-primary-feeds (buffer tweet-id)
-  "Remove TWEET-ID from retained primary feeds represented by BUFFER.
-
-Return non-nil when BUFFER currently projects a primary feed."
-  (let ((active-state (chirp--appkit-timeline-state buffer))
-        active-changed-p)
+  "Remove TWEET-ID from retained primary feeds represented by BUFFER.\n\nReturn non-nil when BUFFER currently projects a primary feed."
+  (let
+      ((active-state (chirp--appkit-timeline-state buffer))
+       active-changed-p)
     (dolist (state (chirp--primary-feed-state-values active-state))
       (dolist (slot '(:items :pending-new-items))
-        (let* ((items (plist-get state slot))
-               (remaining
-                (cl-remove-if
-                 (lambda (tweet)
-                   (equal (plist-get tweet :id) tweet-id))
-                 items)))
+        (let*
+            ((items (plist-get state slot))
+             (remaining
+              (cl-remove-if
+               (lambda (tweet) (equal (plist-get tweet :id) tweet-id))
+               items)))
           (unless (= (length items) (length remaining))
             (setf (plist-get state slot) remaining)
-            (when (eq state active-state)
-              (setq active-changed-p t))))))
+            (when (eq state active-state) (setq active-changed-p t))))))
     (when (and active-changed-p (buffer-live-p buffer))
       (with-current-buffer buffer
-        (when-let* ((view (appkit-current-view)))
-          (appkit-request-sync
-           view :structure t :part 'frame :position t))))
+        (when-let* ((view (appkit-current-surface)))
+          (appkit-surface-post view
+                               (appkit-projection-change-create
+                                :full-p t :frame-p t :position
+                                'preserve)))))
     (and active-state t)))
 
 ;;; Tweet Fields
@@ -2128,7 +2124,6 @@ Return non-nil when BUFFER currently projects a primary feed."
     (when url
       (list :url url
             :bitrate bitrate))))
-
 
 ;;;; Link Cards
 
@@ -2762,7 +2757,31 @@ over the card's `t.co` permalink."
                   value)))
    (t nil)))
 
+(defvar-local chirp--projection nil
+  "Keyed presentation cache owned by this generated renderer.")
 
+(defun chirp--surface-update (context model message)
+  "Accept projection work or media intent on the exact initiating Surface."
+  (cond
+   ((appkit-projection-change-p message)
+    (appkit-next :model model :render message))
+   ((eq (car-safe message) 'chirp-model)
+    (let ((state (cadr message)))
+      (dolist (pair '((:media-intent) (:media-phase . idle) (:media-error)))
+        (unless (plist-member state (car pair))
+          (nconc state (list (car pair) (cdr pair)))))
+      (appkit-next :model state
+                   :render (appkit-projection-change-create :full-p t :frame-p t)
+                   :commands (list (appkit-command-cancel-effect 'chirp-media-acquire)
+                                   (appkit-command-cancel-effect 'chirp-media-present)))))
+   ((eq (car-safe message) 'chirp-media)
+    (chirp-media-view--update context model message))
+   (t (error "Unsupported Chirp Surface message: %S" message))))
+
+(defun chirp--geometry-changed (_window)
+  "Request geometry rendering for the exact current Surface."
+  (when-let* ((surface (appkit-current-surface)) ((appkit-surface-live-p surface)))
+    (appkit-surface-post surface (appkit-projection-change-create :geometry-p t))))
 
 (provide 'chirp-core)
 

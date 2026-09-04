@@ -74,11 +74,11 @@
 
 (defun chirp-dm--remember-user (app user)
   "Retain authenticated XChat USER in live APP and return its ID."
-  (when-let* ((user-id (plist-get user :id))
-              ((stringp user-id))
-              ((string-match-p "\\`[0-9]+\\'" user-id))
-              ((appkit-app-live-p app)))
-    (let ((state (appkit-app-state app)))
+  (when-let*
+      ((user-id (plist-get user :id)) ((stringp user-id))
+       ((string-match-p "\\`[0-9]+\\'" user-id))
+       ((appkit-app-live-p app)))
+    (let ((state (appkit-app-model app)))
       (setf (chirp--session-xchat-user state) (copy-tree user)
             (chirp--session-xchat-user-id state) user-id))
     user-id))
@@ -133,23 +133,19 @@
 
 (defun chirp-dm--open-unlocked-inbox ()
   "Open an unlocked inbox after ensuring the current XChat user identity."
-  (let* ((app (chirp-app))
-         (state (appkit-app-state app))
-         (user-id (chirp--session-xchat-user-id state))
-         (user (chirp--session-xchat-user state)))
-    (if (and (stringp user-id)
-             (string-match-p "\\`[0-9]+\\'" user-id)
+  (let*
+      ((app (chirp-app)) (state (appkit-app-model app))
+       (user-id (chirp--session-xchat-user-id state))
+       (user (chirp--session-xchat-user state)))
+    (if
+        (and (stringp user-id) (string-match-p "\\`[0-9]+\\'" user-id)
              (equal (plist-get user :id) user-id))
-        (progn
-          (chirp-dm-live-ensure)
-          (chirp-dm-inbox-open))
+        (progn (chirp-dm-live-ensure) (chirp-dm-inbox-open))
       (message "Resolving the authenticated XChat identity...")
       (chirp-backend-whoami
        (lambda (resolved _envelope)
          (if (chirp-dm--remember-user app resolved)
-             (progn
-               (chirp-dm-live-ensure)
-               (chirp-dm-inbox-open))
+             (progn (chirp-dm-live-ensure) (chirp-dm-inbox-open))
            (chirp-dm--unlock-error
             "Authenticated X profile has no user identity")))
        #'chirp-dm--unlock-error))))

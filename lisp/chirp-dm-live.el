@@ -75,17 +75,21 @@
     (chirp-dm-live--cancel-keepalive service)
     t))
 
-(defun chirp-dm-live--matching-conversation-view (service conversation)
+(defun chirp-dm-live--matching-conversation-view
+    (service conversation)
   "Return one live view in SERVICE for canonical CONVERSATION."
   (let (matched)
-    (maphash
-     (lambda (_id view)
-       (when (and (null matched) (appkit-view-live-p view))
-         (let ((state (appkit-view-state view)))
-           (when (and (eq (plist-get state :type) 'dm-conversation)
-                      (eq (plist-get state :conversation) conversation))
-             (setq matched view)))))
-     (appkit-app-view-registry (chirp-dm-live--service-app service)))
+    (dolist
+        (view
+         (appkit-app--surface-snapshot
+          (chirp-dm-live--service-app service)))
+      (progn
+        (when (and (null matched) (appkit-surface-live-p view))
+          (let ((state (appkit-surface-model view)))
+            (when
+                (and (eq (plist-get state :type) 'dm-conversation)
+                     (eq (plist-get state :conversation) conversation))
+              (setq matched view))))))
     matched))
 
 (defun chirp-dm-live--accept-event (service event)
@@ -100,28 +104,35 @@
 
 (defun chirp-dm-live--collect-fallback (service)
   "Collect current DM surfaces into SERVICE's fallback refresh set."
-  (maphash
-   (lambda (_id view)
-     (when (appkit-view-live-p view)
-       (let ((state (appkit-view-state view)))
-         (pcase (plist-get state :type)
-           ('dm-inbox
-            (setf (chirp-dm-live--service-pending-inbox-p service) t))
-           ('dm-conversation
-            (puthash
-             (plist-get (plist-get state :conversation) :id) t
-             (chirp-dm-live--service-pending-conversations service)))))))
-   (appkit-app-view-registry (chirp-dm-live--service-app service))))
+  (dolist
+      (view
+       (appkit-app--surface-snapshot
+        (chirp-dm-live--service-app service)))
+    (progn
+      (when (appkit-surface-live-p view)
+        (let ((state (appkit-surface-model view)))
+          (pcase (plist-get state :type)
+            ('dm-inbox
+             (setf (chirp-dm-live--service-pending-inbox-p service) t))
+            ('dm-conversation
+             (puthash (plist-get (plist-get state :conversation) :id)
+                      t
+                      (chirp-dm-live--service-pending-conversations
+                       service)))))))))
 
 (defun chirp-dm-live--views-of-type (service type)
   "Return SERVICE's live views whose state has TYPE."
   (let (views)
-    (maphash
-     (lambda (_id view)
-       (when (and (appkit-view-live-p view)
-                  (eq (plist-get (appkit-view-state view) :type) type))
-         (push view views)))
-     (appkit-app-view-registry (chirp-dm-live--service-app service)))
+    (dolist
+        (view
+         (appkit-app--surface-snapshot
+          (chirp-dm-live--service-app service)))
+      (progn
+        (when
+            (and (appkit-surface-live-p view)
+                 (eq (plist-get (appkit-surface-model view) :type)
+                     type))
+          (push view views))))
     views))
 
 (defun chirp-dm-live--dispatch-inbox-fallback (service)
@@ -139,26 +150,30 @@
 
 (defun chirp-dm-live--dispatch-conversation-fallbacks (service)
   "Try SERVICE's pending per-conversation fallback refreshes."
-  (let ((pending (chirp-dm-live--service-pending-conversations service))
-        completed)
+  (let
+      ((pending (chirp-dm-live--service-pending-conversations service))
+       completed)
     (maphash
      (lambda (conversation-id _value)
-       (let ((views (chirp-dm-live--views-of-type service 'dm-conversation))
-             candidates started)
+       (let
+           ((views
+             (chirp-dm-live--views-of-type service 'dm-conversation))
+            candidates started)
          (dolist (view views)
-           (when (equal
-                  conversation-id
-                  (plist-get
-                   (plist-get (appkit-view-state view) :conversation) :id))
+           (when
+               (equal conversation-id
+                      (plist-get
+                       (plist-get (appkit-surface-model view)
+                                  :conversation)
+                       :id))
              (push view candidates)))
-         (cond
-          ((null candidates) (push conversation-id completed))
-          (t
-           (while (and candidates (not started))
-             (setq started
-                   (chirp-dm-conversation-refresh-live-view
-                    (pop candidates))))
-           (when started (push conversation-id completed))))))
+         (cond ((null candidates) (push conversation-id completed))
+               (t
+                (while (and candidates (not started))
+                  (setq started
+                        (chirp-dm-conversation-refresh-live-view
+                         (pop candidates))))
+                (when started (push conversation-id completed))))))
      pending)
     (dolist (conversation-id completed)
       (remhash conversation-id pending))))
@@ -331,17 +346,20 @@ the short-lived token-bearing constructor URL."
 
 (defun chirp-dm-live-ensure ()
   "Ensure the current Chirp app owns one XChat realtime service."
-  (let* ((app (chirp-app))
-         (state (appkit-app-state app))
-         (service (chirp--session-dm-live state)))
-    (unless (and (chirp-dm-live--service-p service)
-                 (not (chirp-dm-live--service-stopped-p service)))
+  (let*
+      ((app (chirp-app)) (state (appkit-app-model app))
+       (service (chirp--session-dm-live state)))
+    (unless
+        (and (chirp-dm-live--service-p service)
+             (not (chirp-dm-live--service-stopped-p service)))
       (setq service
-            (chirp-dm-live--service-create
-             :app app
-             :pending-conversations (make-hash-table :test #'equal)))
+            (chirp-dm-live--service-create :app app
+                                           :pending-conversations
+                                           (make-hash-table :test
+                                                            #'equal)))
       (setf (chirp--session-dm-live state) service)
-      (appkit-register-handle app 'dm-live service #'chirp-dm-live-stop)
+      (appkit-register-handle app 'dm-live service
+                              #'chirp-dm-live-stop)
       (chirp-dm-live--connect service))
     service))
 
