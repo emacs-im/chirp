@@ -190,7 +190,7 @@ commands still work, and displays alt text when the backend provides it."
   "Return Chirp's live Appkit application session, creating it when needed."
   (unless (appkit-app-live-p chirp--app)
     (setq chirp--app
-          (appkit-start-app
+          (appkit-app-start
            'chirp :id 'default :state (chirp--make-session))))
   chirp--app)
 
@@ -211,7 +211,7 @@ commands still work, and displays alt text when the backend provides it."
                          (appkit-compose-operation-active-p))
                 (ignore-errors (appkit-compose-cancel-operation))))))
         (when (appkit-app-live-p chirp--app)
-          (appkit-stop-app chirp--app)))
+          (appkit-app-close chirp--app)))
     (setq chirp--app nil)))
 
 ;;; Variables
