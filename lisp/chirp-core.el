@@ -2778,10 +2778,15 @@ over the card's `t.co` permalink."
     (chirp-media-view--update context model message))
    (t (error "Unsupported Chirp Surface message: %S" message))))
 
-(defun chirp--geometry-changed (_window)
-  "Request geometry rendering for the exact current Surface."
-  (when-let* ((surface (appkit-current-surface)) ((appkit-surface-live-p surface)))
-    (appkit-surface-post surface (appkit-projection-change-create :geometry-p t))))
+(defun chirp--geometry-changed (window)
+  "Reflow WINDOW's Surface only when its text width or buffer changes."
+  (when (or (not (eq (window-old-buffer window) (window-buffer window)))
+            (/= (window-old-body-pixel-width window)
+                (window-body-width window t)))
+    (when-let* ((surface (appkit-current-surface))
+                ((appkit-surface-live-p surface)))
+      (appkit-surface-post
+       surface (appkit-projection-change-create :geometry-p t)))))
 
 (provide 'chirp-core)
 
