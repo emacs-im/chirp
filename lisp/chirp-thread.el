@@ -406,7 +406,7 @@ protected."
    (lambda (row) (plist-get row :key))
    :dependencies-function
    (lambda (row)
-     (chirp-media-resource-keys-for-tweet (plist-get row :tweet)))))
+     (chirp-render--tweet-row-dependencies (plist-get row :tweet)))))
 
 (defun chirp-thread--frame-text (state)
   "Return header text representing thread STATE."
