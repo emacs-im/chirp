@@ -51,7 +51,7 @@
 
 Set this to nil or an empty string to disable tweet separators."
   :type '(choice (const :tag "No separator" nil)
-                 (string :tag "Separator text"))
+          (string :tag "Separator text"))
   :group 'chirp)
 
 (defcustom chirp-tweet-separator-indent 6
@@ -127,8 +127,8 @@ Set this to nil or an empty string to disable tweet separators."
 
 (defface chirp-quoted-tweet-block-face
   '((t :inherit fringe
-       :foreground unspecified
-       :extend t))
+     :foreground unspecified
+     :extend t))
   "Face layered beneath Appkit card blocks."
   :group 'chirp)
 
@@ -136,7 +136,6 @@ Set this to nil or an empty string to disable tweet separators."
   '((t :inherit shadow))
   "Face used for the display-only border of Appkit cards."
   :group 'chirp)
-
 
 (defface chirp-quoted-tweet-face
   '((t :inherit (bold font-lock-doc-face)))
@@ -290,10 +289,10 @@ already installed."
        start end
        (append
         `(chirp-entry-item ,entry
-                           chirp-entry-url
-                           ,(or (plist-get entry :url)
-                                (plist-get entry :profile-url))
-                           rear-nonsticky t)
+          chirp-entry-url
+          ,(or (plist-get entry :url)
+               (plist-get entry :profile-url))
+          rear-nonsticky t)
         (when key `(chirp-entry-id ,key)))))
     (put-text-property start (1+ start) 'chirp-entry-start t)))
 
@@ -321,8 +320,8 @@ HELP-ECHO defaults to a short Open-profile description."
        :help-echo (or help-echo (format "Open @%s" clean))
        :properties
        `(chirp-author-handle ,clean
-                             chirp-author-profile-url
-                             ,(format "https://x.com/%s" clean))))))
+         chirp-author-profile-url
+         ,(format "https://x.com/%s" clean))))))
 
 (defun chirp-render--mark-profile-list-region (start end kind handle)
   "Mark the region from START to END as profile list KIND for HANDLE."
@@ -339,7 +338,7 @@ HELP-ECHO defaults to a short Open-profile description."
                   ('following "Open following")
                   (_ "Open profile list"))
      :properties `(chirp-profile-list-kind ,kind
-                                           chirp-profile-list-handle ,handle))))
+                   chirp-profile-list-handle ,handle))))
 
 (defun chirp-render--mark-profile-view-region (start end mode)
   "Mark the region from START to END as profile subview MODE."
@@ -363,7 +362,7 @@ HELP-ECHO defaults to a short Open-profile description."
          (_ (user-error "Unknown profile action at point"))))
      :help-echo "Toggle follow"
      :properties `(chirp-profile-action ,action
-                                        chirp-profile-action-handle ,handle))))
+                   chirp-profile-action-handle ,handle))))
 
 (defun chirp-render--profile-follow-action-label (user)
   "Return the primary follow button label for USER, or nil."
@@ -383,12 +382,12 @@ CURRENT-MODE marks the active entry."
         (insert
          (propertize
           (pcase mode
-             ('posts "Posts")
-             ('replies "Replies")
-             ('highlights "Highlights")
-             ('media "Media")
-             ('likes "Likes")
-             (_ (capitalize (symbol-name mode))))
+            ('posts "Posts")
+            ('replies "Replies")
+            ('highlights "Highlights")
+            ('media "Media")
+            ('likes "Likes")
+            (_ (capitalize (symbol-name mode))))
           'face (if (eq mode current-mode)
                     'chirp-profile-view-active-face
                   'chirp-profile-view-inactive-face)))
@@ -409,8 +408,8 @@ CURRENT-MODE marks the active entry."
 
 PREFIX may be an Appkit mutable prefix state; its first prefix is consumed."
   (when-let* ((text (if (appkit-ui-prefix-state-p prefix)
-                       (appkit-ui-prefix-string prefix t)
-                     prefix)))
+                        (appkit-ui-prefix-string prefix t)
+                      prefix)))
     (insert (if face
                 (propertize text 'face face)
               text))))
@@ -420,8 +419,8 @@ PREFIX may be an Appkit mutable prefix state; its first prefix is consumed."
 
 An Appkit prefix state is read without consuming its current prefix."
   (when-let* ((text (if (appkit-ui-prefix-state-p prefix)
-                       (appkit-ui-prefix-string prefix)
-                     prefix)))
+                        (appkit-ui-prefix-string prefix)
+                      prefix)))
     (if face
         (propertize text 'face face)
       text)))
@@ -838,7 +837,7 @@ The card opens TWEET's Chirp thread while retaining its nested link actions."
    :help-echo "Open tweet"
    :properties
    `(chirp-subentry-item ,tweet
-                         chirp-subentry-url ,(plist-get tweet :url))))
+     chirp-subentry-url ,(plist-get tweet :url))))
 
 (defun chirp-render--insert-quoted-tweet
     (tweet &optional prefix prefix-face write-actions-p)
@@ -965,8 +964,8 @@ When COMPACTP is non-nil, omit alt text and make a missing video actionable."
                        (or chirp--view-title "Chirp Media")))
    :help-echo "Open media"
    :properties `(chirp-media-item ,media
-                                  chirp-media-index ,index
-                                  chirp-media-list ,media-list)))
+                 chirp-media-index ,index
+                 chirp-media-list ,media-list)))
 
 (defun chirp-render--media-cell (media index image)
   "Return sliced cell data for MEDIA at INDEX using IMAGE."
@@ -1092,18 +1091,14 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
 
 (defun chirp-render--media-track-toggle-muted (state)
   "Toggle canonical audio mute state for media track STATE."
-  (let* ((inline (aref state 9))
-         (live-inline
-          (and (appkit-media-video-inline-p inline)
-               (not (appkit-media-video-inline-closed-p inline))
-               inline))
+  (let* ((inline (chirp-render--media-track-inline state))
          (muted
-          (if live-inline
-              (not (appkit-media-video-inline-muted-p live-inline))
+          (if inline
+              (not (appkit-media-video-inline-muted-p inline))
             (not (aref state 13)))))
     (aset state 13 muted)
-    (when live-inline
-      (appkit-media-video-inline-set-muted live-inline muted))
+    (when inline
+      (appkit-media-video-inline-set-muted inline muted))
     (message "Video audio %s" (if muted "muted" "unmuted"))))
 
 (defun chirp-render--media-track-state (&optional event)
@@ -1154,8 +1149,8 @@ GAP is the pixel gutter.  PREFIX and PREFIX-FACE control indentation."
   (interactive)
   (let* ((state (chirp-render--media-track-state))
          (inline
-          (and (equal (aref state 12) (aref state 0))
-               (aref state 9))))
+           (and (equal (aref state 12) (aref state 0))
+                (aref state 9))))
     (chirp-media-open-dedicated
      (chirp-media-selection-create
       (aref state 2) (aref state 0) inline)
@@ -1191,6 +1186,7 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
           (copy-keymap
            (or (get-text-property position 'keymap)
                (make-sparse-keymap))))
+         (parent (keymap-parent map))
          (state
           (vector
            0
@@ -1208,9 +1204,22 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
            nil
            nil
            map)))
+    (set-keymap-parent
+     map (if parent
+             (make-composed-keymap (list video-inline-map parent))
+           video-inline-map))
+    (define-key map [remap video-inline-toggle]
+                #'chirp-render-media-track-toggle-video)
+    (define-key map [remap video-inline-loop]
+                #'chirp-render-media-track-loop)
+    (define-key map [remap video-inline-mute]
+                #'chirp-render-media-track-toggle-muted)
+    (define-key map [remap video-inline-frame]
+                #'chirp-render-media-track-frame)
     (define-key map [right] #'chirp-render-media-track-next)
     (define-key map [left] #'chirp-render-media-track-previous)
     (define-key map (kbd "RET") #'chirp-render-media-track-open)
+    (define-key map (kbd "<return>") #'chirp-render-media-track-open)
     (define-key map (kbd "C-RET")
                 #'chirp-render-media-track-open-dedicated)
     (define-key map (kbd "S-RET")
@@ -1309,68 +1318,108 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
     (canvas-refresh canvas)
     canvas))
 
+(defun chirp-render--media-track-inline (state)
+  "Return STATE's live inline for its selected video item, if any."
+  (let ((inline (aref state 9)))
+    (and (chirp-media-video-like-p (nth (aref state 0) (aref state 2)))
+         (equal (aref state 12) (aref state 0))
+         (appkit-media-video-inline-p inline)
+         (not (appkit-media-video-inline-closed-p inline))
+         inline)))
+
+(defun chirp-render--media-track-ensure-video (state)
+  "Return or create STATE's selected live inline without starting playback."
+  (let* ((index (aref state 0))
+         (media (nth index (aref state 2))))
+    (unless (chirp-media-video-like-p media)
+      (user-error "Current media is not a video"))
+    (or (chirp-render--media-track-inline state)
+        (progn
+          (when-let* ((inline (aref state 9)))
+            (appkit-media-video-inline-close inline))
+          (let* ((buffer (current-buffer))
+                 (markers (aref state 4))
+                 (token (aref state 11))
+                 (poster (aref state 10))
+                 (plan (chirp-render--media-track-scene-plan state))
+                 (selected-cell (nth index (plist-get plan :items)))
+                 (scene (chirp-render--media-track-scene-canvas state plan))
+                 (scene-width (plist-get plan :width))
+                 (target-x (- (plist-get selected-cell :x)
+                              (plist-get plan :offset)))
+                 (target-width (plist-get selected-cell :width))
+                 (session
+                  (or (chirp-media-video-session-create
+                       media (aref state 13))
+                      (user-error "Current media has no playable URL")))
+                 (inline
+                   (appkit-media-video-inline-create
+                    session target-width (aref state 6)
+                    :poster poster
+                    :fit (or (aref state 8) 'contain)
+                    :buffer buffer
+                    :canvas scene
+                    :canvas-width scene-width
+                    :canvas-height (aref state 6)
+                    :destination-x target-x
+                    :destination-y 0
+                    :visible-function
+                    (lambda (_inline)
+                      (chirp-render--media-track-markers-visible-p buffer markers))
+                    :alive-function
+                    (lambda (_inline)
+                      (and (buffer-live-p buffer)
+                           (marker-position (car markers))
+                           (eq (get-text-property
+                                (car markers) 'chirp-video-inline-token)
+                               token)))
+                    :activate-function
+                    (lambda (_inline canvas)
+                      (chirp-render--media-track-activate-video
+                       buffer markers poster canvas))
+                    :close-function
+                    (lambda (closed-inline)
+                      (when (buffer-live-p buffer)
+                        (with-current-buffer buffer
+                          (chirp-media-unregister-video-inline closed-inline)
+                          (when (eq (aref state 9) closed-inline)
+                            (aset state 9 nil)
+                            (aset state 12 nil))))))))
+            (aset state 9 inline)
+            (aset state 12 index)
+            (chirp-media-register-video-inline (aref state 2) index inline)
+            (appkit-media-video-inline-bind-controls inline (aref state 14))
+            inline)))))
+
+(defun chirp-render-media-track-toggle-video ()
+  "Toggle inline playback for the selected video in the track at point."
+  (interactive)
+  (chirp-render--media-track-toggle-video (chirp-render--media-track-state)))
+
+(defun chirp-render-media-track-loop ()
+  "Toggle looping for the selected initialized video in the track at point."
+  (interactive)
+  (let* ((state (chirp-render--media-track-state))
+         (inline (chirp-render--media-track-inline state)))
+    (unless inline
+      (user-error "Current media has no initialized inline video"))
+    (appkit-media-video-inline-toggle-loop inline)))
+
+(defun chirp-render-media-track-frame ()
+  "Present the selected video in another frame without changing playback."
+  (interactive)
+  (let* ((state (chirp-render--media-track-state))
+         (inline (chirp-render--media-track-ensure-video state)))
+    (appkit-media-present-video-inline
+     inline (aref state 3)
+     :display-function #'video-display-buffer-other-frame)))
+
 (defun chirp-render--media-track-toggle-video (state)
   "Toggle inline playback for STATE's selected video item."
-  (let ((index (aref state 0)))
-    (if (and (aref state 9)
-             (equal (aref state 12) index))
-        (appkit-media-video-inline-toggle (aref state 9))
-      (when-let* ((inline (aref state 9)))
-        (appkit-media-video-inline-close inline))
-      (let* ((media (nth index (aref state 2)))
-             (buffer (current-buffer))
-             (markers (aref state 4))
-             (token (aref state 11))
-             (poster (aref state 10))
-             (plan (chirp-render--media-track-scene-plan state))
-             (selected-cell (nth index (plist-get plan :items)))
-             (scene (chirp-render--media-track-scene-canvas state plan))
-             (scene-width (plist-get plan :width))
-             (target-x (- (plist-get selected-cell :x)
-                          (plist-get plan :offset)))
-             (target-width (plist-get selected-cell :width))
-             (session
-              (or (chirp-media-video-session-create
-                   media (aref state 13))
-                  (user-error "Current media has no playable URL")))
-             (inline
-              (appkit-media-video-inline-create
-               session target-width (aref state 6)
-               :poster poster
-               :fit (or (aref state 8) 'contain)
-               :buffer buffer
-               :canvas scene
-               :canvas-width scene-width
-               :canvas-height (aref state 6)
-               :destination-x target-x
-               :destination-y 0
-               :visible-function
-               (lambda (_inline)
-                 (chirp-render--media-track-markers-visible-p buffer markers))
-               :alive-function
-               (lambda (_inline)
-                 (and (buffer-live-p buffer)
-                      (marker-position (car markers))
-                      (eq (get-text-property
-                           (car markers) 'chirp-video-inline-token)
-                          token)))
-               :activate-function
-               (lambda (_inline canvas)
-                 (chirp-render--media-track-activate-video
-                  buffer markers poster canvas))
-               :close-function
-               (lambda (closed-inline)
-                 (when (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     (chirp-media-unregister-video-inline closed-inline)
-                     (when (eq (aref state 9) closed-inline)
-                       (aset state 9 nil)
-                       (aset state 12 nil))))))))
-        (aset state 9 inline)
-        (aset state 12 index)
-        (chirp-media-register-video-inline (aref state 2) index inline)
-        (appkit-media-video-inline-bind-controls inline (aref state 14))
-        (appkit-media-video-inline-play inline)))))
+  (if-let* ((inline (chirp-render--media-track-inline state)))
+      (appkit-media-video-inline-toggle inline)
+    (appkit-media-video-inline-play
+     (chirp-render--media-track-ensure-video state))))
 
 (defun chirp-render--insert-media-track
     (media-list prefix prefix-face height gap widths fit)
@@ -1496,7 +1545,7 @@ PREFIX and PREFIX-FACE control indentation."
                                   (propertize
                                    " " 'display
                                    `(space :width
-                                           (,chirp-media-layout-cover-gap)))))
+                                     (,chirp-media-layout-cover-gap)))))
                             do (chirp-render--insert-media-cell-slice
                                 (aref cells index)
                                 (+ offset row)
@@ -1770,8 +1819,8 @@ layout.  WRITE-ACTIONS-P controls mutation actions, while TIME-FORMAT selects
     (add-text-properties
      start (point)
      `(chirp-entry-id ,key
-                      chirp-entry-item ,tweet
-                      rear-nonsticky t))
+       chirp-entry-item ,tweet
+       rear-nonsticky t))
     (cons start (point))))
 
 (defun chirp-render-insert-discussion-entry (row)
@@ -1892,8 +1941,6 @@ projections can replace it as one unit."
        :media-presentation 'carousel)
     (chirp-render-insert-tweet tweet)))
 
-
-
 ;;;; User Rows
 
 (defun chirp-render-insert-user-summary (user)
@@ -1950,7 +1997,6 @@ projections can replace it as one unit."
         (insert "\n")))
     (insert "\n")
     (chirp-render--mark-entry start (point) user)))
-
 
 (provide 'chirp-render)
 
