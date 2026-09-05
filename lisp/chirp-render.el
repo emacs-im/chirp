@@ -1216,12 +1216,12 @@ track; HEIGHT, GAP, WIDTHS, and FIT retain its presentation geometry."
                 #'chirp-render-media-track-toggle-muted)
     (define-key map [remap video-inline-frame]
                 #'chirp-render-media-track-frame)
+    (define-key map [remap video-inline-view]
+                #'chirp-render-media-track-open-dedicated)
     (define-key map [right] #'chirp-render-media-track-next)
     (define-key map [left] #'chirp-render-media-track-previous)
     (define-key map (kbd "RET") #'chirp-render-media-track-open)
     (define-key map (kbd "<return>") #'chirp-render-media-track-open)
-    (define-key map (kbd "C-RET")
-                #'chirp-render-media-track-open-dedicated)
     (define-key map (kbd "S-RET")
                 #'chirp-render-media-track-open-external)
     (define-key map (kbd "M-RET") #'chirp-open-entry-at-point)
