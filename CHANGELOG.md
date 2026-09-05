@@ -58,6 +58,7 @@ history remains available in Git.
 
 ### Fixed
 
+- Height-only window resizing no longer reflows every tweet. Viewport-edge checks remain active, while media strips reuse unchanged SVG descriptors across width reflow instead of rebuilding them for every row refresh.
 - XChat avatar, image, encrypted-attachment, and embedded-post acquisition now follows committed reader resource interests. Closing the last interested reader cancels transport, stale native-session deliveries cannot decrypt, and resource completion redraws dependent rows without rendering from transport callbacks.
 - Direct-message acknowledgement and failure settlement now target the exact live composer Surface, preserving draft editability and reaction ownership. Superseded timeline and history requests retain cancellation and stale-result fences.
 

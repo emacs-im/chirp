@@ -382,38 +382,6 @@ rerender and creates a CPU loop."
                        :preview-url "https://example.com/preview.jpg"))
                     'preview-image))))))
 
-(ert-deftest chirp-media-carousel-image-builds-configured-montage ()
-  "Carousel media should form one configured horizontal SVG."
-  (let (captured-items captured-height captured-gap captured-offset)
-    (cl-letf (((symbol-function 'chirp-media--preview-file)
-               (lambda (media) (plist-get media :file)))
-              ((symbol-function 'appkit-media-horizontal-strip-image)
-               (lambda (items height gap &optional offset)
-                 (setq captured-items items
-                       captured-height height
-                       captured-gap gap
-                       captured-offset offset)
-                 'track-image)))
-      (should
-       (eq
-        (chirp-media-carousel-image
-         '((:type "photo" :file "/tmp/a.jpg"
-            :width 430 :height 600)
-           (:type "video" :file "/tmp/b.jpg"
-            :width 600 :height 375))
-         384 8 28)
-        'track-image))
-      (should (= captured-height 384))
-      (should (= captured-gap 8))
-      (should (= captured-offset 28))
-      (should
-       (equal
-        captured-items
-        '((:file "/tmp/a.jpg" :width 430 :height 600
-           :id chirp-media-0)
-          (:file "/tmp/b.jpg" :width 600 :height 375
-           :id chirp-media-1)))))))
-
 (ert-deftest chirp-media-side-by-side-thumbnail-prefers-fixed-crop ()
   "Grid thumbnails should crop to one fixed tile and retain a decoder fallback."
   (let ((chirp-media-render-from-cache-only t)
