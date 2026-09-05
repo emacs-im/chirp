@@ -1171,38 +1171,43 @@ Return a list of (compose source foreign)."
          (chirp-actions--refresh-user-buffer-if-needed buffer))))
     (should refreshed)))
 
-(ert-deftest chirp-translate-at-point-caches-and-renders-result ()
-  "Translation should be stored on the current tweet and trigger a rerender."
-  (clrhash (chirp--session-tweet-state-overrides (chirp--session)))
-  (let ((chirp-translation-language "zh")
-        rerendered)
+(ert-deftest chirp-translate-at-point-renders-thread-result ()
+  "An asynchronous translation must appear without refreshing the thread."
+  (let ((chirp--app nil)
+        (chirp-translation-language "zh")
+        buffer callback)
     (unwind-protect
-        (chirp-test--with-tweet-buffer
-         '(:kind tweet :id "123" :translation nil :translation-language nil)
-         (lambda (_buffer)
-           (cl-letf (((symbol-function 'chirp-backend-translate)
-                      (lambda (tweet-id language callback &optional _errback)
-                        (should (equal tweet-id "123"))
-                        (should (equal language "zh"))
-                        (funcall callback
-                                 '(("translation" . "你好")
-                                   ("destinationLanguage" . "zh"))
-                                 nil)))
-                     ((symbol-function 'chirp-request-rerender)
-                      (lambda (&optional _buffer _delay)
-                        (setq rerendered t))))
-             (chirp-translate-at-point)
-             (should rerendered)
-             (should (equal (plist-get (chirp-entry-at-point) :translation)
-                            "你好"))
-             (should (equal
-                      (plist-get
-                       (gethash "123"
-                                (chirp--session-tweet-state-overrides
-                                 (chirp--session)))
-                       :translation-language)
-                      "zh")))))
-      (clrhash (chirp--session-tweet-state-overrides (chirp--session))))))
+        (save-window-excursion
+          (cl-letf (((symbol-function 'chirp-backend-translate)
+                     (lambda (_id _language success &optional _errback)
+                       (setq callback success)))
+                    ((symbol-function 'chirp-media-prefetch-tweets) #'ignore)
+                    ((symbol-function 'chirp-enrich-quoted-tweets) #'ignore))
+            (let ((surface (chirp-thread--ensure-view
+                            "Translation test" #'ignore "123")))
+              (setq buffer (appkit-surface-buffer surface))
+              (chirp-thread--present
+               surface
+               (list (list :kind 'tweet :id "123" :text "Hello"
+                           :translation nil :translation-language nil)))
+              (appkit-loop-run-pass (appkit-surface-loop surface))
+              (with-current-buffer buffer
+                (goto-char (point-min))
+                (search-forward "Hello")
+                (chirp-translate-at-point)
+                (should-not (string-match-p "你好" (buffer-string))))
+              ;; Network completion runs outside the originating view.
+              (with-temp-buffer
+                (funcall callback '(("translation" . "你好")
+                                    ("destinationLanguage" . "zh")) nil))
+              (appkit-loop-run-pass (appkit-surface-loop surface))
+              (with-current-buffer buffer
+                (should (string-match-p "Hello\nTranslation · zh\n你好"
+                                        (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (appkit-app-live-p chirp--app)
+        (appkit-app-close chirp--app)))))
 
 (ert-deftest chirp-copy-fixupx-url-at-point-copies-rewritten-url ()
   "Copy action should rewrite tweet URLs from x.com to fixupx.com."
