@@ -79,8 +79,9 @@ tags use the English timestamp forms."
   :group 'chirp)
 
 (defun chirp--view-width ()
-  "Return the current Chirp view's responsive width in columns."
-  (or (window-body-width nil) fill-column))
+  "Return the current Chirp Surface's canonical width in columns."
+  (or (appkit-surface-responsive-width (appkit-current-surface))
+      fill-column))
 
 (defcustom chirp-timeline-refresh-max-results 10
   "Number of head posts requested when refreshing a timeline with `g'.
@@ -319,7 +320,6 @@ commands still work, and displays alt text when the backend provides it."
   (setq-local line-spacing 0)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
-  (add-hook 'text-scale-mode-hook #'chirp--on-text-scale-change nil t)
   (appkit-evil-normalize-keymaps)
   (visual-line-mode 1))
 
@@ -571,7 +571,8 @@ revisited later."
               :app app :identity id :input state
               :buffer-name (chirp--format-buffer-name title) :select select)))
         (with-current-buffer (appkit-surface-buffer surface)
-          (add-hook 'window-size-change-functions #'chirp--geometry-changed nil t)
+          (appkit-surface-enable-responsive-geometry surface #'chirp--geometry-changed)
+          (appkit-surface-refresh-responsive-geometry surface)
           (when ready (funcall ready surface)))
         surface))))
 
@@ -595,14 +596,7 @@ revisited later."
       :position (or (appkit-projection-change-position request) 'preserve))
      nil))
 
-(defun chirp--on-text-scale-change ()
-  "Rebuild pixel-aligned chrome after `text-scale-mode' changes.
 
-The hook only requests a redraw.  Appkit projection sync owns the
-buffer mutation, so card prefixes and avatars are recreated at the
-current line metrics."
-  (when (derived-mode-p 'chirp-view-mode)
-    (chirp-request-rerender nil 0)))
 
 (defun chirp-request-rerender (&optional buffer delay)
   "Schedule one coalesced projection update for BUFFER after DELAY."
@@ -2778,15 +2772,10 @@ over the card's `t.co` permalink."
     (chirp-media-view--update context model message))
    (t (error "Unsupported Chirp Surface message: %S" message))))
 
-(defun chirp--geometry-changed (window)
-  "Reflow WINDOW's Surface only when its text width or buffer changes."
-  (when (or (not (eq (window-old-buffer window) (window-buffer window)))
-            (/= (window-old-body-pixel-width window)
-                (window-body-width window t)))
-    (when-let* ((surface (appkit-current-surface))
-                ((appkit-surface-live-p surface)))
-      (appkit-surface-post
-       surface (appkit-projection-change-create :geometry-p t)))))
+(defun chirp--geometry-changed (surface _width)
+  "Request a layout update after SURFACE's canonical geometry changes."
+  (appkit-surface-post surface
+                       (appkit-projection-change-create :geometry-p t)))
 
 (provide 'chirp-core)
 

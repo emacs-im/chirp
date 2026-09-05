@@ -783,20 +783,66 @@ rerender and creates a CPU loop."
                      '(image :type svg :data "avatar")))
       (should (= captured-size 35)))))
 
-(ert-deftest chirp-view-mode-rebuilds-geometry-after-text-scale ()
-  "Text scale should request a cached redraw, not a network refresh."
-  (with-temp-buffer
-    (chirp-view-mode)
-    (should (memq #'chirp--on-text-scale-change text-scale-mode-hook))
-    (let (rerender-args)
-      (cl-letf (((symbol-function 'chirp-request-rerender)
-                 (lambda (&optional buffer delay)
-                   (setq rerender-args (list buffer delay))))
-                ((symbol-function 'chirp-refresh)
-                 (lambda ()
-                   (ert-fail "text-scale must not refetch"))))
-        (chirp--on-text-scale-change)
-        (should (equal rerender-args '(nil 0)))))))
+(ert-deftest chirp-projection-preserves-inline-host-on-same-width-return ()
+  "Returning to an unchanged layout preserves its inline host."
+  (save-window-excursion
+    (let (surface inline marker token viewer)
+      (unwind-protect
+          (progn
+            (setq surface
+                  (chirp-open-projection-view
+                   :id (make-symbol "geometry-return") :title "Geometry return"
+                   :state '(:type test)
+                   :printer (lambda (_row)
+                              (insert (propertize
+                                       (make-string (chirp--view-width) ?x)
+                                       'chirp-test-token (list 'host))))
+                   :render-function
+                   (lambda (owner _app _model change)
+                     (chirp-render-projection owner change
+                       (list (appkit-projection-row-create
+                              :key 'media :payload 'unchanged))))))
+            (switch-to-buffer (appkit-surface-buffer surface))
+            (appkit-surface-refresh-responsive-geometry surface)
+            (appkit-loop-run-pass (appkit-surface-loop surface))
+            (setq marker (copy-marker (point-min))
+                  token (get-text-property marker 'chirp-test-token)
+                  inline (video-inline-create
+                          "file:///unused.webm" 160 90
+                          :alive-function
+                          (lambda (_inline)
+                            (and (marker-buffer marker)
+                                 (eq (get-text-property marker 'chirp-test-token)
+                                     token))))
+                  viewer (generate-new-buffer " *geometry viewer*"))
+            (let ((window (selected-window)))
+              (set-window-buffer window viewer)
+              (set-window-buffer window (appkit-surface-buffer surface))
+              (let ((window-state-change-functions
+                     (remq t window-state-change-functions))
+                    (window-size-change-functions
+                     (remq t window-size-change-functions)))
+                (run-hook-with-args 'window-state-change-functions window)
+                (run-hook-with-args 'window-size-change-functions window))
+              (appkit-loop-run-pass (appkit-surface-loop surface))
+              (should (video-inline-live-p inline))
+              ;; A real width change still reflows, using the Surface's window
+              ;; rather than whichever unrelated window happens to be selected.
+              (let ((other (split-window window 25 'right)))
+                (set-window-buffer other viewer)
+                (select-window other)
+                (with-current-buffer (appkit-surface-buffer surface)
+                  (let ((window-state-change-functions
+                         (remq t window-state-change-functions)))
+                    (run-hook-with-args 'window-state-change-functions window))
+                  (appkit-loop-run-pass (appkit-surface-loop surface))
+                  (should (= (string-width (buffer-substring-no-properties
+                                            (point-min) (point-max)))
+                             (appkit-geometry-window-width window)))))))
+        (when inline (video-inline-close inline))
+        (when marker (set-marker marker nil))
+        (chirp-stop)
+        (when (buffer-live-p viewer) (kill-buffer viewer))))))
 
 (defun chirp-media-test--source (&optional identity)
   "Open a real generated source Surface without multimedia dependencies."

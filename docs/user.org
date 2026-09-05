@@ -249,6 +249,11 @@ middle-button dragging.  Videos additionally expose playback transport.  ~n~
 and ~p~ move through the source carousel, and ~q~ returns to the saved Chirp
 view.
 
+Returning to the same window with unchanged layout leaves the inline media
+track intact: playback continues, or remains paused, with its mute state
+unchanged. Actual source-width or text-scale changes still reflow the source
+rows; preserving inline playback through that reflow is not yet supported.
+
 Appkit owns each activated video's canonical resource, stable cache identity,
 and persistent-cache policy; video.el owns the playback session, player, and
 inline/dedicated presentation leases.  Chirp records the active inline

@@ -220,34 +220,28 @@
 
 (ert-deftest chirp-thread-rerender-preserves-text-scale ()
   "A cached thread redraw should keep text scale."
-  (let
-      ((scratch (generate-new-buffer " *chirp-thread-scale*")) buffer)
-    (unwind-protect
-        (cl-letf
-            (((symbol-function 'chirp-media-avatar-image)
-              (lambda (&rest _args) nil)))
-          (setq buffer
-                (chirp-thread-test--render-view scratch "Thread"
-                                                #'ignore
-                                                '((:kind tweet :id "1"
-                                                   :text "Hello"
-                                                   :author-name
-                                                   "Alice"
-                                                   :author-handle
-                                                   "alice"))))
-          (with-current-buffer buffer
+  (save-window-excursion
+    (let ((scratch (generate-new-buffer " *chirp-thread-scale*")) buffer)
+      (unwind-protect
+          (cl-letf (((symbol-function 'chirp-media-avatar-image)
+                     (lambda (&rest _args) nil)))
+            (setq buffer
+                  (chirp-thread-test--render-view
+                   scratch "Thread" #'ignore
+                   '((:kind tweet :id "1" :text "Hello"
+                      :author-name "Alice" :author-handle "alice"))))
+            (switch-to-buffer buffer)
             (text-scale-increase 2)
-            (let
-                ((amount text-scale-mode-amount)
-                 (view (appkit-current-surface)))
-              (should (> amount 0)) (chirp--on-text-scale-change)
-              (appkit-loop-run-pass (appkit-surface-loop view))
+            (let ((amount text-scale-mode-amount)
+                  (surface (appkit-current-surface)))
+              (should (> amount 0))
+              (appkit-loop-run-pass (appkit-surface-loop surface))
               (should (equal amount text-scale-mode-amount))
               (should (bound-and-true-p text-scale-mode))
-              (should (string-match-p "Hello" (buffer-string))))))
-      (chirp-stop)
-      (when (buffer-live-p scratch) (kill-buffer scratch))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+              (should (string-match-p "Hello" (buffer-string)))))
+        (chirp-stop)
+        (when (buffer-live-p scratch) (kill-buffer scratch))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest chirp-thread-projection-draws-ancestor-chain-prefix ()
   "Ancestors should share a prefix spine and keep replies nested under the focus."
