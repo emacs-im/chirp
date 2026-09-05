@@ -26,9 +26,8 @@
 (declare-function chirp-quote-at-point "chirp-actions" ())
 (declare-function chirp-thread-open-tweet "chirp-thread" (tweet))
 (declare-function chirp-edit-history-open-tweet "chirp-edit-history" (tweet))
-(declare-function chirp-media-open-dedicated
-                  "chirp-media-view"
-                  (selection &optional title buffer))
+(declare-function chirp-media-open-dedicated "chirp-media-view"
+                  (selection &optional title buffer external-fallback))
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -36,6 +35,7 @@
 (require 'appkit-projection)
 (require 'appkit-discussion)
 (require 'appkit-media-image)
+(require 'video-runtime)
 (require 'appkit-ui)
 (require 'chirp-core)
 (require 'chirp-time)

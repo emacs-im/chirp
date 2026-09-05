@@ -9,6 +9,9 @@
 
 ;;; Code:
 
+(declare-function chirp-media-open-dedicated "chirp-media-view"
+                  (selection &optional title buffer external-fallback))
+
 (require 'cl-lib)
 (require 'image)
 (require 'subr-x)
@@ -19,14 +22,12 @@
 (require 'plz)
 (require 'appkit-core)
 (require 'appkit-surface)
-
 (require 'appkit-projection)
 (require 'appkit-media-image)
 (require 'appkit-media-video)
 (require 'appkit-media-resource)
 (require 'appkit-media-effect)
 (require 'appkit-resource)
-(require 'video)
 (require 'appkit-chat-avatar)
 (require 'appkit-task-queue)
 (require 'chirp-core)

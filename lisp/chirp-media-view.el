@@ -175,6 +175,7 @@ rendered media list and item are already active."
                       (current-buffer))))
 
 (require 'appkit-media-effect)
+(require 'video-view)
 
 (defun chirp-media-view--present-start (_context input _observe resolve reject)
   "Present committed INPUT, borrowing its exact inline video session."
