@@ -217,14 +217,23 @@ the same geometry and keeping ~window-hscroll~ at zero.
 |-------------------+---------------------------------------------------------------|
 | ~RIGHT~ / ~LEFT~  | Select the next or previous carousel item                     |
 | ~RET~             | Toggle inline video; open a still image in the media reader   |
+| ~p~ (Evil)        | Toggle the selected inline video in normal or motion state    |
 | mouse hotspot     | Activate the clicked carousel item without moving point       |
 | ~m~               | Toggle the inline video's desired mute state                  |
+| ~L~               | Toggle looping for the initialized selected inline video     |
+| ~F~               | Open or focus an additional frame for the selected video     |
 | ~C-RET~           | Present the selected item in the dedicated reader             |
 | ~S-RET~           | Send the selected video to the configured external player     |
 | ~M-RET~           | Bypass local actions and open the containing entry            |
 
 ~SPC~ is not a media action and remains available to the user's global key
 configuration.
+
+The transport keys are local to the media track at point.  Selecting another
+carousel item retargets the commands; they never control the previous inline
+occurrence.  ~F~ leaves the host view visible and does not start paused media.
+Closing its frame changes no other window.  ~L~ does not initialize playback,
+and enabling a loop requires a seekable source.
 
 ** Dedicated viewer
 
@@ -245,9 +254,10 @@ viewport-sized.  Fit commands calculate a scale once, so later window resizing
 does not resize the media.
 
 Images and videos support zoom, unrestricted pan, fit, mouse-wheel input, and
-middle-button dragging.  Videos additionally expose playback transport.  ~n~
-and ~p~ move through the source carousel, and ~q~ returns to the saved Chirp
-view.
+middle-button dragging.  Videos additionally expose playback transport.
+Vanilla ~n~/~p~ and Evil ~gj~/~gk~ move through the source carousel; Evil ~p~
+toggles playback.  In an ordinary reader ~q~ returns to the saved Chirp view;
+inside an independent presentation frame it closes only that frame.
 
 Returning to the same window with unchanged layout leaves the inline media
 track intact: playback continues, or remains paused, with its mute state
