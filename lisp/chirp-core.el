@@ -21,6 +21,7 @@
 (require 'appkit-surface)
 (require 'appkit-projection)
 (require 'appkit-ui)
+(require 'appkit-discussion)
 (require 'appkit-presentation)
 (require 'chirp-url)
 
@@ -312,16 +313,15 @@ commands still work, and displays alt text when the backend provides it."
   "o" #'chirp-browse-at-point
   "q" #'chirp-quit-current-buffer)
 
-(define-derived-mode chirp-view-mode special-mode "Chirp"
+
+
+(define-derived-mode chirp-view-mode appkit-discussion-mode "Chirp"
   "Major mode for Chirp buffers."
-  (setq-local truncate-lines nil)
-  (setq-local word-wrap t)
   ;; Positive line spacing opens visible seams between thumbnail slices.
   (setq-local line-spacing 0)
   (setq-local mode-line-process
               '((:eval (chirp--mode-line-status-string))))
-  (appkit-evil-normalize-keymaps)
-  (visual-line-mode 1))
+  (appkit-evil-normalize-keymaps))
 
 (defun chirp--setup-evil ()
   "Install optional Evil bindings for Chirp browsing views."

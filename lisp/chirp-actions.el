@@ -145,8 +145,7 @@ Only `unknown' persists because it changes whether repeating a write is safe.")
   (add-hook 'post-command-hook #'chirp-compose--after-command nil t)
   (add-hook 'kill-buffer-hook #'chirp-compose--cancel-mention-prefetch nil t)
   (add-hook 'kill-buffer-hook #'chirp-compose--cancel-chrome-refresh nil t)
-  (appkit-evil-normalize-keymaps)
-  (visual-line-mode 1))
+  (appkit-evil-normalize-keymaps))
 
 (defun chirp-compose--setup-evil ()
   "Install optional Evil bindings for compose buffers."
