@@ -20,7 +20,6 @@
 (require 'chirp-dm-test-helper)
 (require 'chirp-xchat)
 
-
 (ert-deftest chirp-xchat-recovery-input-selects-latest-bounded-key-config ()
   "Recovery normalization should select the latest key's exact token map."
   (let* ((input

@@ -139,7 +139,7 @@ When MEDIA-ID is set, include that media ID and optional PREVIEW-URL."
   (let (operation variables)
     (cl-letf (((symbol-function 'chirp-x-graphql-request)
                (lambda (request-operation request-variables callback
-                        &rest _options)
+                                          &rest _options)
                  (setq operation request-operation
                        variables request-variables)
                  (funcall callback '(("data" . nil))))))

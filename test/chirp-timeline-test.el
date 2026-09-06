@@ -634,9 +634,7 @@
               (should
                (plist-get
                 (car (plist-get (appkit-surface-model view) :items))
-                :liked-p))
-
-              )))
+                :liked-p)))))
       (chirp-stop) (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest chirp-primary-tweet-mutations-keep-inactive-feed-coherent
@@ -697,8 +695,7 @@
                  (chirp--remove-tweet-from-primary-feeds buffer "1"))
                 (should-not (plist-get (gethash 'home states) :items))
                 (should-not
-                 (plist-get (gethash 'following states) :items))
-                ))))
+                 (plist-get (gethash 'following states) :items))))))
       (chirp-stop) (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest chirp-primary-quoted-action-invalidates-owning-row ()
@@ -732,9 +729,7 @@
                                             (plist-get tweet :liked-p)
                                             t))
                                          t))
-              (should (plist-get quoted :liked-p))
-
-              )))
+              (should (plist-get quoted :liked-p)))))
       (chirp-stop) (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest

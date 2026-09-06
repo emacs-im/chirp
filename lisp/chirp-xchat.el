@@ -145,55 +145,55 @@ Each decoded struct is a list of (FIELD-ID TYPE VALUE) entries."
   (let ((state (chirp-xchat--thrift-state-create :bytes bytes)))
     (cl-labels
         ((read-value
-          (type depth)
-          (when (> depth 32)
-            (error "XChat Thrift nesting is too deep"))
-          (pcase type
-            (2
-             (pcase (chirp-xchat--thrift-unsigned state 1)
-               (0 nil)
-               (1 t)
-               (value
-                (error "XChat returned invalid Thrift BOOL value %s"
-                       value))))
-            (3 (chirp-xchat--thrift-signed state 1))
-            (4 (chirp-xchat--thrift-take state 8))
-            (6 (chirp-xchat--thrift-signed state 2))
-            (8 (chirp-xchat--thrift-signed state 4))
-            (10 (chirp-xchat--thrift-signed state 8))
-            ((or 11 16 17)
-             (chirp-xchat--thrift-take
-              state (chirp-xchat--thrift-length state "binary")))
-            (12 (read-struct (1+ depth)))
-            ((or 14 15)
-             (let ((element-type
-                    (chirp-xchat--thrift-unsigned state 1))
-                   (count (chirp-xchat--thrift-length state "container")))
-               (unless (<= count chirp-xchat--max-container-items)
-                 (error "XChat Thrift container has too many items"))
-               (cl-loop repeat count
-                        collect (read-value element-type (1+ depth)))))
-            (13
-             (let ((key-type (chirp-xchat--thrift-unsigned state 1))
-                   (value-type (chirp-xchat--thrift-unsigned state 1))
-                   (count (chirp-xchat--thrift-length state "map")))
-               (unless (<= count chirp-xchat--max-container-items)
-                 (error "XChat Thrift map has too many items"))
-               (cl-loop repeat count
-                        collect (cons (read-value key-type (1+ depth))
-                                      (read-value value-type (1+ depth))))))
-            (_ (error "XChat returned unsupported Thrift type %s" type))))
+           (type depth)
+           (when (> depth 32)
+             (error "XChat Thrift nesting is too deep"))
+           (pcase type
+             (2
+              (pcase (chirp-xchat--thrift-unsigned state 1)
+                (0 nil)
+                (1 t)
+                (value
+                 (error "XChat returned invalid Thrift BOOL value %s"
+                        value))))
+             (3 (chirp-xchat--thrift-signed state 1))
+             (4 (chirp-xchat--thrift-take state 8))
+             (6 (chirp-xchat--thrift-signed state 2))
+             (8 (chirp-xchat--thrift-signed state 4))
+             (10 (chirp-xchat--thrift-signed state 8))
+             ((or 11 16 17)
+              (chirp-xchat--thrift-take
+               state (chirp-xchat--thrift-length state "binary")))
+             (12 (read-struct (1+ depth)))
+             ((or 14 15)
+              (let ((element-type
+                     (chirp-xchat--thrift-unsigned state 1))
+                    (count (chirp-xchat--thrift-length state "container")))
+                (unless (<= count chirp-xchat--max-container-items)
+                  (error "XChat Thrift container has too many items"))
+                (cl-loop repeat count
+                         collect (read-value element-type (1+ depth)))))
+             (13
+              (let ((key-type (chirp-xchat--thrift-unsigned state 1))
+                    (value-type (chirp-xchat--thrift-unsigned state 1))
+                    (count (chirp-xchat--thrift-length state "map")))
+                (unless (<= count chirp-xchat--max-container-items)
+                  (error "XChat Thrift map has too many items"))
+                (cl-loop repeat count
+                         collect (cons (read-value key-type (1+ depth))
+                                       (read-value value-type (1+ depth))))))
+             (_ (error "XChat returned unsupported Thrift type %s" type))))
          (read-struct
-          (depth)
-          (let (fields type)
-            (while (not (zerop
-                         (setq type
-                               (chirp-xchat--thrift-unsigned state 1))))
-              (when (>= (length fields) 256)
-                (error "XChat Thrift struct has too many fields"))
-              (let ((field-id (chirp-xchat--thrift-signed state 2)))
-                (push (list field-id type (read-value type depth)) fields)))
-            (nreverse fields))))
+           (depth)
+           (let (fields type)
+             (while (not (zerop
+                          (setq type
+                                (chirp-xchat--thrift-unsigned state 1))))
+               (when (>= (length fields) 256)
+                 (error "XChat Thrift struct has too many fields"))
+               (let ((field-id (chirp-xchat--thrift-signed state 2)))
+                 (push (list field-id type (read-value type depth)) fields)))
+             (nreverse fields))))
       (let ((document (read-struct 0)))
         (unless (= (chirp-xchat--thrift-state-position state)
                    (length bytes))

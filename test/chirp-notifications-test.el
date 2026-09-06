@@ -13,7 +13,7 @@
   (let ((value `(("instructions" . ((("entries" . ,entries)))))))
     (dolist (key (reverse '("data" "viewer_v2" "user_results" "result"
                             "notification_timeline" "timeline"))
-                  value)
+                 value)
       (setq value (list (cons key value))))))
 
 (ert-deftest chirp-backend-notifications-use-direct-timeline ()
@@ -35,7 +35,7 @@
          (cursor
           '(("entryId" . "cursor-bottom")
             ("content" . (("cursorType" . "Bottom")
-                           ("value" . "next")))))
+                          ("value" . "next")))))
          (payload (chirp-notifications-test--timeline-payload
                    (list notification cursor)))
          operation variables result envelope failure)

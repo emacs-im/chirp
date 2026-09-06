@@ -313,8 +313,6 @@ commands still work, and displays alt text when the backend provides it."
   "o" #'chirp-browse-at-point
   "q" #'chirp-quit-current-buffer)
 
-
-
 (define-derived-mode chirp-view-mode appkit-discussion-mode "Chirp"
   "Major mode for Chirp buffers."
   ;; Positive line spacing opens visible seams between thumbnail slices.
@@ -595,8 +593,6 @@ revisited later."
       :changed-dependencies resources :reconcile-p reconcile
       :position (or (appkit-projection-change-position request) 'preserve))
      nil))
-
-
 
 (defun chirp-request-rerender (&optional buffer delay)
   "Schedule one coalesced projection update for BUFFER after DELAY."

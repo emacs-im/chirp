@@ -1355,7 +1355,7 @@
                            (chirp-x-test--response
                             200
                             (concat
-                             "{\"processing_info\":{\"state\":\"pending\"," 
+                             "{\"processing_info\":{\"state\":\"pending\","
                              "\"check_after_secs\":0}}")
                             callback))
                           (t (chirp-x-test--response 204 "" callback)))))))

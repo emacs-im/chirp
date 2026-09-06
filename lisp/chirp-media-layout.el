@@ -158,16 +158,16 @@ width divided by its height."
          candidates)
     (cl-labels
         ((add-candidate
-          (numerator denominator)
-          (when (> denominator 0)
-            (let ((ratio (/ numerator denominator)))
-              (when (> ratio 0)
-                (push
-                 (list :ratio ratio
-                       :offset
-                       (/ (- chirp-media-layout-carousel-gap)
-                          denominator))
-                 candidates))))))
+           (numerator denominator)
+           (when (> denominator 0)
+             (let ((ratio (/ numerator denominator)))
+               (when (> ratio 0)
+                 (push
+                  (list :ratio ratio
+                        :offset
+                        (/ (- chirp-media-layout-carousel-gap)
+                           denominator))
+                  candidates))))))
       (let* ((denominator (+ first (* 0.67 second)))
              (ratio (and (> denominator 0) (/ 1.0 denominator))))
         (when (and ratio
