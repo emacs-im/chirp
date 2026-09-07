@@ -25,7 +25,5 @@ Run ~M-x chirp-login~, sign in at ~https://x.com~, then
 ~M-x chirp-home~.
 
 Keys, compose, media, and notifications are in the
-[[file:docs/user.org][user guide]].  Direct messages need the optional
+[[file:docs/chirp.org][user guide]].  Direct messages need the optional
 native module; see [[file:native/README.md][native/README.md]].
-Development and write-smoke notes are in
-[[file:docs/develop.org][docs/develop.org]].
