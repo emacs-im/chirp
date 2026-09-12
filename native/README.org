@@ -1,0 +1,83 @@
+#+title: XChat native module
+#+options: toc:nil num:nil
+
+The optional ~chirp-xchat-module~ wraps X's official Rust ~chat-xdk~.
+Direct messages require it; other Chirp features do not.
+
+* Build
+
+Run from the Chirp root:
+
+#+begin_src sh
+native/bootstrap-deps.sh
+(
+  cd native/chirp-xchat-module
+  cargo build --release --locked
+)
+native/check-release.sh
+#+end_src
+
+Set ~chirp-xchat-native-module-file~ to the absolute library path with
+~M-x customize-option~.  On Linux the output is
+~native/chirp-xchat-module/target/release/libchirp_xchat_native.so~;
+use the platform's ~.dylib~ or ~.dll~ equivalent elsewhere.
+Chirp does not search source trees, build directories, or ~load-path~
+for this security-sensitive module.
+
+[[file:bootstrap-deps.sh][bootstrap-deps.sh]] pins and verifies upstream revisions; the crate pins
+Rust 1.91.1.  Existing exact checkouts can be supplied through
+~CHIRP_CHAT_XDK_SOURCE~, ~CHIRP_JUICEBOX_SDK_SOURCE~, and
+~CHIRP_THRIFT_SOURCE~.  Dependencies stay in ignored ~native/.deps/~;
+build products stay in the crate's ignored ~target/~.
+
+* Security and ownership
+
+- Native code owns private and versioned conversation keys, signature
+  verification, encryption, and decryption.  PINs and keys never return
+  to Lisp.  Lisp receives verified domain data, decrypted attachment
+  bytes, staging metadata, and opaque outgoing envelopes.
+- Each explicit unlock makes one recovery call, without a Chirp retry.
+  The recovered identity must match the registered key before becoming
+  the session's sender; individual messages cannot override it.
+  The SDK contacts only validated HTTPS Juicebox realms.
+- Native media encryption validates file type and size, stages ciphertext
+  in a session-owned temporary file, and pins the final message to the
+  same verified key version.  Release, failure, cancellation, and session
+  destruction remove staged ciphertext.
+- Lisp owns authenticated GraphQL and TON uploads, including the
+  transport-only upload UUID, cookies, and CSRF.  Native code receives
+  no X credentials and makes no X API calls.  Bounded synchronous SDK
+  operations produce signed envelopes; Lisp submits each once through
+  the fixed X write operation.
+- Recovery workers retain only Rust values.  Epoch and job identities
+  fence stale polls and cancellation; a 60-second outer timeout reports
+  an uncertain result.  Cancellation drops the in-flight Tokio future.
+  Explicit destruction cancels and joins recovery before dropping SDK
+  state and media stages.  The user-pointer finalizer requests cancellation
+  and detaches, so GC never waits for a worker.
+
+* Verification
+
+The ~test-vector~ feature embeds X's published synthetic fixture and
+exposes recovery test functions.  Neither is included in release builds.
+
+#+begin_src sh
+(
+  cd native/chirp-xchat-module
+  cargo test --locked --features test-vector
+  cargo build --locked --features test-vector
+)
+CHIRP_XCHAT_MODULE_FILE="$PWD/native/chirp-xchat-module/target/debug/libchirp_xchat_native.so" \
+  emacs -Q --batch --module-assertions -L . -L lisp -l ert \
+  -l test/chirp-xchat-native-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Use the platform's library suffix for the ERT command.
+
+* Redistribution
+
+~chat-xdk~ and Juicebox SDK are MIT-licensed; Apache Thrift is
+Apache-2.0-licensed.  Their source stays in the ignored build cache,
+not Chirp releases.  Only local source builds are supported.
+Do not redistribute a compiled module without the complete generated
+attribution bundle specified in [[file:THIRD_PARTY_NOTICES.md][third-party notices]].

@@ -30,7 +30,7 @@ Retry the failed read, or run ~M-x chirp-refresh-query-ids~.
 IDs are never selected from the dynamic cache or retried.
 
 Direct messages require the optional source-built Rust module.  Follow
-[[file:../native/README.md][native/README.md]] and set
+[[file:../native/README.org][native module build instructions]] and set
 ~chirp-xchat-native-module-file~ to its absolute path.  Other Chirp
 features remain usable when it is absent.
 
@@ -81,7 +81,6 @@ Conversations decode signature-verified plain text through Appkit's semantic mar
 | ~r~ | reply to the message at point |
 | ~!~ | add or remove a prompted reaction |
 | ~N~ | fetch older message history.  Evil: ~g n~ |
-| ~i~ | move to the composer and enter Evil insert state |
 | ~C-c C-a~ | open the typed photo, GIF, video, audio, or file selector |
 | ~C-c C-f~ | attach a document directly |
 | ~C-c C-k~ | cancel the current reply context |
@@ -114,7 +113,7 @@ Direct-message reads never send read acknowledgments.  Text, replies, reactions,
 
 | Key | Action |
 |-----+--------|
-| ~g~ | check immediately for new Home or Following posts without moving the current row.  Evil: ~g r~ |
+| ~g~ | check immediately for new Home or Following posts without moving the current row; also available through ~M-x chirp-refresh~ |
 | ~.~ | show pending new Home or Following posts and move to the newest entry |
 | ~TAB~ | Home/Following, or profile subviews |
 | ~n~ / ~p~ | next or previous entry.  Evil: ~g j~ / ~g k~ |
@@ -123,12 +122,13 @@ Direct-message reads never send read acknowledgments.  Text, replies, reactions,
 | ~RET~ / mouse-1 | Appkit action at point, or open the tweet or profile |
 | ~m~ | first media item.  Evil: ~g m~ |
 | ~D~ | download current media.  Evil: ~g d~ |
-| ~A~ | author profile.  Evil: ~g a~ |
+| ~A~ | author profile.  Evil: ~g u~ |
 | ~S~ | add a spam phrase; ~C-u S~ starts from the display name.  Evil: ~g S~ |
 | ~x~ | actions menu.  Evil: ~?~ |
 | ~x r~ | reply, or refuse when X limits replies |
 | ~x T~ | translate the tweet |
-| ~o~ | open in a browser.  Evil: ~g o~ |
+| ~o~ | open in a browser.  Evil: ~g x~ |
+
 
 
 ** Compose

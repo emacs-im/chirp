@@ -26,4 +26,4 @@ Run ~M-x chirp-login~, sign in at ~https://x.com~, then
 
 Keys, compose, media, and notifications are in the
 [[file:docs/chirp.org][user guide]].  Direct messages need the optional
-native module; see [[file:native/README.md][native/README.md]].
+native module; see [[file:native/README.org][native module build and security notes]].
