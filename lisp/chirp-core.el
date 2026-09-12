@@ -10,6 +10,19 @@
 
 ;;; Code:
 
+(declare-function turn-off-evil-snipe-mode "evil-snipe" ())
+(declare-function turn-off-evil-snipe-override-mode "evil-snipe" ())
+(declare-function chirp-search "chirp" (query))
+(declare-function chirp-compose-post "chirp-actions" ())
+(declare-function chirp-reply-at-point "chirp-actions" ())
+(declare-function chirp-quote-at-point "chirp-actions" ())
+(declare-function chirp-toggle-bookmark-at-point "chirp-actions" ())
+(declare-function chirp-toggle-like-at-point "chirp-actions" ())
+(declare-function chirp-copy-fixupx-url-at-point "chirp-actions" ())
+(declare-function chirp-delete-at-point "chirp-actions" ())
+(declare-function chirp-dm-refresh-inbox "chirp-dm-inbox" ())
+(declare-function chirp-dm-load-more-inbox "chirp-dm-inbox" ())
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'browse-url)
@@ -332,16 +345,29 @@ commands still work, and displays alt text when the backend provides it."
        "RET" #'chirp-open-at-point
        "<return>" #'chirp-open-at-point
        "TAB" #'chirp-toggle-home-following
-       "g r" #'chirp-refresh
+       "g r" #'chirp-open-entry-at-point
        "g j" #'chirp-next-entry
        "g k" #'chirp-previous-entry
        "g n" #'chirp-load-more
        "g m" #'chirp-open-primary-media
        "g d" #'chirp-media-download-at-point
-       "g a" #'chirp-open-author-at-point
+       "g u" #'chirp-open-author-at-point
        "g S" #'chirp-thread-add-spam-rule
        "?" #'chirp-dispatch
-       "g o" #'chirp-browse-at-point))
+       "g x" #'chirp-browse-at-point
+       "g s" #'chirp-search
+       "c" #'chirp-compose-post
+       "r" #'chirp-reply-at-point
+       "Q" #'chirp-quote-at-point
+       "s" #'chirp-toggle-bookmark-at-point
+       "!" #'chirp-toggle-like-at-point
+       "Z l" #'chirp-copy-fixupx-url-at-point
+       "D" #'chirp-delete-at-point
+       "d d" #'chirp-delete-at-point)
+      (:map chirp-dm-inbox--mode-map
+       :nm
+       "g r" #'chirp-dm-refresh-inbox
+       "g n" #'chirp-dm-load-more-inbox))
     (appkit-evil-normalize-buffers '(chirp-view-mode))))
 
 (chirp--setup-evil)
@@ -2772,6 +2798,13 @@ over the card's `t.co` permalink."
   "Request a layout update after SURFACE's canonical geometry changes."
   (appkit-surface-post surface
                        (appkit-projection-change-create :geometry-p t)))
+
+(with-eval-after-load 'evil-snipe
+  (dolist (mode '(chirp-view-mode chirp-compose-mode chirp-dm-conversation--mode
+                  chirp-dm-inbox--mode chirp-unsent-mode))
+    (let ((hook (intern (format "%s-hook" mode))))
+      (add-hook hook #'turn-off-evil-snipe-mode)
+      (add-hook hook #'turn-off-evil-snipe-override-mode))))
 
 (provide 'chirp-core)
 

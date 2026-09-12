@@ -1565,14 +1565,17 @@ Disjoint focused fragments are bridged through older history before merging."
       (:map chirp-dm-conversation--mode-map
        :nm
        "RET" #'chirp-dm-return-dwim
-       "g r" #'chirp-dm-refresh-conversation)
+       "Z a" #'chirp-dm-attach
+       "Z f" #'chirp-dm-attach-file
+       :i
+       "RET" #'newline
+       "<return>" #'newline)
       (:map chirp-dm-conversation--timeline-mode-map
        :nm
        "!" #'chirp-dm-toggle-reaction
        "q" #'chirp-quit-current-buffer
        "r" #'chirp-dm-reply-to-message
-       "i" #'appkit-evil-chatbuf-enter-input
-       "g j" #'chirp-dm-next-message
+         "g j" #'chirp-dm-next-message
        "g k" #'chirp-dm-previous-message
        "g n" #'chirp-dm-load-older-messages))
     (appkit-evil-normalize-buffers '(chirp-dm-conversation--mode))))
